@@ -5,10 +5,15 @@ import { auth, isOwner } from '@/lib/auth';
 import { getImageBySlug, getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import { getNeighborsByImageId } from '@/lib/db/queries/embeddings';
 import { lookupRedirect } from '@/lib/db/queries/slugs';
+import { countReactions } from '@/lib/db/queries/reactions';
+import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
 import { ImageActions } from '@/components/image-actions';
 import { ImageGrid } from '@/components/image-grid';
 import { ExifFacts, PaletteStrip } from '@/components/image-meta';
+import { ReactionBar } from '@/components/reaction-bar';
+import { CommentList } from '@/components/comment-list';
+import { ReportButton } from '@/components/report-button';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,8 +31,7 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
   const owner = isOwner(session);
 
   // Fail soft: if the neighbor query throws (missing table, embedding extension
-  // trouble, etc.) the detail page still renders. Empty array means either no
-  // embeddings exist for this image yet, or there's nothing similar.
+  // trouble, etc.) the detail page still renders.
   let neighbors: Awaited<ReturnType<typeof hydrateImages>> = [];
   try {
     const matches = await getNeighborsByImageId(img.id, { limit: 6, kind: 'caption' });
@@ -38,6 +42,12 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
   } catch (err) {
     console.error('neighbor lookup failed for image', img.id, err);
   }
+
+  // Fail soft on engagement data -- page still works without it
+  const [reactionCounts, approvedComments] = await Promise.all([
+    countReactions(img.id).catch(() => ({ up: 0, down: 0 })),
+    listApprovedComments(img.id).catch(() => [])
+  ]);
 
   const caption = pickOne(img.captions)?.text ?? '';
   const description = pickOne(img.descriptions)?.text ?? '';
@@ -95,7 +105,13 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
         <PaletteStrip colors={img.palette} />
         <ExifFacts exif={img.exif as Record<string, unknown> | null} />
 
+        <ReactionBar slug={img.slug} initialCounts={reactionCounts} />
+
         {owner ? <ImageActions slug={img.slug} /> : null}
+
+        <div className="flex justify-end pt-1">
+          <ReportButton targetType="image" targetId={img.id} />
+        </div>
       </div>
 
       {neighbors.length > 0 ? (
@@ -105,19 +121,8 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
         </section>
       ) : null}
 
-      <div className="mx-auto max-w-2xl space-y-6">
-        <section
-          aria-label="reactions"
-          className="border-t border-ink-800 pt-4 text-center font-mono text-xs text-ink-600"
-        >
-          reactions -- coming in phase 3
-        </section>
-        <section
-          aria-label="comments"
-          className="border-t border-ink-800 pt-4 text-center font-mono text-xs text-ink-600"
-        >
-          comments -- coming in phase 3
-        </section>
+      <div className="mx-auto max-w-2xl pb-8">
+        <CommentList slug={img.slug} comments={approvedComments} />
       </div>
     </article>
   );

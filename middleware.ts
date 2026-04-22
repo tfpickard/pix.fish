@@ -16,6 +16,11 @@ export default auth((req) => {
   const isImagesWrite =
     pathname.startsWith('/api/images') &&
     (method === 'POST' || method === 'PATCH' || method === 'DELETE');
+  // PATCH and DELETE on /api/comments/:id are owner-only moderation actions.
+  // Public POST (submitting a comment) goes to /api/images/:slug/comments, not here.
+  const isCommentsWrite =
+    pathname.startsWith('/api/comments') &&
+    (method === 'PATCH' || method === 'DELETE');
 
   if (isAdminRoute) {
     if (!req.auth) {
@@ -28,7 +33,7 @@ export default auth((req) => {
     }
   }
 
-  if (isImagesWrite && !isOwner) {
+  if ((isImagesWrite || isCommentsWrite) && !isOwner) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
@@ -36,5 +41,5 @@ export default auth((req) => {
 });
 
 export const config = {
-  matcher: ['/admin/:path*', '/api/images/:path*']
+  matcher: ['/admin/:path*', '/api/images/:path*', '/api/comments/:path*']
 };
