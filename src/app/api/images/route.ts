@@ -2,12 +2,15 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { put } from '@vercel/blob';
 import { auth, isOwner } from '@/lib/auth';
+import { getEmbedder } from '@/lib/ai';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
 import { enrichImage } from '@/lib/enrichment';
+import { extractExif, extractPalette } from '@/lib/image-meta';
 import { slugify } from '@/lib/slug';
 import { uniquifySlug } from '@/lib/db/queries/slugs';
 import { getImageBySlug, listImages } from '@/lib/db/queries/images';
+import { upsertEmbedding } from '@/lib/db/queries/embeddings';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -78,6 +81,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'blob upload failed' }, { status: 502 });
   }
 
+  // Extract EXIF + palette from the buffer before the row insert so they
+  // land on the first write. Both helpers swallow their own errors; at worst
+  // we persist nulls and can backfill later.
+  const [{ exif, takenAt }, palette] = await Promise.all([
+    extractExif(buffer),
+    extractPalette(buffer)
+  ]);
+
   // Reserve the row with a placeholder slug. We'll replace it with the real
   // caption-derived slug after enrichment succeeds.
   const placeholderSlug = `img-${blob.pathname.split('/').pop()!.slice(0, 32)}`;
@@ -91,7 +102,10 @@ export async function POST(req: Request) {
         blobKey: blob.pathname,
         mime,
         ownerId: session!.user!.githubId!,
-        manualCaption: manualCaption ?? null
+        manualCaption: manualCaption ?? null,
+        exif: exif ?? null,
+        palette: palette.length > 0 ? palette : null,
+        takenAt: takenAt ?? null
       })
       .returning();
   } catch (err) {
@@ -180,6 +194,24 @@ export async function POST(req: Request) {
       await tx.update(images).set({ slug: finalSlug }).where(eq(images.id, row.id));
     }
   });
+
+  // Generate + store the caption embedding. Runs after the enrichment
+  // transaction so a failure here doesn't roll back the upload -- semantic
+  // search will just miss this image until a Phase 4 reprocess fills it in.
+  try {
+    const embedText = slugSourceText;
+    const embedder = getEmbedder();
+    const vec = await embedder.embed(embedText);
+    await upsertEmbedding({
+      imageId: row.id,
+      kind: 'caption',
+      vec,
+      provider: embedder.name,
+      model: embedder.model
+    });
+  } catch (err) {
+    console.error('embedding generation failed for image', row.id, err);
+  }
 
   const full = await getImageBySlug(finalSlug);
   return NextResponse.json({ image: full }, { status: 201 });
