@@ -11,9 +11,14 @@ export interface AIProvider {
   captions(image: Buffer, mime: string, prompt: string): Promise<string[]>;
   descriptions(image: Buffer, mime: string, prompt: string): Promise<string[]>;
   tags(image: Buffer, mime: string, prompt: string): Promise<AITag[]>;
+  // Optional. Embedding providers expose a distinct model from the vision
+  // model, so callers should read `embedModel` when persisting a provenance
+  // stamp on an embedding row.
+  embed?(input: string): Promise<number[]>;
+  readonly embedModel?: string;
 }
 
-export type ProviderField = 'captions' | 'descriptions' | 'tags';
+export type ProviderField = 'captions' | 'descriptions' | 'tags' | 'embeddings';
 export type ProviderName = 'anthropic' | 'openai';
 
 // Helpers shared by provider implementations.

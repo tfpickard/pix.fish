@@ -55,3 +55,4 @@ next-env.d.ts
 # dev.sh runtime state
 .dev-server.pid
 .dev-server.log
+.env*.local

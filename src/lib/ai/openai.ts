@@ -3,6 +3,11 @@ import type { AIProvider, AITag } from './types';
 import { parseTagsJson, parseVariantsJson } from './types';
 
 const MODEL = 'gpt-4o';
+const EMBED_MODEL = 'text-embedding-3-small';
+// text-embedding-3-small is a fixed 1536-dim model. If we ever route to
+// another model this number has to change in lockstep with the embeddings.vec
+// column dimensions in schema.ts.
+const EMBED_DIMENSIONS = 1536;
 
 let client: OpenAI | null = null;
 function getClient(): OpenAI {
@@ -39,6 +44,7 @@ async function callVision(image: Buffer, mime: string, prompt: string): Promise<
 export const OpenAIProvider: AIProvider = {
   name: 'openai',
   model: MODEL,
+  embedModel: EMBED_MODEL,
 
   async captions(image, mime, prompt) {
     const text = await callVision(image, mime, prompt);
@@ -53,5 +59,23 @@ export const OpenAIProvider: AIProvider = {
   async tags(image, mime, prompt): Promise<AITag[]> {
     const text = await callVision(image, mime, prompt);
     return parseTagsJson(text);
+  },
+
+  async embed(input: string): Promise<number[]> {
+    const res = await getClient().embeddings.create({
+      model: EMBED_MODEL,
+      input
+    });
+    const vec = res.data[0]?.embedding;
+    if (!vec) throw new Error('OpenAI embeddings response had no vector.');
+    if (vec.length !== EMBED_DIMENSIONS) {
+      throw new Error(
+        `OpenAI embeddings returned ${vec.length} dims; expected ${EMBED_DIMENSIONS} for ${EMBED_MODEL}.`
+      );
+    }
+    if (!vec.every((n) => Number.isFinite(n))) {
+      throw new Error('OpenAI embeddings response contained non-finite numbers.');
+    }
+    return vec;
   }
 };

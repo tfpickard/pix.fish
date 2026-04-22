@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { and, eq, inArray, ne } from 'drizzle-orm';
+import { del } from '@vercel/blob';
 import { auth, isOwner } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
@@ -135,4 +136,32 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
   const [refreshedRow] = await db.select().from(images).where(eq(images.id, img.id)).limit(1);
   const fresh = refreshedRow ? await getImageBySlug(refreshedRow.slug) : null;
   return NextResponse.json({ image: fresh });
+}
+
+export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
+  const session = await auth();
+  if (!isOwner(session)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  }
+
+  const [img] = await db.select().from(images).where(eq(images.slug, ctx.params.slug)).limit(1);
+  if (!img) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+
+  // Delete the DB row first. Captions/descriptions/tags/embeddings cascade via
+  // FKs; slug_history is an array column on the same row. If blob cleanup below
+  // fails we'd rather have an orphaned blob than a dangling row that still
+  // appears in the gallery.
+  await db.delete(images).where(eq(images.id, img.id));
+
+  // Best-effort blob cleanup. `del` accepts the pathname or full URL. We store
+  // the pathname in blob_key. A missing-blob 404 is fine; log and move on.
+  try {
+    await del(img.blobKey);
+  } catch (err) {
+    console.error('blob delete failed for image', img.id, img.blobKey, err);
+  }
+
+  return new NextResponse(null, { status: 204 });
 }

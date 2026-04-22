@@ -1,5 +1,7 @@
 import { listImages } from '@/lib/db/queries/images';
 import { tagCloud } from '@/lib/db/queries/tags';
+import { HAIKUS } from '@/lib/haikus';
+import { pickOne } from '@/lib/random';
 import { ImageGrid } from '@/components/image-grid';
 import { TagCloud } from '@/components/tag-cloud';
 
@@ -30,10 +32,16 @@ export default async function HomePage({ searchParams }: PageProps) {
   const cloud = cloudRes.status === 'fulfilled' ? cloudRes.value : [];
   const dbDown = imagesRes.status === 'rejected' || cloudRes.status === 'rejected';
 
+  // Fresh haiku per render. `dynamic = 'force-dynamic'` above guarantees this
+  // re-evaluates on every request, so the tagline rotates with each page load.
+  const haiku = pickOne([...HAIKUS]) ?? HAIKUS[0];
+
   return (
     <div className="space-y-10 pt-8">
       <section className="space-y-3">
-        <h1 className="font-display text-3xl text-ink-100">late-night gallery</h1>
+        <h1 className="prose-caption whitespace-pre-line font-display text-3xl leading-snug text-ink-100">
+          {haiku.join('\n')}
+        </h1>
         <p className="font-mono text-xs text-ink-500">
           {dbDown
             ? 'database not configured -- showing shell only'

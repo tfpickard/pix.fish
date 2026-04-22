@@ -9,7 +9,8 @@ import {
   text,
   timestamp,
   uniqueIndex,
-  index
+  index,
+  vector
 } from 'drizzle-orm/pg-core';
 
 // ----------------------------------------------------------------------------
@@ -123,8 +124,35 @@ export const apiKeys = pgTable('api_keys', {
 });
 
 // ----------------------------------------------------------------------------
+// Phase 2 tables
+// ----------------------------------------------------------------------------
+
+// Embeddings live in pgvector. Phase 2 writes only `kind='caption'` (text
+// embedding of the slug-source caption via OpenAI text-embedding-3-small, 1536
+// dims). `image` and `combined` kinds are reserved for later phases that add
+// CLIP or multimodal models. Unique on (image_id, kind) so reprocessing
+// overwrites cleanly via onConflictDoUpdate.
+export const embeddings = pgTable(
+  'embeddings',
+  {
+    id: serial('id').primaryKey(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(), // 'image' | 'caption' | 'combined'
+    provider: text('provider'),
+    model: text('model'),
+    vec: vector('vec', { dimensions: 1536 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    imageKindUniq: uniqueIndex('embeddings_image_kind_uniq').on(t.imageId, t.kind),
+    imageIdx: index('embeddings_image_id_idx').on(t.imageId)
+  })
+);
+
+// ----------------------------------------------------------------------------
 // Phase 2+ tables (not created yet; see SPEC.md "Data model" section)
-//   embeddings       -- pgvector embeddings, kind in {image,caption,combined}
 //   reactions        -- anonymous up/down with ip_hash + fingerprint
 //   comments         -- anonymous comments with moderation status
 //   reports          -- user reports queue
@@ -138,7 +166,12 @@ export const apiKeys = pgTable('api_keys', {
 export const imagesRelations = relations(images, ({ many }) => ({
   captions: many(captions),
   descriptions: many(descriptions),
-  tags: many(tags)
+  tags: many(tags),
+  embeddings: many(embeddings)
+}));
+
+export const embeddingsRelations = relations(embeddings, ({ one }) => ({
+  image: one(images, { fields: [embeddings.imageId], references: [images.id] })
 }));
 
 export const captionsRelations = relations(captions, ({ one }) => ({
@@ -161,3 +194,5 @@ export type Description = typeof descriptions.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
 export type Prompt = typeof prompts.$inferSelect;
 export type TaxonomyEntry = typeof tagTaxonomy.$inferSelect;
+export type Embedding = typeof embeddings.$inferSelect;
+export type NewEmbedding = typeof embeddings.$inferInsert;

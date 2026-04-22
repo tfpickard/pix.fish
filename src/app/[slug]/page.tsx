@@ -1,9 +1,14 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { notFound, permanentRedirect } from 'next/navigation';
-import { getImageBySlug } from '@/lib/db/queries/images';
+import { auth, isOwner } from '@/lib/auth';
+import { getImageBySlug, getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
+import { getNeighborsByImageId } from '@/lib/db/queries/embeddings';
 import { lookupRedirect } from '@/lib/db/queries/slugs';
 import { pickOne } from '@/lib/random';
+import { ImageActions } from '@/components/image-actions';
+import { ImageGrid } from '@/components/image-grid';
+import { ExifFacts, PaletteStrip } from '@/components/image-meta';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +20,23 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
     const to = await lookupRedirect(slug);
     if (to) permanentRedirect(`/${to}`);
     notFound();
+  }
+
+  const session = await auth();
+  const owner = isOwner(session);
+
+  // Fail soft: if the neighbor query throws (missing table, embedding extension
+  // trouble, etc.) the detail page still renders. Empty array means either no
+  // embeddings exist for this image yet, or there's nothing similar.
+  let neighbors: Awaited<ReturnType<typeof hydrateImages>> = [];
+  try {
+    const matches = await getNeighborsByImageId(img.id, { limit: 6, kind: 'caption' });
+    if (matches.length > 0) {
+      const rows = await getImagesByIdsOrdered(matches.map((m) => m.imageId));
+      neighbors = await hydrateImages(rows);
+    }
+  } catch (err) {
+    console.error('neighbor lookup failed for image', img.id, err);
   }
 
   const caption = pickOne(img.captions)?.text ?? '';
@@ -70,6 +92,20 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
 
         <p className="text-center font-mono text-xs text-ink-500">{uploaded}</p>
 
+        <PaletteStrip colors={img.palette} />
+        <ExifFacts exif={img.exif as Record<string, unknown> | null} />
+
+        {owner ? <ImageActions slug={img.slug} /> : null}
+      </div>
+
+      {neighbors.length > 0 ? (
+        <section aria-label="more like this" className="mx-auto max-w-6xl space-y-4 pt-6">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">more like this</h2>
+          <ImageGrid images={neighbors} />
+        </section>
+      ) : null}
+
+      <div className="mx-auto max-w-2xl space-y-6">
         <section
           aria-label="reactions"
           className="border-t border-ink-800 pt-4 text-center font-mono text-xs text-ink-600"

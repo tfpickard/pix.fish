@@ -53,6 +53,13 @@ export async function listImages(opts: {
       .offset(offset);
   }
 
+  return hydrateImages(imageRows);
+}
+
+// Loads captions/descriptions/tags for a set of pre-fetched image rows and
+// merges them into ImageWithRelations. Preserves the input order so callers
+// (e.g. semantic search, which orders by vector distance) can control ranking.
+export async function hydrateImages(imageRows: Image[]): Promise<ImageWithRelations[]> {
   if (imageRows.length === 0) return [];
 
   const ids = imageRows.map((i) => i.id);
@@ -136,6 +143,15 @@ export async function getImageBySlug(slug: string): Promise<ImageWithRelations |
       confidence: t.confidence
     }))
   };
+}
+
+// Fetches rows by id preserving the order of the input array. Used by
+// semantic search where ranking comes from vector distance, not the DB.
+export async function getImagesByIdsOrdered(ids: number[]): Promise<Image[]> {
+  if (ids.length === 0) return [];
+  const rows = await db.select().from(images).where(inArray(images.id, ids));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(id)).filter((r): r is Image => !!r);
 }
 
 export async function countImages(tagsFilter?: string[]): Promise<number> {

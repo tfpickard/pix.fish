@@ -6,13 +6,22 @@ export async function NavBar() {
   const owner = isOwner(session);
   return (
     <header className="sticky top-0 z-40 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-4">
+      <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
         <Link
           href="/"
           className="font-display text-xl tracking-tight text-ink-100 hover:text-white"
         >
           pix<span className="text-ink-500">.</span>fish
         </Link>
+        <form action="/search" method="GET" className="ml-auto flex-1 max-w-xs">
+          <input
+            type="search"
+            name="q"
+            placeholder="search semantically..."
+            className="w-full rounded-md border border-ink-800 bg-ink-950/60 px-3 py-1.5 font-mono text-xs text-ink-100 placeholder:text-ink-600 focus:border-ink-500 focus:outline-none"
+            aria-label="search"
+          />
+        </form>
         <nav className="flex items-center gap-4 font-mono text-xs text-ink-400">
           <Link href="/" className="hover:text-ink-100">
             gallery

@@ -5,5 +5,8 @@ import type { ProviderField, ProviderName } from './types';
 export const providerConfig: Record<ProviderField, ProviderName> = {
   captions: 'anthropic',
   descriptions: 'anthropic',
-  tags: 'anthropic'
+  tags: 'anthropic',
+  // Anthropic has no public embeddings API yet; OpenAI `text-embedding-3-small`
+  // is the Phase 2 default (SPEC.md "Open decisions" line 360).
+  embeddings: 'openai'
 };
