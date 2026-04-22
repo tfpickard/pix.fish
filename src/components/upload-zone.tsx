@@ -64,14 +64,27 @@ export function UploadZone() {
       fd.append('file', file);
       if (manualCaption.trim()) fd.append('manual_caption', manualCaption.trim());
       const res = await fetch('/api/images', { method: 'POST', body: fd });
-      const payload = await res.json();
+      // The server should always return JSON, but an unhandled throw in the
+      // route (or an upstream proxy error) can produce an HTML/plain-text body.
+      // Read as text so a parse failure surfaces the real status instead of
+      // WebKit's generic "did not match the expected pattern" SyntaxError.
+      const raw = await res.text();
+      let payload: { error?: string; message?: string; image?: ImageRecord } | null = null;
+      try {
+        payload = raw ? JSON.parse(raw) : null;
+      } catch {
+        payload = null;
+      }
       if (!res.ok) {
-        setError(payload.error || payload.message || 'upload failed');
-      } else {
-        setResult(payload.image as ImageRecord);
+        const snippet = raw.slice(0, 200) || '<empty body>';
+        setError(payload?.error || payload?.message || `upload failed (${res.status}): ${snippet}`);
+      } else if (payload?.image) {
+        setResult(payload.image);
         setFile(null);
         setManualCaption('');
         if (inputRef.current) inputRef.current.value = '';
+      } else {
+        setError(`unexpected response (${res.status}): ${raw.slice(0, 200) || '<empty body>'}`);
       }
     } catch (err) {
       setError(String(err));

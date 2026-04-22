@@ -37,7 +37,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
-  const form = await req.formData();
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch (err) {
+    console.error('failed to parse multipart form', err);
+    return NextResponse.json({ error: 'invalid multipart body' }, { status: 400 });
+  }
+
   const file = form.get('file');
   const rawManualCaption = form.get('manual_caption');
   const manualCaption =
@@ -56,27 +63,41 @@ export async function POST(req: Request) {
   const buffer = Buffer.from(await file.arrayBuffer());
 
   // Upload to Vercel Blob first -- we want the URL persisted even if enrichment fails.
+  // A missing/invalid BLOB_READ_WRITE_TOKEN raises here; surface it as JSON so the
+  // client doesn't choke trying to parse Next's HTML error page.
   const blobKey = `images/${crypto.randomUUID()}-${safeName(file.name)}`;
-  const blob = await put(blobKey, buffer, {
-    access: 'public',
-    contentType: mime,
-    addRandomSuffix: false
-  });
+  let blob: Awaited<ReturnType<typeof put>>;
+  try {
+    blob = await put(blobKey, buffer, {
+      access: 'public',
+      contentType: mime,
+      addRandomSuffix: false
+    });
+  } catch (err) {
+    console.error('blob upload failed', err);
+    return NextResponse.json({ error: 'blob upload failed' }, { status: 502 });
+  }
 
   // Reserve the row with a placeholder slug. We'll replace it with the real
   // caption-derived slug after enrichment succeeds.
   const placeholderSlug = `img-${blob.pathname.split('/').pop()!.slice(0, 32)}`;
-  const [row] = await db
-    .insert(images)
-    .values({
-      slug: placeholderSlug,
-      blobUrl: blob.url,
-      blobKey: blob.pathname,
-      mime,
-      ownerId: session!.user!.githubId!,
-      manualCaption: manualCaption ?? null
-    })
-    .returning();
+  let row: typeof images.$inferSelect | undefined;
+  try {
+    [row] = await db
+      .insert(images)
+      .values({
+        slug: placeholderSlug,
+        blobUrl: blob.url,
+        blobKey: blob.pathname,
+        mime,
+        ownerId: session!.user!.githubId!,
+        manualCaption: manualCaption ?? null
+      })
+      .returning();
+  } catch (err) {
+    console.error('failed to insert image row', err);
+    return NextResponse.json({ error: 'failed to create image row' }, { status: 500 });
+  }
 
   if (!row) {
     return NextResponse.json({ error: 'failed to create image row' }, { status: 500 });
