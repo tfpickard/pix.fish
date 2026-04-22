@@ -30,8 +30,16 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'search failed' }, { status: 502 });
   }
 
-  const matches = await searchByVector(vec, { limit, kind: 'caption' });
-  const rows = await getImagesByIdsOrdered(matches.map((m) => m.imageId));
-  const hydrated = await hydrateImages(rows);
-  return NextResponse.json({ q, images: hydrated });
+  try {
+    const matches = await searchByVector(vec, { limit, kind: 'caption' });
+    const rows = await getImagesByIdsOrdered(matches.map((m) => m.imageId));
+    const hydrated = await hydrateImages(rows);
+    return NextResponse.json({ q, images: hydrated });
+  } catch (err) {
+    // Covers missing embeddings table, pgvector extension not installed,
+    // or any downstream DB failure. Match the JSON error shape from the
+    // embedder branches above instead of throwing a raw 500.
+    console.error('search query failed', err);
+    return NextResponse.json({ error: 'search unavailable' }, { status: 503 });
+  }
 }

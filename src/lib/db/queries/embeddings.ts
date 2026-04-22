@@ -4,6 +4,22 @@ import { embeddings } from '../schema';
 
 export type EmbeddingKind = 'image' | 'caption' | 'combined';
 
+// Must match the `dimensions` argument on the embeddings.vec column in
+// schema.ts. A mismatch at this boundary is a config bug -- fail fast with a
+// clear error rather than letting Postgres throw a less obvious pgvector one.
+const EMBED_DIMENSIONS = 1536;
+
+function assertVector(vec: number[]): void {
+  if (!Array.isArray(vec) || vec.length !== EMBED_DIMENSIONS) {
+    throw new Error(
+      `embedding vector has ${Array.isArray(vec) ? vec.length : typeof vec} dims; expected ${EMBED_DIMENSIONS}.`
+    );
+  }
+  if (!vec.every((n) => Number.isFinite(n))) {
+    throw new Error('embedding vector contains non-finite numbers.');
+  }
+}
+
 export async function upsertEmbedding(params: {
   imageId: number;
   kind: EmbeddingKind;
@@ -11,6 +27,7 @@ export async function upsertEmbedding(params: {
   provider: string;
   model: string;
 }): Promise<void> {
+  assertVector(params.vec);
   await db
     .insert(embeddings)
     .values({
@@ -39,6 +56,7 @@ export async function searchByVector(
   vec: number[],
   opts: { limit?: number; kind?: EmbeddingKind } = {}
 ): Promise<VectorMatch[]> {
+  assertVector(vec);
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 24), 1), 100);
   const kind = opts.kind ?? 'caption';
   const vecLiteral = `[${vec.join(',')}]`;

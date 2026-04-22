@@ -4,6 +4,10 @@ import { parseTagsJson, parseVariantsJson } from './types';
 
 const MODEL = 'gpt-4o';
 const EMBED_MODEL = 'text-embedding-3-small';
+// text-embedding-3-small is a fixed 1536-dim model. If we ever route to
+// another model this number has to change in lockstep with the embeddings.vec
+// column dimensions in schema.ts.
+const EMBED_DIMENSIONS = 1536;
 
 let client: OpenAI | null = null;
 function getClient(): OpenAI {
@@ -64,6 +68,14 @@ export const OpenAIProvider: AIProvider = {
     });
     const vec = res.data[0]?.embedding;
     if (!vec) throw new Error('OpenAI embeddings response had no vector.');
+    if (vec.length !== EMBED_DIMENSIONS) {
+      throw new Error(
+        `OpenAI embeddings returned ${vec.length} dims; expected ${EMBED_DIMENSIONS} for ${EMBED_MODEL}.`
+      );
+    }
+    if (!vec.every((n) => Number.isFinite(n))) {
+      throw new Error('OpenAI embeddings response contained non-finite numbers.');
+    }
     return vec;
   }
 };

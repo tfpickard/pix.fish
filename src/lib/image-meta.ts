@@ -12,6 +12,13 @@ export type ExtractedExif = Record<string, unknown>;
 
 // Whitelist of EXIF fields we care about. exifr by default returns everything
 // including thumbnail binary data -- too big for jsonb and mostly noise.
+//
+// GPS fields (GPSLatitude/GPSLongitude/GPSAltitude) are deliberately excluded.
+// `images.exif` is returned by the public GET /api/images list and rendered on
+// /[slug] -- persisting GPS means publishing GPS. The owner already knows
+// where they took their own photos; the public does not need that. Add these
+// back (with a separate private column or server-side redaction) only if GPS
+// sharing becomes an explicit feature.
 const EXIF_KEYS = [
   'Make',
   'Model',
@@ -25,9 +32,6 @@ const EXIF_KEYS = [
   'CreateDate',
   'ModifyDate',
   'Orientation',
-  'GPSLatitude',
-  'GPSLongitude',
-  'GPSAltitude',
   'Software',
   'Artist',
   'Copyright'
