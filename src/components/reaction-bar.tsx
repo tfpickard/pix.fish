@@ -10,12 +10,17 @@ const FP_KEY = 'pix_fp';
 
 function getFingerprint(): string {
   if (typeof window === 'undefined') return '';
-  let fp = localStorage.getItem(FP_KEY);
-  if (!fp) {
-    fp = crypto.randomUUID();
-    localStorage.setItem(FP_KEY, fp);
+  try {
+    let fp = localStorage.getItem(FP_KEY);
+    if (!fp) {
+      fp = crypto.randomUUID();
+      localStorage.setItem(FP_KEY, fp);
+    }
+    return fp;
+  } catch {
+    // localStorage blocked (Safari private mode, etc.) -- use a session-only UUID
+    return crypto.randomUUID();
   }
-  return fp;
 }
 
 function getStoredReaction(slug: string): Kind {

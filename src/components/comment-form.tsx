@@ -5,6 +5,7 @@ import { useState, useTransition } from 'react';
 export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () => void }) {
   const [body, setBody] = useState('');
   const [authorName, setAuthorName] = useState('');
+  const [website, setWebsite] = useState(''); // honeypot -- bots fill this via onChange
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [isPending, startTransition] = useTransition();
@@ -21,7 +22,7 @@ export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () =>
           body: JSON.stringify({
             body: body.trim(),
             authorName: authorName.trim() || null,
-            website: '' // honeypot -- always empty from legit form
+            website
           })
         });
         if (res.status === 429) {
@@ -48,10 +49,12 @@ export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () =>
 
   return (
     <form onSubmit={submit} className="space-y-3">
-      {/* Honeypot -- hidden from humans, bots fill it */}
+      {/* Honeypot -- off-screen, invisible to humans; bots fill it via onChange */}
       <input
         name="website"
         type="text"
+        value={website}
+        onChange={(e) => setWebsite(e.target.value)}
         tabIndex={-1}
         aria-hidden="true"
         autoComplete="off"

@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { auth, isOwner } from '@/lib/auth';
 import { listTaxonomy, addTaxonomyTag } from '@/lib/db/queries/taxonomy';
 
+// GET is intentionally public -- the taxonomy is the allowed tag vocabulary, not sensitive data.
+// It's used by the admin UI (which is itself gated) but may also be used by upload scripts.
 export async function GET(_req: Request) {
   const rows = await listTaxonomy();
   return NextResponse.json(rows);

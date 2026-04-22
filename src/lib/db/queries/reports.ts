@@ -7,5 +7,6 @@ export async function addReport(
   reason: string | null,
   ipHash: string
 ): Promise<void> {
-  await db.insert(reports).values({ targetType, targetId, reason, ipHash });
+  const fk = targetType === 'image' ? { imageId: targetId } : { commentId: targetId };
+  await db.insert(reports).values({ targetType, ...fk, reason, ipHash });
 }

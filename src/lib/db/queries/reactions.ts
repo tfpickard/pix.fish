@@ -16,6 +16,7 @@ export async function countReactions(imageId: number): Promise<ReactionCounts> {
 }
 
 // Toggle reaction: same kind = delete (un-react); different kind = switch; none = insert.
+// Wrapped in a transaction to prevent concurrent insert races on the unique index.
 // Returns the resulting counts and whether the reaction is now active.
 export async function toggleReaction(
   imageId: number,
@@ -23,29 +24,30 @@ export async function toggleReaction(
   ipHash: string,
   fingerprint: string | null
 ): Promise<{ counts: ReactionCounts; active: boolean }> {
-  const existing = await db
-    .select()
-    .from(reactions)
-    .where(and(eq(reactions.imageId, imageId), eq(reactions.ipHash, ipHash)))
-    .limit(1);
+  let active = true;
 
-  if (existing.length > 0) {
-    if (existing[0].kind === kind) {
-      // Same kind -- remove the reaction
-      await db.delete(reactions).where(eq(reactions.id, existing[0].id));
-      const counts = await countReactions(imageId);
-      return { counts, active: false };
+  await db.transaction(async (tx) => {
+    const existing = await tx
+      .select()
+      .from(reactions)
+      .where(and(eq(reactions.imageId, imageId), eq(reactions.ipHash, ipHash)))
+      .limit(1);
+
+    if (existing.length > 0) {
+      if (existing[0].kind === kind) {
+        await tx.delete(reactions).where(eq(reactions.id, existing[0].id));
+        active = false;
+      } else {
+        await tx
+          .update(reactions)
+          .set({ kind, fingerprint })
+          .where(eq(reactions.id, existing[0].id));
+      }
     } else {
-      // Different kind -- switch
-      await db
-        .update(reactions)
-        .set({ kind, fingerprint })
-        .where(eq(reactions.id, existing[0].id));
+      await tx.insert(reactions).values({ imageId, kind, ipHash, fingerprint });
     }
-  } else {
-    await db.insert(reactions).values({ imageId, kind, ipHash, fingerprint });
-  }
+  });
 
   const counts = await countReactions(imageId);
-  return { counts, active: true };
+  return { counts, active };
 }

@@ -13,18 +13,32 @@ export function ReportButton({
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [done, setDone] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const [isPending, startTransition] = useTransition();
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    setErrorMsg('');
     startTransition(async () => {
-      await fetch('/api/reports', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetType, targetId, reason: reason.trim() || null })
-      });
-      setDone(true);
-      setOpen(false);
+      try {
+        const res = await fetch('/api/reports', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetType, targetId, reason: reason.trim() || null })
+        });
+        if (res.status === 429) {
+          setErrorMsg('too many reports -- try again later');
+          return;
+        }
+        if (!res.ok) {
+          setErrorMsg('could not submit report -- please try again');
+          return;
+        }
+        setDone(true);
+        setOpen(false);
+      } catch {
+        setErrorMsg('network error -- please try again');
+      }
     });
   }
 
@@ -66,6 +80,9 @@ export function ReportButton({
               maxLength={500}
               className="w-full resize-none rounded border border-ink-800 bg-ink-950/60 px-3 py-2 font-mono text-xs text-ink-100 placeholder:text-ink-500 focus:border-primary/40 focus:outline-none"
             />
+            {errorMsg && (
+              <p className="font-mono text-xs text-destructive">{errorMsg}</p>
+            )}
             <div className="flex items-center gap-4">
               <button
                 type="submit"

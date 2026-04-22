@@ -10,6 +10,7 @@ export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
   const id = parseInt(ctx.params.id, 10);
   if (isNaN(id)) return NextResponse.json({ error: 'invalid id' }, { status: 400 });
 
-  await revokeApiKey(id, ownerId);
+  const deleted = await revokeApiKey(id, ownerId);
+  if (!deleted) return NextResponse.json({ error: 'not found' }, { status: 404 });
   return new NextResponse(null, { status: 204 });
 }

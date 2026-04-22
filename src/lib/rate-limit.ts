@@ -7,6 +7,8 @@
 // concurrent requests, so this provides meaningful limiting in practice.
 
 const windows = new Map<string, number[]>();
+// Prevents unbounded growth if hit by many unique IPs before a cold start recycles the instance.
+const MAX_KEYS = 50_000;
 
 export function rateLimit(key: string, maxHits: number, windowMs: number): boolean {
   const now = Date.now();
@@ -14,5 +16,7 @@ export function rateLimit(key: string, maxHits: number, windowMs: number): boole
   if (hits.length >= maxHits) return false;
   hits.push(now);
   windows.set(key, hits);
+  // Evict the oldest-inserted entry when at cap (Map preserves insertion order).
+  if (windows.size > MAX_KEYS) windows.delete(windows.keys().next().value as string);
   return true;
 }

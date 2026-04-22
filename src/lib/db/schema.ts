@@ -200,10 +200,13 @@ export const comments = pgTable(
 );
 
 // Visitor-submitted reports for offensive content.
+// Separate FK columns (rather than polymorphic targetId) so the DB can enforce
+// referential integrity and cascade deletes when an image or comment is removed.
 export const reports = pgTable('reports', {
   id: serial('id').primaryKey(),
-  targetType: text('target_type').notNull(), // 'image' | 'comment'
-  targetId: integer('target_id').notNull(),
+  targetType: text('target_type').notNull(), // 'image' | 'comment' -- for admin display
+  imageId: integer('image_id').references(() => images.id, { onDelete: 'cascade' }),
+  commentId: integer('comment_id').references(() => comments.id, { onDelete: 'cascade' }),
   reason: text('reason'),
   ipHash: text('ip_hash').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()

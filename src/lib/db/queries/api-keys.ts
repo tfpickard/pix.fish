@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../client';
 import { apiKeys } from '../schema';
 import type { ApiKey } from '../schema';
@@ -26,7 +26,12 @@ export async function createApiKey(
   return row;
 }
 
-export async function revokeApiKey(id: number, ownerId: string): Promise<void> {
-  await db.delete(apiKeys).where(eq(apiKeys.id, id));
-  void ownerId; // auth check done in route handler; ownerId kept for future audit log
+// Defense in depth: require both id AND ownerId to match even though the route handler
+// already gates on isOwner -- prevents accidental cross-owner deletion if gating ever lapses.
+export async function revokeApiKey(id: number, ownerId: string): Promise<boolean> {
+  const result = await db
+    .delete(apiKeys)
+    .where(and(eq(apiKeys.id, id), eq(apiKeys.ownerId, ownerId)))
+    .returning({ id: apiKeys.id });
+  return result.length > 0;
 }
