@@ -152,10 +152,68 @@ export const embeddings = pgTable(
 );
 
 // ----------------------------------------------------------------------------
-// Phase 2+ tables (not created yet; see SPEC.md "Data model" section)
-//   reactions        -- anonymous up/down with ip_hash + fingerprint
-//   comments         -- anonymous comments with moderation status
-//   reports          -- user reports queue
+// Phase 3 tables
+// ----------------------------------------------------------------------------
+
+// Anonymous thumbs up/down. Unique per (image_id, ip_hash) -- one reaction
+// per IP per image. `kind` can be swapped by re-posting; DELETE by re-posting
+// the same kind (toggle). fingerprint is a client-generated UUID persisted in
+// localStorage as a secondary de-dupe signal.
+export const reactions = pgTable(
+  'reactions',
+  {
+    id: serial('id').primaryKey(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(), // 'up' | 'down'
+    ipHash: text('ip_hash').notNull(),
+    fingerprint: text('fingerprint'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    uniqPerIp: uniqueIndex('reactions_image_ip_uniq').on(t.imageId, t.ipHash),
+    imageIdx: index('reactions_image_id_idx').on(t.imageId)
+  })
+);
+
+// Anonymous comments. status flows: pending -> approved | rejected.
+// Approved comments are publicly visible; pending ones are hidden until
+// the owner approves from the moderation queue.
+export const comments = pgTable(
+  'comments',
+  {
+    id: serial('id').primaryKey(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    authorName: text('author_name'),
+    body: text('body').notNull(),
+    status: text('status').notNull().default('pending'), // 'pending' | 'approved' | 'rejected'
+    ipHash: text('ip_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    imageIdx: index('comments_image_id_idx').on(t.imageId),
+    statusIdx: index('comments_status_idx').on(t.status)
+  })
+);
+
+// Visitor-submitted reports for offensive content.
+// Separate FK columns (rather than polymorphic targetId) so the DB can enforce
+// referential integrity and cascade deletes when an image or comment is removed.
+export const reports = pgTable('reports', {
+  id: serial('id').primaryKey(),
+  targetType: text('target_type').notNull(), // 'image' | 'comment' -- for admin display
+  imageId: integer('image_id').references(() => images.id, { onDelete: 'cascade' }),
+  commentId: integer('comment_id').references(() => comments.id, { onDelete: 'cascade' }),
+  reason: text('reason'),
+  ipHash: text('ip_hash').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// ----------------------------------------------------------------------------
+// Phase 4+ tables (not created yet; see SPEC.md "Data model" section)
 //   webhooks         -- outbound webhook config
 //   jobs             -- async enrichment queue
 //   ai_config        -- runtime provider routing
@@ -167,7 +225,9 @@ export const imagesRelations = relations(images, ({ many }) => ({
   captions: many(captions),
   descriptions: many(descriptions),
   tags: many(tags),
-  embeddings: many(embeddings)
+  embeddings: many(embeddings),
+  reactions: many(reactions),
+  comments: many(comments)
 }));
 
 export const embeddingsRelations = relations(embeddings, ({ one }) => ({
@@ -186,6 +246,14 @@ export const tagsRelations = relations(tags, ({ one }) => ({
   image: one(images, { fields: [tags.imageId], references: [images.id] })
 }));
 
+export const reactionsRelations = relations(reactions, ({ one }) => ({
+  image: one(images, { fields: [reactions.imageId], references: [images.id] })
+}));
+
+export const commentsRelations = relations(comments, ({ one }) => ({
+  image: one(images, { fields: [comments.imageId], references: [images.id] })
+}));
+
 // Convenience type exports
 export type Image = typeof images.$inferSelect;
 export type NewImage = typeof images.$inferInsert;
@@ -196,3 +264,7 @@ export type Prompt = typeof prompts.$inferSelect;
 export type TaxonomyEntry = typeof tagTaxonomy.$inferSelect;
 export type Embedding = typeof embeddings.$inferSelect;
 export type NewEmbedding = typeof embeddings.$inferInsert;
+export type Reaction = typeof reactions.$inferSelect;
+export type Comment = typeof comments.$inferSelect;
+export type Report = typeof reports.$inferSelect;
+export type ApiKey = typeof apiKeys.$inferSelect;

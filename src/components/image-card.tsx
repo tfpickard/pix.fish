@@ -11,7 +11,7 @@ export function ImageCard({ image }: { image: ImageWithRelations }) {
   return (
     <Link
       href={`/${image.slug}`}
-      className="group relative block overflow-hidden rounded-md border border-ink-800/80 bg-ink-900/30 transition hover:border-ink-700"
+      className="neon-card group relative block overflow-hidden rounded-md border border-ink-800/80 bg-ink-900/30"
     >
       <div className="relative w-full" style={{ aspectRatio: aspect }}>
         {image.width && image.height ? (
@@ -20,14 +20,14 @@ export function ImageCard({ image }: { image: ImageWithRelations }) {
             alt={caption || image.slug}
             width={image.width}
             height={image.height}
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
             sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
           />
         ) : (
           <img
             src={image.blobUrl}
             alt={caption || image.slug}
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
           />
         )}
       </div>

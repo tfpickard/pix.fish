@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { fontDisplay, fontMono, fontSans } from '@/lib/fonts';
 import { NavBar } from '@/components/nav-bar';
+import { Providers } from '@/components/providers';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -13,11 +14,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${fontDisplay.variable} ${fontMono.variable} ${fontSans.variable}`}
     >
       <body className="min-h-screen font-sans antialiased">
-        <NavBar />
-        <main className="mx-auto w-full max-w-6xl px-4 pb-24">{children}</main>
+        <Providers>
+          <NavBar />
+          <main className="mx-auto w-full max-w-6xl px-4 pb-24">{children}</main>
+        </Providers>
       </body>
     </html>
   );

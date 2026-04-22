@@ -2,19 +2,81 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* ============================================================
+   DARK MODE -- "after-hours arcade"
+   Deep violet ground, hot-pink + cyan accents, warm cream text.
+   Applied when no theme class is set OR when class="dark".
+   ============================================================ */
+:root,
+.dark {
   color-scheme: dark;
-  --background: 12 10 9;
-  --foreground: 231 229 228;
-  --muted: 41 37 36;
-  --muted-foreground: 168 162 158;
-  --border: 41 37 36;
-  --accent: 68 64 60;
-  --card: 28 25 23;
-  --card-foreground: 231 229 228;
-  --ring: 120 113 108;
+
+  /* Semantic tokens */
+  --background:    11   6  24;   /* #0b0618 deep ink-violet */
+  --foreground:   247 232 217;   /* #f7e8d9 warm cream */
+  --muted:         42  31  74;   /* #2a1f4a */
+  --muted-foreground: 168 140 196;
+  --border:        42  31  74;
+  --accent:       200 162 255;   /* #c8a2ff violet glow */
+  --card:          26  15  46;   /* #1a0f2e surface lift */
+  --card-foreground: 247 232 217;
+  --ring:         255  77 157;   /* #ff4d9d hot magenta */
+  --primary:      255  77 157;   /* #ff4d9d */
+  --secondary:     74 220 255;   /* #4adcff cyan */
+  --destructive:  255  79 110;
+
+  /* ink-* ramp -- deep violet blacks to warm cream */
+  --ink-50:  253 245 255;
+  --ink-100: 247 232 217;
+  --ink-200: 224 208 248;
+  --ink-300: 200 162 255;
+  --ink-400: 168 140 196;
+  --ink-500: 122  92 140;
+  --ink-700:  61  44 106;
+  --ink-800:  42  31  74;
+  --ink-900:  26  15  46;
+  --ink-950:  11   6  24;
 }
 
+/* ============================================================
+   LIGHT MODE -- "sunset gallery"
+   Warm cream-pink ground, deep violet text, muted magenta.
+   Applied when class="light" is set on <html>.
+   ============================================================ */
+.light {
+  color-scheme: light;
+
+  /* Semantic tokens */
+  --background:   253 236 239;   /* #fdecef warm cream-pink */
+  --foreground:    45  10  62;   /* #2d0a3e near-black violet */
+  --muted:        240 218 228;
+  --muted-foreground: 122  76 156;
+  --border:       215 180 210;
+  --accent:       122  76 255;   /* #7a4cff violet */
+  --card:         255 248 252;
+  --card-foreground: 45  10  62;
+  --ring:         209  38 122;   /* #d1267a deeper magenta */
+  --primary:      209  38 122;
+  --secondary:     13 143 179;   /* #0d8fb3 deep teal */
+  --destructive:  180   0  60;
+
+  /* ink-* ramp -- FLIPPED so existing components stay legible.
+     ink-950 becomes the background hue, ink-100 becomes near-black text. */
+  --ink-50:    45  10  62;
+  --ink-100:   60  20  80;
+  --ink-200:   85  45 115;
+  --ink-300:  122  76 156;
+  --ink-400:  155 110 185;
+  --ink-500:  200 170 215;
+  --ink-700:  230 205 235;
+  --ink-800:  240 218 228;
+  --ink-900:  248 235 242;
+  --ink-950:  253 236 239;
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
 html,
 body {
   background-color: rgb(var(--background));
@@ -26,7 +88,7 @@ body {
   font-feature-settings: 'ss01', 'cv11';
 }
 
-/* Subtle film grain overlay. Non-blocking, pointer-events:none. */
+/* Film grain overlay -- lighter on warm light backgrounds */
 body::before {
   content: '';
   position: fixed;
@@ -39,12 +101,43 @@ body::before {
   mix-blend-mode: overlay;
 }
 
+html.light body::before {
+  opacity: 0.015;
+}
+
+/* ============================================================
+   Typography
+   ============================================================ */
 .prose-caption {
   font-family: var(--font-display), ui-serif, Georgia, serif;
   font-feature-settings: 'ss01';
   letter-spacing: -0.01em;
 }
 
+/* Gradient text -- used on the home haiku block.
+   Suppressed for users who prefer reduced motion. */
+.gradient-heading {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--foreground)) 0%,
+    rgb(var(--accent)) 60%,
+    rgb(var(--primary)) 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gradient-heading {
+    background: none;
+    -webkit-text-fill-color: rgb(var(--foreground));
+  }
+}
+
+/* ============================================================
+   Chips (tags)
+   ============================================================ */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -56,10 +149,83 @@ body::before {
   line-height: 1.1rem;
   color: rgb(var(--muted-foreground));
   text-transform: lowercase;
+  transition: border-color 150ms ease, color 150ms ease;
+}
+
+.chip:hover {
+  border-color: rgb(var(--primary) / 0.5);
+  color: rgb(var(--foreground));
 }
 
 .chip-active {
-  background: rgb(var(--accent));
-  color: rgb(var(--foreground));
-  border-color: rgb(var(--muted-foreground));
+  background: rgb(var(--primary) / 0.15);
+  color: rgb(var(--primary));
+  border-color: rgb(var(--primary) / 0.5);
+}
+
+/* ============================================================
+   Neon card hover -- applied to image cards
+   ============================================================ */
+.neon-card {
+  transition: border-color 220ms ease, box-shadow 220ms ease;
+}
+
+.neon-card:hover {
+  border-color: rgb(var(--primary) / 0.45);
+  box-shadow:
+    0 0 18px rgb(var(--primary) / 0.1),
+    0 0 48px rgb(var(--accent) / 0.06);
+}
+
+/* ============================================================
+   Perspective grid floor -- home page decorative element.
+   Synthwave horizon effect. Hidden in light mode.
+   ============================================================ */
+.grid-floor {
+  position: relative;
+  height: 100px;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.grid-floor::before {
+  content: '';
+  position: absolute;
+  inset: 0 -40px;
+  background-image:
+    linear-gradient(rgb(var(--primary) / 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--secondary) / 0.10) 1px, transparent 1px);
+  background-size: 60px 40px;
+  transform: perspective(180px) rotateX(55deg) translateY(-20px) scaleX(1.4);
+  transform-origin: 50% 0%;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 25%,
+    black 60%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 25%,
+    black 60%,
+    transparent 100%
+  );
+}
+
+.grid-floor::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 20%,
+    rgb(var(--background)) 85%
+  );
+}
+
+html.light .grid-floor {
+  display: none;
 }

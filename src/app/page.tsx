@@ -50,6 +50,7 @@ export default async function HomePage({ searchParams }: PageProps) {
         <TagCloud tags={cloud} activeTags={activeTags} />
       </section>
       <ImageGrid images={images} />
+      <div className="grid-floor" aria-hidden="true" />
     </div>
   );
 }

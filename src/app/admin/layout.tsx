@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 
 const NAV = [
   { href: '/admin/upload', label: 'upload' },
+  { href: '/admin/comments', label: 'comments' },
   { href: '/admin/prompts', label: 'prompts' },
   { href: '/admin/taxonomy', label: 'taxonomy' },
   { href: '/admin/keys', label: 'keys' }
