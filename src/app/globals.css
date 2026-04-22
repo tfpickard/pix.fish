@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --background: 12 10 9;
+  --foreground: 231 229 228;
+  --muted: 41 37 36;
+  --muted-foreground: 168 162 158;
+  --border: 41 37 36;
+  --accent: 68 64 60;
+  --card: 28 25 23;
+  --card-foreground: 231 229 228;
+  --ring: 120 113 108;
+}
+
+html,
+body {
+  background-color: rgb(var(--background));
+  color: rgb(var(--foreground));
+  min-height: 100%;
+}
+
+body {
+  font-feature-settings: 'ss01', 'cv11';
+}
+
+/* Subtle film grain overlay. Non-blocking, pointer-events:none. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  background-image: url('/grain.svg');
+  background-size: 220px 220px;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+}
+
+.prose-caption {
+  font-family: var(--font-display), ui-serif, Georgia, serif;
+  font-feature-settings: 'ss01';
+  letter-spacing: -0.01em;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid rgb(var(--border));
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.7rem;
+  line-height: 1.1rem;
+  color: rgb(var(--muted-foreground));
+  text-transform: lowercase;
+}
+
+.chip-active {
+  background: rgb(var(--accent));
+  color: rgb(var(--foreground));
+  border-color: rgb(var(--muted-foreground));
+}

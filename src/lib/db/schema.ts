@@ -1,0 +1,163 @@
+import { relations } from 'drizzle-orm';
+import {
+  boolean,
+  doublePrecision,
+  integer,
+  jsonb,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  uniqueIndex,
+  index
+} from 'drizzle-orm/pg-core';
+
+// ----------------------------------------------------------------------------
+// Phase 1 tables
+// ----------------------------------------------------------------------------
+
+export const images = pgTable(
+  'images',
+  {
+    id: serial('id').primaryKey(),
+    slug: text('slug').notNull().unique(),
+    slugHistory: text('slug_history').array().notNull().default([]),
+    blobUrl: text('blob_url').notNull(),
+    blobKey: text('blob_key').notNull(),
+    mime: text('mime'),
+    width: integer('width'),
+    height: integer('height'),
+    takenAt: timestamp('taken_at', { withTimezone: true }),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
+    ownerId: text('owner_id').notNull(),
+    exif: jsonb('exif'),
+    palette: text('palette').array(),
+    manualCaption: text('manual_caption')
+  },
+  (t) => ({
+    uploadedAtIdx: index('images_uploaded_at_idx').on(t.uploadedAt),
+    slugHistoryIdx: index('images_slug_history_idx').using('gin', t.slugHistory)
+  })
+);
+
+export const captions = pgTable(
+  'captions',
+  {
+    id: serial('id').primaryKey(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    variant: integer('variant').notNull(),
+    text: text('text').notNull(),
+    provider: text('provider'),
+    model: text('model'),
+    isSlugSource: boolean('is_slug_source').notNull().default(false),
+    locked: boolean('locked').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    imageIdx: index('captions_image_id_idx').on(t.imageId)
+  })
+);
+
+export const descriptions = pgTable(
+  'descriptions',
+  {
+    id: serial('id').primaryKey(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    variant: integer('variant').notNull(),
+    text: text('text').notNull(),
+    provider: text('provider'),
+    model: text('model'),
+    locked: boolean('locked').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    imageIdx: index('descriptions_image_id_idx').on(t.imageId)
+  })
+);
+
+export const tags = pgTable(
+  'tags',
+  {
+    id: serial('id').primaryKey(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    tag: text('tag').notNull(),
+    confidence: doublePrecision('confidence'),
+    source: text('source').notNull(), // 'taxonomy' | 'freeform'
+    provider: text('provider'),
+    model: text('model')
+  },
+  (t) => ({
+    uniqPerImage: uniqueIndex('tags_image_tag_uniq').on(t.imageId, t.tag),
+    tagIdx: index('tags_tag_idx').on(t.tag)
+  })
+);
+
+export const tagTaxonomy = pgTable('tag_taxonomy', {
+  id: serial('id').primaryKey(),
+  tag: text('tag').notNull().unique(),
+  category: text('category'),
+  sortOrder: integer('sort_order').notNull().default(0)
+});
+
+export const prompts = pgTable('prompts', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull().unique(), // 'caption' | 'description' | 'tags'
+  template: text('template').notNull(),
+  version: integer('version').notNull().default(1),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+export const apiKeys = pgTable('api_keys', {
+  id: serial('id').primaryKey(),
+  ownerId: text('owner_id').notNull(),
+  label: text('label'),
+  keyHash: text('key_hash').notNull().unique(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// ----------------------------------------------------------------------------
+// Phase 2+ tables (not created yet; see SPEC.md "Data model" section)
+//   embeddings       -- pgvector embeddings, kind in {image,caption,combined}
+//   reactions        -- anonymous up/down with ip_hash + fingerprint
+//   comments         -- anonymous comments with moderation status
+//   reports          -- user reports queue
+//   webhooks         -- outbound webhook config
+//   jobs             -- async enrichment queue
+//   ai_config        -- runtime provider routing
+//   saved_prompts    -- hybrid prompt generator output
+// ----------------------------------------------------------------------------
+
+// Relations
+export const imagesRelations = relations(images, ({ many }) => ({
+  captions: many(captions),
+  descriptions: many(descriptions),
+  tags: many(tags)
+}));
+
+export const captionsRelations = relations(captions, ({ one }) => ({
+  image: one(images, { fields: [captions.imageId], references: [images.id] })
+}));
+
+export const descriptionsRelations = relations(descriptions, ({ one }) => ({
+  image: one(images, { fields: [descriptions.imageId], references: [images.id] })
+}));
+
+export const tagsRelations = relations(tags, ({ one }) => ({
+  image: one(images, { fields: [tags.imageId], references: [images.id] })
+}));
+
+// Convenience type exports
+export type Image = typeof images.$inferSelect;
+export type NewImage = typeof images.$inferInsert;
+export type Caption = typeof captions.$inferSelect;
+export type Description = typeof descriptions.$inferSelect;
+export type Tag = typeof tags.$inferSelect;
+export type Prompt = typeof prompts.$inferSelect;
+export type TaxonomyEntry = typeof tagTaxonomy.$inferSelect;
