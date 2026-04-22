@@ -140,7 +140,7 @@ middleware.ts             # owner gate for /admin/* and write APIs
 
 ## Judgment calls you should know about
 
-See the plan in `/Users/tom/.claude/plans/i-m-building-pix-fish-buzzing-parasol.md` for full detail. Short list:
+The full Phase 1 plan lives in [`SPEC.md`](./SPEC.md); the short list of decisions worth knowing:
 
 1. Combined JSON per field (one call returns all 3 variants) instead of 3 separate calls per field. Cheaper, faster, but `{{variant_number}}` placeholder is currently unused.
 2. Manual caption is stored as a variant-4 caption with `locked=true`, not as a replacement of one of the AI variants.

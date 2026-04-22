@@ -17,12 +17,18 @@ const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gi
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const limit = Number(url.searchParams.get('limit') ?? '24');
-  const offset = Number(url.searchParams.get('offset') ?? '0');
+  const limit = parseIntParam(url.searchParams.get('limit'), 24);
+  const offset = parseIntParam(url.searchParams.get('offset'), 0);
   const tagsFilter = url.searchParams.getAll('tag').filter(Boolean);
 
   const rows = await listImages({ limit, offset, tags: tagsFilter });
   return NextResponse.json({ images: rows });
+}
+
+function parseIntParam(raw: string | null, fallback: number): number {
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
 export async function POST(req: Request) {
@@ -33,7 +39,11 @@ export async function POST(req: Request) {
 
   const form = await req.formData();
   const file = form.get('file');
-  const manualCaption = (form.get('manual_caption') as string | null)?.trim() || undefined;
+  const rawManualCaption = form.get('manual_caption');
+  const manualCaption =
+    typeof rawManualCaption === 'string' && rawManualCaption.trim()
+      ? rawManualCaption.trim()
+      : undefined;
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'file is required' }, { status: 400 });
@@ -78,72 +88,77 @@ export async function POST(req: Request) {
   try {
     enrichment = await enrichImage(buffer, mime, manualCaption);
   } catch (err) {
-    console.error('enrichment failed', err);
+    // Log full detail server-side; return a generic message to avoid leaking
+    // vendor SDK internals (request ids, stack frames, partial prompts).
+    console.error('enrichment failed for image', row.id, err);
     return NextResponse.json(
-      { error: 'enrichment failed', imageId: row.id, message: String(err) },
+      { error: 'enrichment failed', imageId: row.id },
       { status: 502 }
     );
   }
 
-  // Persist captions: 3 AI variants, plus a manual variant-4 if provided.
-  const capRows = enrichment.captions.map((c, i) => ({
-    imageId: row.id,
-    variant: i + 1,
-    text: c.text,
-    provider: c.provider,
-    model: c.model,
-    isSlugSource: i === 0 && !manualCaption,
-    locked: false
-  }));
-  if (manualCaption) {
-    capRows.push({
+  // Persist captions + descriptions + tags + slug in a single transaction so
+  // a mid-pipeline failure cannot leave the image half-enriched.
+  const slugSourceText = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
+  const slugBase = slugify(slugSourceText) || placeholderSlug;
+  const finalSlug = await uniquifySlug(slugBase, row.id);
+
+  await db.transaction(async (tx) => {
+    const capRows = enrichment.captions.map((c, i) => ({
       imageId: row.id,
-      variant: 4,
-      text: manualCaption,
-      provider: 'manual',
-      model: 'manual',
-      isSlugSource: true,
-      locked: true
-    });
-  }
-  if (capRows.length > 0) await db.insert(captions).values(capRows);
-
-  if (enrichment.descriptions.length > 0) {
-    await db.insert(descriptions).values(
-      enrichment.descriptions.map((d, i) => ({
+      variant: i + 1,
+      text: c.text,
+      provider: c.provider,
+      model: c.model,
+      isSlugSource: i === 0 && !manualCaption,
+      locked: false
+    }));
+    if (manualCaption) {
+      capRows.push({
         imageId: row.id,
-        variant: i + 1,
-        text: d.text,
-        provider: d.provider,
-        model: d.model,
-        locked: false
-      }))
-    );
-  }
+        variant: 4,
+        text: manualCaption,
+        provider: 'manual',
+        model: 'manual',
+        isSlugSource: true,
+        locked: true
+      });
+    }
+    if (capRows.length > 0) await tx.insert(captions).values(capRows);
 
-  if (enrichment.tags.length > 0) {
-    await db
-      .insert(tags)
-      .values(
-        enrichment.tags.map((t) => ({
+    if (enrichment.descriptions.length > 0) {
+      await tx.insert(descriptions).values(
+        enrichment.descriptions.map((d, i) => ({
           imageId: row.id,
-          tag: t.tag,
-          source: t.source,
-          confidence: t.confidence ?? null,
-          provider: t.provider,
-          model: t.model
+          variant: i + 1,
+          text: d.text,
+          provider: d.provider,
+          model: d.model,
+          locked: false
         }))
-      )
-      .onConflictDoNothing();
-  }
+      );
+    }
 
-  // Generate slug from whichever caption is the slug source.
-  const slugSource = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
-  const base = slugify(slugSource) || placeholderSlug;
-  const finalSlug = await uniquifySlug(base, row.id);
-  if (finalSlug !== placeholderSlug) {
-    await db.update(images).set({ slug: finalSlug }).where(eq(images.id, row.id));
-  }
+    if (enrichment.tags.length > 0) {
+      await tx
+        .insert(tags)
+        .values(
+          enrichment.tags.map((t) => ({
+            imageId: row.id,
+            tag: t.tag,
+            source: t.source,
+            confidence: t.confidence ?? null,
+            provider: t.provider,
+            model: t.model
+          }))
+        )
+        .onConflictDoNothing();
+    }
+
+    if (finalSlug !== placeholderSlug) {
+      await tx.update(images).set({ slug: finalSlug }).where(eq(images.id, row.id));
+    }
+  });
 
   const full = await getImageBySlug(finalSlug);
   return NextResponse.json({ image: full }, { status: 201 });

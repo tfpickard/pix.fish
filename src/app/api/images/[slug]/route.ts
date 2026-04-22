@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { auth, isOwner } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
@@ -16,7 +16,8 @@ export async function GET(req: Request, ctx: { params: { slug: string } }) {
 
   const redirectTo = await lookupRedirect(slug);
   if (redirectTo) {
-    return NextResponse.json({ redirect: redirectTo }, { status: 301 });
+    // Real HTTP 301 so clients that follow redirects land on the canonical URL.
+    return NextResponse.redirect(new URL(`/api/images/${redirectTo}`, req.url), 301);
   }
   return NextResponse.json({ error: 'not found' }, { status: 404 });
 }
@@ -41,13 +42,19 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
 
   const body = (await req.json()) as PatchBody;
 
-  // Captions.
+  // Captions. Track which caption the request is promoting to slug source so
+  // we pick the *requested* one rather than re-picking the first-by-variant,
+  // which would silently fail the common single-toggle request shape.
+  let requestedSlugSourceId: number | null = null;
   if (body.captions?.length) {
     for (const upd of body.captions) {
       const fields: Record<string, unknown> = {};
       if (typeof upd.text === 'string') fields.text = upd.text;
       if (typeof upd.locked === 'boolean') fields.locked = upd.locked;
-      if (typeof upd.is_slug_source === 'boolean') fields.isSlugSource = upd.is_slug_source;
+      if (typeof upd.is_slug_source === 'boolean') {
+        fields.isSlugSource = upd.is_slug_source;
+        if (upd.is_slug_source) requestedSlugSourceId = upd.id;
+      }
       if (Object.keys(fields).length === 0) continue;
       await db
         .update(captions)
@@ -55,26 +62,21 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
         .where(and(eq(captions.id, upd.id), eq(captions.imageId, img.id)));
     }
 
-    // Enforce single slug source: if any caption is flagged, unflag the rest.
-    const [newSlugSource] = await db
-      .select()
-      .from(captions)
-      .where(and(eq(captions.imageId, img.id), eq(captions.isSlugSource, true)))
-      .orderBy(captions.variant)
-      .limit(1);
-
-    if (newSlugSource) {
+    if (requestedSlugSourceId !== null) {
+      // Enforce single slug source: unflag everyone except the requested one.
       await db
         .update(captions)
         .set({ isSlugSource: false })
-        .where(and(eq(captions.imageId, img.id), eq(captions.isSlugSource, true)));
-      await db
-        .update(captions)
-        .set({ isSlugSource: true })
-        .where(and(eq(captions.id, newSlugSource.id)));
+        .where(and(eq(captions.imageId, img.id), ne(captions.id, requestedSlugSourceId)));
+
+      const [newSlugSource] = await db
+        .select()
+        .from(captions)
+        .where(and(eq(captions.id, requestedSlugSourceId), eq(captions.imageId, img.id)))
+        .limit(1);
 
       // If slug was not explicitly changed in this request, regenerate from new source.
-      if (body.slug === undefined) {
+      if (newSlugSource && body.slug === undefined) {
         const base = slugify(newSlugSource.text) || img.slug;
         if (base !== img.slug) {
           const newSlug = await uniquifySlug(base, img.id);
@@ -113,9 +115,11 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
       .onConflictDoNothing();
   }
   if (body.tags?.remove?.length) {
+    // Stored tags are lowercase; normalize removes to match (adds already are).
+    const toRemove = body.tags.remove.map((t) => t.toLowerCase());
     await db
       .delete(tags)
-      .where(and(eq(tags.imageId, img.id), inArray(tags.tag, body.tags.remove)));
+      .where(and(eq(tags.imageId, img.id), inArray(tags.tag, toRemove)));
   }
 
   // Explicit slug change.

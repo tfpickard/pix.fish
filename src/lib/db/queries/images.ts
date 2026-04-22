@@ -8,6 +8,11 @@ import {
   type Image
 } from '../schema';
 
+function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(Math.trunc(value as number), min), max);
+}
+
 export type ImageWithRelations = Image & {
   captions: { id: number; variant: number; text: string; isSlugSource: boolean; locked: boolean }[];
   descriptions: { id: number; variant: number; text: string; locked: boolean }[];
@@ -19,24 +24,23 @@ export async function listImages(opts: {
   offset?: number;
   tags?: string[];
 }): Promise<ImageWithRelations[]> {
-  const limit = Math.min(Math.max(opts.limit ?? 24, 1), 100);
-  const offset = Math.max(opts.offset ?? 0, 0);
+  const limit = clampInt(opts.limit, 24, 1, 100);
+  const offset = clampInt(opts.offset, 0, 0, Number.MAX_SAFE_INTEGER);
 
   let imageRows: Image[];
   if (opts.tags && opts.tags.length > 0) {
     // AND semantics: image must have every requested tag.
     const tagList = opts.tags;
+    const matchingIdsSubquery = db
+      .select({ id: tags.imageId })
+      .from(tags)
+      .where(inArray(tags.tag, tagList))
+      .groupBy(tags.imageId)
+      .having(sql`count(distinct ${tags.tag}) = ${tagList.length}`);
     imageRows = await db
       .select()
       .from(images)
-      .where(
-        sql`(
-          SELECT count(DISTINCT ${tags.tag})
-          FROM ${tags}
-          WHERE ${tags.imageId} = ${images.id}
-            AND ${tags.tag} IN ${tagList}
-        ) = ${tagList.length}`
-      )
+      .where(inArray(images.id, matchingIdsSubquery))
       .orderBy(desc(images.uploadedAt), desc(images.id))
       .limit(limit)
       .offset(offset);
@@ -136,17 +140,16 @@ export async function getImageBySlug(slug: string): Promise<ImageWithRelations |
 
 export async function countImages(tagsFilter?: string[]): Promise<number> {
   if (tagsFilter && tagsFilter.length > 0) {
+    const matchingIdsSubquery = db
+      .select({ id: tags.imageId })
+      .from(tags)
+      .where(inArray(tags.tag, tagsFilter))
+      .groupBy(tags.imageId)
+      .having(sql`count(distinct ${tags.tag}) = ${tagsFilter.length}`);
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(images)
-      .where(
-        sql`(
-          SELECT count(DISTINCT ${tags.tag})
-          FROM ${tags}
-          WHERE ${tags.imageId} = ${images.id}
-            AND ${tags.tag} IN ${tagsFilter}
-        ) = ${tagsFilter.length}`
-      );
+      .where(inArray(images.id, matchingIdsSubquery));
     return row?.count ?? 0;
   }
   const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(images);

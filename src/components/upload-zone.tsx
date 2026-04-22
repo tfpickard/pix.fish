@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, type DragEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -19,9 +19,27 @@ export function UploadZone() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImageRecord | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const previewUrl = file ? URL.createObjectURL(file) : null;
+  // Create the preview URL once per file and revoke it on change/unmount so we
+  // don't leak blob: URLs across multiple selections.
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  function onKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      inputRef.current?.click();
+    }
+  }
 
   function onDrop(e: DragEvent) {
     e.preventDefault();
@@ -66,6 +84,9 @@ export function UploadZone() {
     <div className="space-y-6">
       <form onSubmit={onSubmit} className="space-y-4">
         <div
+          role="button"
+          tabIndex={0}
+          aria-label="upload an image; click or press enter to browse, or drop a file"
           onDragOver={(e) => {
             e.preventDefault();
             setDragActive(true);
@@ -73,7 +94,8 @@ export function UploadZone() {
           onDragLeave={() => setDragActive(false)}
           onDrop={onDrop}
           onClick={() => inputRef.current?.click()}
-          className={`flex h-52 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed ${
+          onKeyDown={onKeyDown}
+          className={`flex h-52 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-400 ${
             dragActive ? 'border-ink-200 bg-ink-800/40' : 'border-ink-700 bg-ink-900/20'
           } text-center transition`}
         >

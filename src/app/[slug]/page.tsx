@@ -1,6 +1,6 @@
 import Image from 'next/image';
 import Link from 'next/link';
-import { notFound, redirect } from 'next/navigation';
+import { notFound, permanentRedirect } from 'next/navigation';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { lookupRedirect } from '@/lib/db/queries/slugs';
 import { pickOne } from '@/lib/random';
@@ -13,7 +13,7 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
   const img = await getImageBySlug(slug);
   if (!img) {
     const to = await lookupRedirect(slug);
-    if (to) redirect(`/${to}`);
+    if (to) permanentRedirect(`/${to}`);
     notFound();
   }
 
