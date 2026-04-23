@@ -13,7 +13,7 @@ const VISIBILITY_TIMEOUT_MS = 5 * 60_000;
 const WALL_BUDGET_MS = 55_000;
 const BATCH = 10;
 
-export async function POST(req: Request) {
+async function drain(req: Request) {
   const auth = req.headers.get('authorization') ?? '';
   const expected = `Bearer ${process.env.CRON_SECRET ?? ''}`;
   if (!process.env.CRON_SECRET || auth !== expected) {
@@ -43,3 +43,8 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ reclaimed, drained, retried, failed });
 }
+
+// Vercel Cron invokes the path with HTTP GET; ad-hoc triggers (curl,
+// admin-driven manual drain) use POST. Both share the same drain logic.
+export const GET = drain;
+export const POST = drain;

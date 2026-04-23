@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { Job } from '@/lib/db/schema';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
@@ -6,7 +6,6 @@ import { getProvider, getEmbedder, type ProviderField } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { resolvePrompt } from '@/lib/prompts';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
-import { deleteField } from '@/lib/db/queries/reprocess';
 
 type Payload = { imageId: number; fields: ProviderField[] };
 
@@ -39,8 +38,13 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
       const prompt = await resolvePrompt(promptKey, { existing_caption: img.manualCaption ?? undefined });
       const variants = await provider[field](img_bytes!.buffer, img_bytes!.mime, prompt);
       await db.transaction(async (tx) => {
-        await deleteField(img.id, field);
+        // Delete the AI variants (1..3) via tx so the replace is atomic with
+        // the insert below. Variant=4 is the manual caption and locked=true,
+        // so preserve it across reprocesses.
         const table = field === 'captions' ? captions : descriptions;
+        await tx
+          .delete(table)
+          .where(and(eq(table.imageId, img.id), inArray(table.variant, [1, 2, 3])));
         const rows = variants.slice(0, 3).map((text, i) => ({
           imageId: img.id,
           variant: i + 1,
@@ -56,7 +60,9 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
       const prompt = await resolvePrompt('tags');
       const result = await provider.tags(img_bytes!.buffer, img_bytes!.mime, prompt);
       await db.transaction(async (tx) => {
-        await deleteField(img.id, 'tags');
+        // Delete + insert in the same tx so a rollback doesn't leave an
+        // image with no tags.
+        await tx.delete(tags).where(eq(tags.imageId, img.id));
         if (result.length > 0) {
           await tx
             .insert(tags)

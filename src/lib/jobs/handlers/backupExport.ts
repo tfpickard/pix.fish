@@ -120,6 +120,11 @@ export async function backupExportHandler(job: Job): Promise<void> {
   }
 
   const done = archive.finalize();
+  // @vercel/blob 0.27 only exposes `access: 'public'`, so the URL itself is
+  // not ACL'd. The random suffix gives ~128 bits of entropy against blind
+  // guessing, and we deliberately DO NOT return this URL to the browser --
+  // /api/admin/backup/[jobId]/download streams the bytes through an
+  // owner-gated endpoint so the raw URL never reaches client code.
   const blob = await put(
     `backups/${new Date().toISOString().replace(/[:.]/g, '-')}.zip`,
     pass,
@@ -127,9 +132,15 @@ export async function backupExportHandler(job: Job): Promise<void> {
   );
   await done;
 
-  // Stash the resulting URL on the job payload for the admin polling route.
+  // Stash both pathname + URL on the job payload. The URL is used by the
+  // server-only download route; the status route never exposes it.
   await db
     .update(jobs)
-    .set({ payload: sql`payload || ${JSON.stringify({ resultUrl: blob.url })}::jsonb` })
+    .set({
+      payload: sql`payload || ${JSON.stringify({
+        resultUrl: blob.url,
+        resultPathname: blob.pathname
+      })}::jsonb`
+    })
     .where(eq(jobs.id, job.id));
 }

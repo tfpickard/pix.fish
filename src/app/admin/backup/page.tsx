@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useTransition } from 'react';
 
 type Status = {
   status: string;
-  blobUrl: string | null;
+  hasResult: boolean;
   startedAt: string | null;
   finishedAt: string | null;
   lastError: string | null;
@@ -73,9 +73,9 @@ export default function AdminBackupPage() {
           {status.startedAt ? <p className="text-ink-500">started {new Date(status.startedAt).toLocaleString()}</p> : null}
           {status.finishedAt ? <p className="text-ink-500">finished {new Date(status.finishedAt).toLocaleString()}</p> : null}
           {status.lastError ? <p className="text-destructive">{status.lastError}</p> : null}
-          {status.blobUrl ? (
+          {status.hasResult && jobId ? (
             <a
-              href={status.blobUrl}
+              href={`/api/admin/backup/${jobId}/download`}
               className="mt-2 inline-block rounded border border-secondary/50 bg-secondary/10 px-3 py-1 text-secondary hover:bg-secondary/20"
             >
               download zip

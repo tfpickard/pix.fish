@@ -37,12 +37,21 @@ export async function umapRecomputeHandler(job: Job): Promise<void> {
     return;
   }
 
-  // Subsample if needed.
+  // Subsample if needed. Deterministic Fisher-Yates shuffle over the index
+  // array, then take the first MAX_POINTS. Avoid `sort(() => rnd() - 0.5)`
+  // which is biased (non-transitive comparator) and non-deterministic across
+  // sort implementations.
   let sample = all;
   if (all.length > MAX_POINTS) {
     const rnd = mulberry32(all.length);
-    const indices = all.map((_, i) => i).sort(() => rnd() - 0.5).slice(0, MAX_POINTS);
-    sample = indices.map((i) => all[i]!);
+    const indices = all.map((_, i) => i);
+    for (let i = indices.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      const tmp = indices[i]!;
+      indices[i] = indices[j]!;
+      indices[j] = tmp;
+    }
+    sample = indices.slice(0, MAX_POINTS).map((i) => all[i]!);
   }
 
   const nbrs = Math.min(nNeighbors, sample.length - 1);

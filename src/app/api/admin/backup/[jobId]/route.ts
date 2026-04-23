@@ -19,10 +19,14 @@ export async function GET(_req: Request, ctx: { params: { jobId: string } }) {
   if (!row || row.type !== 'backup.export') {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
+  // Deliberately do not return the underlying blob URL. It's stored public
+  // in Vercel Blob (SDK limitation) so we keep it server-side and stream
+  // through the /download sibling route instead of handing the raw URL to
+  // the browser.
   const payload = (row.payload as { resultUrl?: string } | null) ?? {};
   return NextResponse.json({
     status: row.status,
-    blobUrl: payload.resultUrl ?? null,
+    hasResult: Boolean(payload.resultUrl),
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
     lastError: row.lastError

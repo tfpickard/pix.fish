@@ -43,12 +43,19 @@ export function TagCloud({ tags, activeTags }: Props) {
           <Link
             key={tag}
             href={href}
-            style={{
-              fontSize: `${scale(count)}rem`,
-              fontWeight: weight(count),
-              transform: `translateY(${dy}px) rotate(${rot}deg)`
-            }}
-            className={`inline-block transition-transform hover:scale-110 hover:!rotate-0 hover:!translate-y-0 ${
+            // Expose per-tag drift as CSS custom properties; the actual
+            // transform (and its hover override) lives in a tag-cloud-item
+            // rule in globals.css. Writing transform directly here would
+            // replace Tailwind's transform pipeline and break hover scale.
+            style={
+              {
+                fontSize: `${scale(count)}rem`,
+                fontWeight: weight(count),
+                '--tag-rot': `${rot}deg`,
+                '--tag-dy': `${dy}px`
+              } as React.CSSProperties
+            }
+            className={`tag-cloud-item inline-block transition-transform ${
               active ? 'text-ink-100' : 'hover:text-ink-200'
             }`}
           >

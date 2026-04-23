@@ -1,6 +1,6 @@
-import { and, eq, inArray, ne, or, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { db } from '../client';
-import { captions, descriptions, embeddings, images, tags } from '../schema';
+import { captions, descriptions, images, tags } from '../schema';
 import type { ProviderField } from '@/lib/ai';
 
 export type StaleCount = { field: ProviderField; count: number };
@@ -41,22 +41,21 @@ export async function staleImageIds(
 ): Promise<number[]> {
   if (field === 'captions' || field === 'descriptions' || field === 'tags') {
     const table = field === 'captions' ? captions : field === 'descriptions' ? descriptions : tags;
-    const rows = await db
-      .selectDistinct({ imageId: table.imageId })
-      .from(table)
-      .where(or(ne(table.provider, provider), ne(table.model, model)));
-    return rows.map((r) => r.imageId).filter((n): n is number => typeof n === 'number');
+    // IS DISTINCT FROM treats NULL as a value; using `ne()` would drop rows
+    // whose provider/model is NULL (NULL <> 'x' is NULL, not true) and
+    // disagree with staleCount, which uses IS DISTINCT FROM.
+    const rows = await db.execute<{ image_id: number }>(sql`
+      SELECT DISTINCT image_id FROM ${table}
+      WHERE (provider IS DISTINCT FROM ${provider}) OR (model IS DISTINCT FROM ${model})
+    `);
+    return rows.rows.map((r) => Number(r.image_id));
   }
-  const rows = await db
-    .select({ imageId: embeddings.imageId })
-    .from(embeddings)
-    .where(
-      and(
-        eq(embeddings.kind, 'caption'),
-        or(ne(embeddings.provider, provider), ne(embeddings.model, model))
-      )
-    );
-  return rows.map((r) => r.imageId);
+  const rows = await db.execute<{ image_id: number }>(sql`
+    SELECT image_id FROM embeddings
+    WHERE kind = 'caption'
+      AND ((provider IS DISTINCT FROM ${provider}) OR (model IS DISTINCT FROM ${model}))
+  `);
+  return rows.rows.map((r) => Number(r.image_id));
 }
 
 export async function allImageIds(): Promise<number[]> {
@@ -64,21 +63,3 @@ export async function allImageIds(): Promise<number[]> {
   return rows.map((r) => r.id);
 }
 
-// Delete existing rows for the given field on the given image so the
-// reprocess handler can re-insert fresh ones. embeddings are upserted, not
-// deleted; captions/descriptions are replaced; tags are truncated per-image.
-export async function deleteField(imageId: number, field: ProviderField): Promise<void> {
-  if (field === 'captions') {
-    // Preserve the manual variant (variant=4, locked) so owner edits survive.
-    await db
-      .delete(captions)
-      .where(and(eq(captions.imageId, imageId), inArray(captions.variant, [1, 2, 3])));
-  } else if (field === 'descriptions') {
-    await db
-      .delete(descriptions)
-      .where(and(eq(descriptions.imageId, imageId), inArray(descriptions.variant, [1, 2, 3])));
-  } else if (field === 'tags') {
-    await db.delete(tags).where(eq(tags.imageId, imageId));
-  }
-  // embeddings: no-op, upsertEmbedding handles replacement.
-}
