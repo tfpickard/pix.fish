@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
+import { eq } from 'drizzle-orm';
+import { db } from '@/lib/db/client';
+import { images } from '@/lib/db/schema';
 import { addReport } from '@/lib/db/queries/reports';
 import { hashIp, getRequestIp } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
+import { emit } from '@/lib/webhooks/emit';
 
 export async function POST(req: Request) {
   const ip = getRequestIp(req);
@@ -31,6 +35,28 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'invalid targetId' }, { status: 400 });
   }
 
-  await addReport(targetType, targetId, reason, ipHash);
+  const report = await addReport(targetType, targetId, reason, ipHash);
+
+  // image reports carry a slug in the payload; comment reports just the id.
+  let imageSlug: string | null = null;
+  if (targetType === 'image') {
+    const [img] = await db
+      .select({ slug: images.slug })
+      .from(images)
+      .where(eq(images.id, targetId))
+      .limit(1);
+    imageSlug = img?.slug ?? null;
+  }
+
+  await emit('report.created', {
+    report: {
+      id: report.id,
+      targetType: report.targetType as 'image' | 'comment',
+      imageSlug,
+      commentId: report.commentId,
+      reason: report.reason,
+      createdAt: report.createdAt.toISOString()
+    }
+  });
   return NextResponse.json({ ok: true }, { status: 201 });
 }

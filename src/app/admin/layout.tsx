@@ -6,8 +6,16 @@ const NAV = [
   { href: '/admin/upload', label: 'upload' },
   { href: '/admin/comments', label: 'comments' },
   { href: '/admin/prompts', label: 'prompts' },
+  { href: '/admin/saved-prompts', label: 'saved-prompts' },
   { href: '/admin/taxonomy', label: 'taxonomy' },
-  { href: '/admin/keys', label: 'keys' }
+  { href: '/admin/keys', label: 'keys' },
+  { href: '/admin/ai', label: 'ai' },
+  { href: '/admin/reprocess', label: 'reprocess' },
+  { href: '/admin/webhooks', label: 'webhooks' },
+  { href: '/admin/jobs', label: 'jobs' },
+  { href: '/admin/map', label: 'map' },
+  { href: '/admin/stats', label: 'stats' },
+  { href: '/admin/backup', label: 'backup' }
 ];
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {

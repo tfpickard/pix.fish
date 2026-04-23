@@ -74,6 +74,20 @@ export async function searchByVector(
 // self-join so the source vector stays in Postgres -- no round trip to fetch
 // and then re-send it. Returns empty if the source image has no embedding of
 // the requested kind.
+// Fetch (imageId, vec) for every caption embedding. Used by the UMAP job;
+// pgvector returns the vector as a bracketed string which we parse once here
+// so downstream callers don't have to know about the wire format.
+export async function allCaptionVectors(): Promise<{ imageId: number; vec: number[] }[]> {
+  const res = await db.execute<{ image_id: number; vec: string }>(sql`
+    SELECT image_id, vec::text AS vec FROM embeddings WHERE kind = 'caption'
+  `);
+  return res.rows.map((r) => {
+    const inner = r.vec.startsWith('[') ? r.vec.slice(1, -1) : r.vec;
+    const arr = inner.split(',').map(Number);
+    return { imageId: Number(r.image_id), vec: arr };
+  });
+}
+
 export async function getNeighborsByImageId(
   imageId: number,
   opts: { limit?: number; kind?: EmbeddingKind } = {}

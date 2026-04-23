@@ -3,6 +3,7 @@ import { getImageBySlug } from '@/lib/db/queries/images';
 import { addComment, listApprovedComments } from '@/lib/db/queries/comments';
 import { hashIp, getRequestIp } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
+import { emit } from '@/lib/webhooks/emit';
 
 export async function GET(_req: Request, ctx: { params: { slug: string } }) {
   const img = await getImageBySlug(decodeURIComponent(ctx.params.slug));
@@ -48,5 +49,14 @@ export async function POST(req: Request, ctx: { params: { slug: string } }) {
   }
 
   const comment = await addComment(img.id, body, authorName || null, ipHash);
+  await emit('comment.created', {
+    comment: {
+      id: comment.id,
+      imageSlug: img.slug,
+      body: comment.body,
+      status: comment.status as 'pending' | 'approved' | 'rejected',
+      createdAt: comment.createdAt.toISOString()
+    }
+  });
   return NextResponse.json({ status: 'pending', id: comment.id }, { status: 201 });
 }

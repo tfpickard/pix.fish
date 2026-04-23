@@ -1,4 +1,5 @@
 import { getEmbedder } from '@/lib/ai';
+import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { searchByVector } from '@/lib/db/queries/embeddings';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import { ImageGrid } from '@/components/image-grid';
@@ -27,7 +28,8 @@ export default async function SearchPage({ searchParams }: PageProps) {
   let hydrated: Awaited<ReturnType<typeof hydrateImages>> = [];
   let failed = false;
   try {
-    const embedder = getEmbedder();
+    const cfg = await loadAiConfig();
+    const embedder = getEmbedder(cfg);
     const vec = await embedder.embed(q);
     const matches = await searchByVector(vec, { limit: 60, kind: 'caption' });
     const rows = await getImagesByIdsOrdered(matches.map((m) => m.imageId));

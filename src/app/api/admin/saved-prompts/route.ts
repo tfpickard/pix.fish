@@ -1,0 +1,33 @@
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { auth, isOwner } from '@/lib/auth';
+import { createSavedPrompt, listSavedPrompts } from '@/lib/db/queries/saved-prompts';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+const bodySchema = z.object({
+  name: z.string().min(1).max(120),
+  key: z.enum(['caption', 'description', 'tags']),
+  template: z.string().min(1),
+  fragments: z.unknown().optional()
+});
+
+export async function GET() {
+  if (!isOwner(await auth())) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  }
+  return NextResponse.json({ rows: await listSavedPrompts() });
+}
+
+export async function POST(req: Request) {
+  if (!isOwner(await auth())) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  }
+  const parsed = bodySchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'invalid body', issues: parsed.error.issues }, { status: 400 });
+  }
+  const row = await createSavedPrompt(parsed.data);
+  return NextResponse.json({ row }, { status: 201 });
+}

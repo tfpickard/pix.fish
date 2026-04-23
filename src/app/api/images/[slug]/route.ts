@@ -7,6 +7,7 @@ import { captions, descriptions, images, tags } from '@/lib/db/schema';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { lookupRedirect, pushSlugToHistory, uniquifySlug } from '@/lib/db/queries/slugs';
 import { slugify } from '@/lib/slug';
+import { emit } from '@/lib/webhooks/emit';
 
 export const runtime = 'nodejs';
 
@@ -135,6 +136,31 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
 
   const [refreshedRow] = await db.select().from(images).where(eq(images.id, img.id)).limit(1);
   const fresh = refreshedRow ? await getImageBySlug(refreshedRow.slug) : null;
+
+  if (fresh) {
+    await emit('image.updated', {
+      image: {
+        id: fresh.id,
+        slug: fresh.slug,
+        blobUrl: fresh.blobUrl,
+        width: fresh.width,
+        height: fresh.height,
+        takenAt: fresh.takenAt ? fresh.takenAt.toISOString() : null,
+        uploadedAt: fresh.uploadedAt.toISOString()
+      },
+      captions: fresh.captions.map((c) => ({
+        variant: c.variant,
+        text: c.text,
+        isSlugSource: c.isSlugSource
+      })),
+      tags: fresh.tags.map((t) => ({
+        tag: t.tag,
+        source: t.source as 'taxonomy' | 'freeform',
+        confidence: t.confidence
+      }))
+    });
+  }
+
   return NextResponse.json({ image: fresh });
 }
 

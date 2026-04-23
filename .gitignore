@@ -56,3 +56,11 @@ next-env.d.ts
 .dev-server.pid
 .dev-server.log
 .env*.local
+
+# PWA service worker + serwist chunks generated on build from src/app/sw.ts
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js
+public/swe-worker-*.js.map
+public/workbox-*.js
+public/workbox-*.js.map

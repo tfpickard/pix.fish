@@ -1,4 +1,4 @@
-import { getProvider, type AITag } from '@/lib/ai';
+import { getProvider, type AITag, type AiConfigMap } from '@/lib/ai';
 import { resolvePrompt } from '@/lib/prompts';
 
 export type EnrichmentResult = {
@@ -11,11 +11,13 @@ export type EnrichmentResult = {
  * Run synchronous enrichment across all three fields in parallel.
  *
  * Phase 1: one combined JSON call per field (captions returns all 3 variants).
- * Caller is responsible for persisting the results.
+ * Caller is responsible for persisting the results and for loading aiConfig
+ * once (via loadAiConfig) to pass in as cfg.
  */
 export async function enrichImage(
   buffer: Buffer,
   mime: string,
+  cfg: AiConfigMap,
   manualCaption?: string
 ): Promise<EnrichmentResult> {
   const [captionPrompt, descriptionPrompt, tagsPrompt] = await Promise.all([
@@ -24,9 +26,9 @@ export async function enrichImage(
     resolvePrompt('tags')
   ]);
 
-  const captionsProvider = getProvider('captions');
-  const descriptionsProvider = getProvider('descriptions');
-  const tagsProvider = getProvider('tags');
+  const captionsProvider = getProvider('captions', cfg);
+  const descriptionsProvider = getProvider('descriptions', cfg);
+  const tagsProvider = getProvider('tags', cfg);
 
   const [captionsRaw, descriptionsRaw, tagsRaw] = await Promise.all([
     captionsProvider.captions(buffer, mime, captionPrompt),

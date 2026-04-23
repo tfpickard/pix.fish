@@ -21,6 +21,10 @@ export interface AIProvider {
 export type ProviderField = 'captions' | 'descriptions' | 'tags' | 'embeddings';
 export type ProviderName = 'anthropic' | 'openai';
 
+// Resolved per-field routing. Produced by src/lib/ai/loadConfig.ts from the
+// ai_config DB table, falling back to defaults from src/lib/ai/config.ts.
+export type AiConfigMap = Record<ProviderField, { provider: ProviderName; model: string }>;
+
 // Helpers shared by provider implementations.
 
 export function parseVariantsJson(raw: string): string[] {
