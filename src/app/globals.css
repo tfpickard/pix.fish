@@ -10,8 +10,10 @@
    ============================================================ */
 @font-face {
   font-family: 'Fungal';
-  src: url('/fonts/FungalVF.woff2') format('woff2-variations');
-  font-weight: 1 1000;
+  /* Use plain `woff2`. `woff2-variations` is a legacy/non-standard value
+     that some browsers reject silently, dropping the @font-face entirely.
+     Variable-ness is detected from the file itself. */
+  src: url('/fonts/FungalVF.woff2') format('woff2');
   font-style: normal;
   font-display: swap;
 }
