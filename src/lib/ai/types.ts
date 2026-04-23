@@ -16,6 +16,10 @@ export interface AIProvider {
   captions(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<string[]>;
   descriptions(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<string[]>;
   tags(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<AITag[]>;
+  // Text-only completion, no image. Used by non-vision generators (about
+  // page copy, etc.). Optional because an embeddings-only provider instance
+  // doesn't need it.
+  text?(prompt: string): Promise<string>;
   // Optional. Embedding providers expose a distinct model from the vision
   // model, so callers should read `embedModel` when persisting a provenance
   // stamp on an embedding row.

@@ -45,6 +45,9 @@ export async function NavBar() {
           <Link href="/" className="hover:text-ink-100 transition-colors">
             gallery
           </Link>
+          <Link href="/about" className="hover:text-ink-100 transition-colors">
+            about
+          </Link>
           {owner ? (
             <Link href="/admin/upload" className="hover:text-ink-100 transition-colors">
               upload

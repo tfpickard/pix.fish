@@ -322,6 +322,18 @@ export const savedPrompts = pgTable('saved_prompts', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
+// Owner-editable fields that power /about. Each row is one named field
+// (key = stable slug) with a display label, body text, and sort order.
+// Owner can edit content inline or ask the LLM to regenerate per-field.
+export const aboutFields = pgTable('about_fields', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull().unique(),
+  label: text('label').notNull(),
+  content: text('content').notNull().default(''),
+  sortOrder: integer('sort_order').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
 // Relations
 export const imagesRelations = relations(images, ({ many }) => ({
   captions: many(captions),
@@ -382,3 +394,5 @@ export type UmapProjection = typeof umapProjections.$inferSelect;
 export type NewUmapProjection = typeof umapProjections.$inferInsert;
 export type SavedPrompt = typeof savedPrompts.$inferSelect;
 export type NewSavedPrompt = typeof savedPrompts.$inferInsert;
+export type AboutField = typeof aboutFields.$inferSelect;
+export type NewAboutField = typeof aboutFields.$inferInsert;

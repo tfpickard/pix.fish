@@ -75,6 +75,17 @@ export function createOpenAIProvider(
       return parseTagsJson(text);
     },
 
+    async text(prompt: string): Promise<string> {
+      const res = await getClient().chat.completions.create({
+        model: visionModel,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const out = res.choices[0]?.message?.content ?? '';
+      if (!out) throw new Error('OpenAI response had no content.');
+      return out;
+    },
+
     async embed(input: string): Promise<number[]> {
       const res = await getClient().embeddings.create({
         model: embedModel,

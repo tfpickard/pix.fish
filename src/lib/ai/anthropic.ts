@@ -81,6 +81,17 @@ export function createAnthropicProvider(model: string = ANTHROPIC_DEFAULT_MODEL)
     async tags(image, mime, prompt, imageUrl): Promise<AITag[]> {
       const text = await callVision(model, image, mime, prompt, imageUrl);
       return parseTagsJson(text);
+    },
+
+    async text(prompt: string): Promise<string> {
+      const res = await getClient().messages.create({
+        model,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }]
+      });
+      const block = res.content.find((c) => c.type === 'text');
+      if (!block || block.type !== 'text') throw new Error('Anthropic response had no text block.');
+      return block.text;
     }
   };
 }

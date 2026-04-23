@@ -5,7 +5,7 @@
  *   POSTGRES_URL=... bun run db:seed
  */
 import { db } from '../src/lib/db/client';
-import { aiConfig, prompts, tagTaxonomy } from '../src/lib/db/schema';
+import { aboutFields, aiConfig, prompts, tagTaxonomy } from '../src/lib/db/schema';
 import { defaultAiConfig } from '../src/lib/ai/config';
 import { sql } from 'drizzle-orm';
 
@@ -172,6 +172,27 @@ async function main() {
         set: { category: t.category, sortOrder: i }
       });
   }
+  console.log('Seeding about_fields defaults...');
+  const aboutDefaults: { key: string; label: string; sortOrder: number }[] = [
+    { key: 'intro', label: 'intro', sortOrder: 10 },
+    { key: 'method', label: 'method', sortOrder: 20 },
+    { key: 'rules', label: 'rules', sortOrder: 30 },
+    { key: 'colophon', label: 'colophon', sortOrder: 40 },
+    { key: 'contact', label: 'contact', sortOrder: 50 }
+  ];
+  for (const f of aboutDefaults) {
+    await db
+      .insert(aboutFields)
+      .values({ key: f.key, label: f.label, content: '', sortOrder: f.sortOrder })
+      .onConflictDoUpdate({
+        // Don't clobber owner content on reseed -- only ensure row exists
+        // and the label/sortOrder stay synced with defaults.
+        target: aboutFields.key,
+        set: { label: f.label, sortOrder: f.sortOrder }
+      });
+    console.log(`  - ensured about_fields["${f.key}"]`);
+  }
+
   console.log('Done.');
 }
 
