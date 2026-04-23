@@ -17,7 +17,7 @@ export default async function SearchPage({ searchParams }: PageProps) {
   if (!q) {
     return (
       <div className="space-y-6 pt-8">
-        <h1 className="font-display text-3xl text-ink-100">search</h1>
+        <h1 className="font-fungal-lite text-3xl text-ink-100">search</h1>
         <p className="font-mono text-xs text-ink-500">enter a query above to search semantically.</p>
       </div>
     );
@@ -42,7 +42,7 @@ export default async function SearchPage({ searchParams }: PageProps) {
   return (
     <div className="space-y-6 pt-8">
       <section className="space-y-2">
-        <h1 className="font-display text-3xl text-ink-100">search</h1>
+        <h1 className="font-fungal-lite text-3xl text-ink-100">search</h1>
         <p className="font-mono text-xs text-ink-500">
           {failed
             ? 'search is currently unavailable'

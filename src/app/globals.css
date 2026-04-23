@@ -21,12 +21,17 @@
 .font-fungal {
   font-family: 'Fungal', var(--font-wordmark), ui-serif, Georgia, serif;
   /* Axis tag casing matters: Fungal ships `grow` lowercase and `THCK`
-     uppercase in its fvar table (verified via fontTools). Using the
-     wrong case silently no-ops and the wordmark falls back to plain
-     DejaVu Sans shape, which is why the tendrils weren't showing.
-     Moderate values: GROW big enough to see visible growth, THCK
-     low-moderate so strokes stay filament-thin. */
+     uppercase in its fvar table (verified via fontTools). Wrong case
+     silently no-ops and falls back to plain DejaVu Sans shape. */
   font-variation-settings: 'grow' 800, 'THCK' 350;
+}
+/* Dialed-down variant for headings / secondary surfaces -- light
+   tendrils, slightly heavier body so it reads cleanly at smaller
+   sizes. Avoid using this on body copy; the growth still competes
+   with long-form legibility. */
+.font-fungal-lite {
+  font-family: 'Fungal', var(--font-wordmark), ui-serif, Georgia, serif;
+  font-variation-settings: 'grow' 120, 'THCK' 400;
 }
 
 /* ============================================================

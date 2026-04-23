@@ -19,7 +19,7 @@ export default async function MapPage() {
 
   return (
     <div className="space-y-4 pt-8">
-      <h1 className="font-display text-3xl text-ink-100">map</h1>
+      <h1 className="font-fungal-lite text-3xl text-ink-100">map</h1>
       <p className="font-mono text-xs text-ink-500">
         semantic cluster view. each dot is an image; position reflects caption-embedding
         similarity. projected via UMAP.

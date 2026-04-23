@@ -39,7 +39,7 @@ export default async function HomePage({ searchParams }: PageProps) {
   return (
     <div className="pt-8">
       <section className="mx-auto max-w-2xl space-y-3">
-        <h1 className="prose-caption whitespace-pre-line font-display text-3xl leading-snug text-ink-100">
+        <h1 className="whitespace-pre-line font-fungal-lite text-3xl leading-snug text-ink-100">
           {haiku.join('\n')}
         </h1>
         <p className="font-mono text-xs text-ink-500">
