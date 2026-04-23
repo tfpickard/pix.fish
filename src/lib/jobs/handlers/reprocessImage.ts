@@ -9,13 +9,10 @@ import { upsertEmbedding } from '@/lib/db/queries/embeddings';
 
 type Payload = { imageId: number; fields: ProviderField[] };
 
-async function fetchImageBuffer(blobUrl: string): Promise<{ buffer: Buffer; mime: string }> {
-  const res = await fetch(blobUrl);
-  if (!res.ok) throw new Error(`blob fetch failed: ${res.status}`);
-  const mime = res.headers.get('content-type') ?? 'image/jpeg';
-  const arr = await res.arrayBuffer();
-  return { buffer: Buffer.from(arr), mime };
-}
+// Providers now prefer URL source (Anthropic + OpenAI both accept it), so
+// the Buffer arg is a legacy-path fallback only. Passing an empty buffer +
+// the blob URL keeps us from round-tripping the image through this function.
+const EMPTY_BUFFER = Buffer.alloc(0);
 
 export async function reprocessImageHandler(job: Job): Promise<void> {
   const payload = job.payload as Payload;
@@ -23,20 +20,14 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
   if (!img) return;
 
   const cfg = await loadAiConfig();
-
-  // Only fetch the buffer if at least one vision-backed field is requested.
-  const visionFields: ProviderField[] = payload.fields.filter((f) => f !== 'embeddings');
-  let img_bytes: { buffer: Buffer; mime: string } | null = null;
-  if (visionFields.length > 0) {
-    img_bytes = await fetchImageBuffer(img.blobUrl);
-  }
+  const mime = img.mime ?? 'image/jpeg';
 
   for (const field of payload.fields) {
     if (field === 'captions' || field === 'descriptions') {
       const provider = getProvider(field, cfg);
       const promptKey = field === 'captions' ? 'caption' : 'description';
       const prompt = await resolvePrompt(promptKey, { existing_caption: img.manualCaption ?? undefined });
-      const variants = await provider[field](img_bytes!.buffer, img_bytes!.mime, prompt);
+      const variants = await provider[field](EMPTY_BUFFER, mime, prompt, img.blobUrl);
       await db.transaction(async (tx) => {
         // Delete the AI variants (1..3) via tx so the replace is atomic with
         // the insert below. Variant=4 is the manual caption and locked=true,
@@ -58,7 +49,7 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
     } else if (field === 'tags') {
       const provider = getProvider('tags', cfg);
       const prompt = await resolvePrompt('tags');
-      const result = await provider.tags(img_bytes!.buffer, img_bytes!.mime, prompt);
+      const result = await provider.tags(EMPTY_BUFFER, mime, prompt, img.blobUrl);
       await db.transaction(async (tx) => {
         // Delete + insert in the same tx so a rollback doesn't leave an
         // image with no tags.

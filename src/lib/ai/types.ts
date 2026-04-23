@@ -4,13 +4,18 @@ export type AITag = {
   confidence?: number;
 };
 
+// imageUrl is optional; when the caller has a public URL (Vercel Blob),
+// passing it lets providers fetch the image remotely instead of base64'ing
+// a buffer inline. Anthropic caps inline base64 at 5 MB; URL source has no
+// size cap, just an 8000x8000 pixel limit. Providers that receive both
+// should prefer the URL.
 export interface AIProvider {
   readonly name: string;
   readonly model: string;
 
-  captions(image: Buffer, mime: string, prompt: string): Promise<string[]>;
-  descriptions(image: Buffer, mime: string, prompt: string): Promise<string[]>;
-  tags(image: Buffer, mime: string, prompt: string): Promise<AITag[]>;
+  captions(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<string[]>;
+  descriptions(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<string[]>;
+  tags(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<AITag[]>;
   // Optional. Embedding providers expose a distinct model from the vision
   // model, so callers should read `embedModel` when persisting a provenance
   // stamp on an embedding row.

@@ -13,12 +13,17 @@ export type EnrichmentResult = {
  * Phase 1: one combined JSON call per field (captions returns all 3 variants).
  * Caller is responsible for persisting the results and for loading aiConfig
  * once (via loadAiConfig) to pass in as cfg.
+ *
+ * `imageUrl` (optional) lets providers fetch the image remotely instead of
+ * base64-encoding the buffer inline. Anthropic's base64 path caps at 5 MB;
+ * pass the public blob URL here to sidestep that limit.
  */
 export async function enrichImage(
   buffer: Buffer,
   mime: string,
   cfg: AiConfigMap,
-  manualCaption?: string
+  manualCaption?: string,
+  imageUrl?: string
 ): Promise<EnrichmentResult> {
   const [captionPrompt, descriptionPrompt, tagsPrompt] = await Promise.all([
     resolvePrompt('caption', { existing_caption: manualCaption }),
@@ -31,9 +36,9 @@ export async function enrichImage(
   const tagsProvider = getProvider('tags', cfg);
 
   const [captionsRaw, descriptionsRaw, tagsRaw] = await Promise.all([
-    captionsProvider.captions(buffer, mime, captionPrompt),
-    descriptionsProvider.descriptions(buffer, mime, descriptionPrompt),
-    tagsProvider.tags(buffer, mime, tagsPrompt)
+    captionsProvider.captions(buffer, mime, captionPrompt, imageUrl),
+    descriptionsProvider.descriptions(buffer, mime, descriptionPrompt, imageUrl),
+    tagsProvider.tags(buffer, mime, tagsPrompt, imageUrl)
   ]);
 
   return {

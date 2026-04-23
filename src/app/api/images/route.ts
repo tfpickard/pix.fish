@@ -124,7 +124,9 @@ export async function POST(req: Request) {
   const cfg = await loadAiConfig();
   let enrichment;
   try {
-    enrichment = await enrichImage(buffer, mime, cfg, manualCaption);
+    // Pass the blob URL so providers can fetch the image remotely;
+    // Anthropic's base64 path caps at 5 MB and larger uploads would fail.
+    enrichment = await enrichImage(buffer, mime, cfg, manualCaption, blob.url);
   } catch (err) {
     // Log full detail server-side; return a generic message to avoid leaking
     // vendor SDK internals (request ids, stack frames, partial prompts).

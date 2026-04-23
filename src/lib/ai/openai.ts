@@ -20,8 +20,17 @@ function getClient(): OpenAI {
   return client;
 }
 
-async function callVision(model: string, image: Buffer, mime: string, prompt: string): Promise<string> {
-  const dataUrl = `data:${mime};base64,${image.toString('base64')}`;
+async function callVision(
+  model: string,
+  image: Buffer,
+  mime: string,
+  prompt: string,
+  imageUrl?: string
+): Promise<string> {
+  // Prefer a remote URL so OpenAI fetches the image directly; the data-URL
+  // path is the fallback for reprocess jobs that already have a Buffer in
+  // hand but no URL (rare; the current reprocess handler passes the URL).
+  const url = imageUrl ?? `data:${mime};base64,${image.toString('base64')}`;
   const res = await getClient().chat.completions.create({
     model,
     max_tokens: 1024,
@@ -31,7 +40,7 @@ async function callVision(model: string, image: Buffer, mime: string, prompt: st
         role: 'user',
         content: [
           { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: dataUrl } }
+          { type: 'image_url', image_url: { url } }
         ]
       }
     ]
@@ -51,18 +60,18 @@ export function createOpenAIProvider(
     model: visionModel,
     embedModel,
 
-    async captions(image, mime, prompt) {
-      const text = await callVision(visionModel, image, mime, prompt);
+    async captions(image, mime, prompt, imageUrl) {
+      const text = await callVision(visionModel, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
-    async descriptions(image, mime, prompt) {
-      const text = await callVision(visionModel, image, mime, prompt);
+    async descriptions(image, mime, prompt, imageUrl) {
+      const text = await callVision(visionModel, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
-    async tags(image, mime, prompt): Promise<AITag[]> {
-      const text = await callVision(visionModel, image, mime, prompt);
+    async tags(image, mime, prompt, imageUrl): Promise<AITag[]> {
+      const text = await callVision(visionModel, image, mime, prompt, imageUrl);
       return parseTagsJson(text);
     },
 

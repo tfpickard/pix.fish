@@ -15,7 +15,28 @@ function getClient(): Anthropic {
   return client;
 }
 
-async function callVision(model: string, image: Buffer, mime: string, prompt: string): Promise<string> {
+async function callVision(
+  model: string,
+  image: Buffer,
+  mime: string,
+  prompt: string,
+  imageUrl?: string
+): Promise<string> {
+  // Prefer URL source when available -- sidesteps the 5 MB base64 cap and
+  // skips re-encoding the buffer we already uploaded to Blob. The SDK at
+  // 0.35 lacks typings for { type: 'url' } source; the server accepts it
+  // (added server-side in Aug 2024), so we cast through unknown.
+  const source = (imageUrl
+    ? { type: 'url', url: imageUrl }
+    : {
+        type: 'base64',
+        media_type: normalizeMime(mime) as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
+        data: image.toString('base64')
+      }) as unknown as {
+    type: 'base64';
+    media_type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+    data: string;
+  };
   const res = await getClient().messages.create({
     model,
     max_tokens: 1024,
@@ -23,14 +44,7 @@ async function callVision(model: string, image: Buffer, mime: string, prompt: st
       {
         role: 'user',
         content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: normalizeMime(mime) as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
-              data: image.toString('base64')
-            }
-          },
+          { type: 'image', source },
           { type: 'text', text: prompt }
         ]
       }
@@ -54,18 +68,18 @@ export function createAnthropicProvider(model: string = ANTHROPIC_DEFAULT_MODEL)
     name: 'anthropic',
     model,
 
-    async captions(image, mime, prompt) {
-      const text = await callVision(model, image, mime, prompt);
+    async captions(image, mime, prompt, imageUrl) {
+      const text = await callVision(model, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
-    async descriptions(image, mime, prompt) {
-      const text = await callVision(model, image, mime, prompt);
+    async descriptions(image, mime, prompt, imageUrl) {
+      const text = await callVision(model, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
-    async tags(image, mime, prompt): Promise<AITag[]> {
-      const text = await callVision(model, image, mime, prompt);
+    async tags(image, mime, prompt, imageUrl): Promise<AITag[]> {
+      const text = await callVision(model, image, mime, prompt, imageUrl);
       return parseTagsJson(text);
     }
   };
