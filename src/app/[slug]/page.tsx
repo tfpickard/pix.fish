@@ -3,12 +3,13 @@ import Link from 'next/link';
 import { notFound, permanentRedirect } from 'next/navigation';
 import { auth, isOwner } from '@/lib/auth';
 import { getImageBySlug, getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
-import { getNeighborsByImageId } from '@/lib/db/queries/embeddings';
+import { getCaptionVector, getNeighborsByImageId } from '@/lib/db/queries/embeddings';
 import { lookupRedirect } from '@/lib/db/queries/slugs';
 import { countReactions } from '@/lib/db/queries/reactions';
 import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
 import { ImageActions } from '@/components/image-actions';
+import { EmbeddingViz } from '@/components/embedding-viz';
 import { ExifFacts, PaletteStrip } from '@/components/image-meta';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { ReactionBar } from '@/components/reaction-bar';
@@ -76,10 +77,12 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
     console.error('neighbor lookup failed for image', img.id, err);
   }
 
-  // Fail soft on engagement data -- page still works without it
-  const [reactionCounts, approvedComments] = await Promise.all([
+  // Fail soft on engagement data -- page still works without it. Vector
+  // lookup joins here too so the viz shows up without blocking anything.
+  const [reactionCounts, approvedComments, captionVector] = await Promise.all([
     countReactions(img.id).catch(() => ({ up: 0, down: 0 })),
-    listApprovedComments(img.id).catch(() => [])
+    listApprovedComments(img.id).catch(() => []),
+    getCaptionVector(img.id).catch(() => null)
   ]);
 
   const caption = pickOne(img.captions)?.text ?? '';
@@ -110,6 +113,8 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
           />
         )}
       </div>
+
+      {captionVector ? <EmbeddingViz vector={captionVector} /> : null}
 
       <div className="mx-auto max-w-2xl space-y-6">
         {caption ? (
