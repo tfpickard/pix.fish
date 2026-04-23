@@ -247,7 +247,12 @@ html.light .logo-for-light { display: block; }
    ============================================================ */
 .tag-cloud-item {
   transform: translateY(var(--tag-dy, 0)) rotate(var(--tag-rot, 0));
+  transform-origin: center;
 }
+/* Sizable hover bump -- base font size is deliberately tiny so the hover
+   lift is how the visitor actually reads each tag. */
 .tag-cloud-item:hover {
-  transform: translateY(0) rotate(0) scale(1.1);
+  transform: translateY(0) rotate(0) scale(1.9);
+  z-index: 10;
+  position: relative;
 }

@@ -1,4 +1,4 @@
-import { Fraunces, JetBrains_Mono, Inter, Rubik_Wet_Paint } from 'next/font/google';
+import { Fraunces, JetBrains_Mono, Inter, Vampiro_One } from 'next/font/google';
 
 export const fontDisplay = Fraunces({
   subsets: ['latin'],
@@ -7,9 +7,10 @@ export const fontDisplay = Fraunces({
   axes: ['SOFT', 'WONK', 'opsz']
 });
 
-// Wordmark only -- the wet, drippy shapes sell the "fish" half of pix.fish.
-// Keep it out of body copy; it's unreadable at small sizes.
-export const fontWordmark = Rubik_Wet_Paint({
+// Wordmark only. Vampiro One is a decorative serif with small drip-style
+// ornaments on the terminals -- reads as subtly liquid without being
+// obviously melty. Used only on the nav; body copy stays on Fraunces.
+export const fontWordmark = Vampiro_One({
   subsets: ['latin'],
   variable: '--font-wordmark',
   display: 'swap',

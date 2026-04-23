@@ -37,8 +37,8 @@ export default async function HomePage({ searchParams }: PageProps) {
   const haiku = pickOne([...HAIKUS]) ?? HAIKUS[0];
 
   return (
-    <div className="space-y-10 pt-8">
-      <section className="space-y-3">
+    <div className="pt-8">
+      <section className="mx-auto max-w-2xl space-y-3">
         <h1 className="prose-caption whitespace-pre-line font-display text-3xl leading-snug text-ink-100">
           {haiku.join('\n')}
         </h1>
@@ -47,9 +47,17 @@ export default async function HomePage({ searchParams }: PageProps) {
             ? 'database not configured -- showing shell only'
             : `${images.length} ${images.length === 1 ? 'picture' : 'pictures'}${activeTags.length > 0 ? ` filtered by: ${activeTags.join(', ')}` : ''}`}
         </p>
-        <TagCloud tags={cloud} activeTags={activeTags} />
       </section>
-      <ImageGrid images={images} />
+
+      {/* Images centered in their own column; the tag cloud floats on the
+          right at lg+ and stacks below the header at smaller widths. */}
+      <div className="mt-10 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_18rem]">
+        <ImageGrid images={images} />
+        <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
+          <TagCloud tags={cloud} activeTags={activeTags} />
+        </aside>
+      </div>
+
       <div className="grid-floor" aria-hidden="true" />
     </div>
   );

@@ -9,7 +9,7 @@ export async function NavBar() {
   return (
     <header className="sticky top-0 z-40 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
       <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
-        <Link href="/" className="flex shrink-0 items-center gap-2 font-wordmark text-2xl tracking-wide leading-none">
+        <Link href="/" className="flex shrink-0 items-center gap-2 font-wordmark text-2xl leading-none">
           <Image
             src="/logo-dark.png"
             alt=""
@@ -26,7 +26,7 @@ export async function NavBar() {
             priority
             className="logo-for-light h-7 w-7 rounded-full"
           />
-          <span className="pt-0.5">
+          <span>
             <span className="text-secondary">pix</span>
             <span className="text-primary">.</span>
             <span className="text-ink-100">fish</span>

@@ -9,8 +9,10 @@ export function ImageGrid({ images }: { images: ImageWithRelations[] }) {
       </p>
     );
   }
+  // Single centered column. Each card keeps its intrinsic aspect ratio so
+  // portraits and landscapes both render uncropped at column width.
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-10">
       {images.map((img) => (
         <ImageCard key={img.id} image={img} />
       ))}

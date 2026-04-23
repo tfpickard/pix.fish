@@ -20,14 +20,18 @@ export function ImageCard({ image }: { image: ImageWithRelations }) {
             alt={caption || image.slug}
             width={image.width}
             height={image.height}
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-            sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
+            // object-contain preserves the original aspect so a portrait and
+            // a landscape both show uncropped; the parent's aspectRatio is
+            // computed from the image itself so there's no letterboxing in
+            // practice.
+            className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.01]"
+            sizes="(min-width: 1024px) 640px, 100vw"
           />
         ) : (
           <img
             src={image.blobUrl}
             alt={caption || image.slug}
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+            className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.01]"
           />
         )}
       </div>
