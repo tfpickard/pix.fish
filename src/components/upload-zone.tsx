@@ -1,38 +1,84 @@
 'use client';
 
-import { useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+  type FormEvent,
+  type KeyboardEvent
+} from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
-type ImageRecord = {
+type HydratedImage = {
+  id: number;
   slug: string;
   blobUrl: string;
   captions: { variant: number; text: string }[];
-  descriptions: { variant: number; text: string }[];
-  tags: { tag: string; source: string }[];
 };
 
+type RowStatus = 'pending' | 'uploading' | 'queued' | 'enriched' | 'failed';
+
+type FileRow = {
+  key: string;
+  file: File;
+  previewUrl: string;
+  status: RowStatus;
+  imageId?: number;
+  slug?: string;
+  caption?: string;
+  error?: string;
+};
+
+// Parallel upload fan-out. Four keeps us well under Vercel's concurrent
+// function-invocation soft cap while finishing a 20-file drop in ~5 batches.
+const UPLOAD_CONCURRENCY = 4;
+const POLL_INTERVAL_MS = 3_000;
+
 export function UploadZone() {
-  const [file, setFile] = useState<File | null>(null);
+  const [rows, setRows] = useState<FileRow[]>([]);
   const [manualCaption, setManualCaption] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ImageRecord | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Create the preview URL once per file and revoke it on change/unmount so we
-  // don't leak blob: URLs across multiple selections.
+  // Revoke preview object URLs when rows are cleared to avoid leaking memory
+  // across multiple selection cycles.
   useEffect(() => {
-    if (!file) {
-      setPreviewUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+    return () => {
+      for (const r of rows) URL.revokeObjectURL(r.previewUrl);
+    };
+    // only run on unmount; per-row cleanup happens in clearRows below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const clearRows = useCallback(() => {
+    setRows((prev) => {
+      for (const r of prev) URL.revokeObjectURL(r.previewUrl);
+      return [];
+    });
+    if (inputRef.current) inputRef.current.value = '';
+  }, []);
+
+  function addFiles(list: FileList | File[] | null) {
+    if (!list) return;
+    const files = Array.from(list);
+    if (files.length === 0) return;
+    setFormError(null);
+    setRows((prev) => [
+      ...prev,
+      ...files.map<FileRow>((file) => ({
+        key: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+        status: 'pending'
+      }))
+    ]);
+  }
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -44,54 +90,150 @@ export function UploadZone() {
   function onDrop(e: DragEvent) {
     e.preventDefault();
     setDragActive(false);
-    const f = e.dataTransfer.files?.[0];
-    if (f) {
-      setFile(f);
-      setResult(null);
-      setError(null);
-    }
+    addFiles(e.dataTransfer.files);
   }
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!file) return;
-    setSubmitting(true);
-    setError(null);
-    setResult(null);
+  function onInputChange(e: ChangeEvent<HTMLInputElement>) {
+    addFiles(e.target.files);
+    // Reset input value so re-selecting the same file still fires onChange.
+    e.target.value = '';
+  }
 
+  function removeRow(key: string) {
+    setRows((prev) => {
+      const target = prev.find((r) => r.key === key);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((r) => r.key !== key);
+    });
+  }
+
+  async function uploadOne(row: FileRow, sharedManualCaption: string | undefined) {
+    setRows((prev) =>
+      prev.map((r) => (r.key === row.key ? { ...r, status: 'uploading', error: undefined } : r))
+    );
     try {
       const fd = new FormData();
-      fd.append('file', file);
-      if (manualCaption.trim()) fd.append('manual_caption', manualCaption.trim());
+      fd.append('file', row.file);
+      if (sharedManualCaption) fd.append('manual_caption', sharedManualCaption);
       const res = await fetch('/api/images', { method: 'POST', body: fd });
-      // The server should always return JSON, but an unhandled throw in the
-      // route (or an upstream proxy error) can produce an HTML/plain-text body.
-      // Read as text so a parse failure surfaces the real status instead of
-      // WebKit's generic "did not match the expected pattern" SyntaxError.
       const raw = await res.text();
-      let payload: { error?: string; message?: string; image?: ImageRecord } | null = null;
+      let payload:
+        | { error?: string; message?: string; image?: { id: number; slug: string; blobUrl: string } }
+        | null = null;
       try {
         payload = raw ? JSON.parse(raw) : null;
       } catch {
         payload = null;
       }
-      if (!res.ok) {
-        const snippet = raw.slice(0, 200) || '<empty body>';
-        setError(payload?.error || payload?.message || `upload failed (${res.status}): ${snippet}`);
-      } else if (payload?.image) {
-        setResult(payload.image);
-        setFile(null);
-        setManualCaption('');
-        if (inputRef.current) inputRef.current.value = '';
-      } else {
-        setError(`unexpected response (${res.status}): ${raw.slice(0, 200) || '<empty body>'}`);
+      // 202 = queued; 201 kept for forward compat if the server changes.
+      if ((res.status === 201 || res.status === 202) && payload?.image) {
+        setRows((prev) =>
+          prev.map((r) =>
+            r.key === row.key
+              ? {
+                  ...r,
+                  status: 'queued',
+                  imageId: payload!.image!.id,
+                  slug: payload!.image!.slug,
+                  error: undefined
+                }
+              : r
+          )
+        );
+        return;
       }
+      const snippet = raw.slice(0, 200) || '<empty body>';
+      const msg = payload?.error || payload?.message || `upload failed (${res.status}): ${snippet}`;
+      setRows((prev) =>
+        prev.map((r) => (r.key === row.key ? { ...r, status: 'failed', error: msg } : r))
+      );
     } catch (err) {
-      setError(String(err));
-    } finally {
-      setSubmitting(false);
+      const msg = err instanceof Error ? err.message : String(err);
+      setRows((prev) =>
+        prev.map((r) => (r.key === row.key ? { ...r, status: 'failed', error: msg } : r))
+      );
     }
   }
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    const pending = rows.filter((r) => r.status === 'pending');
+    if (pending.length === 0) return;
+    setSubmitting(true);
+    setFormError(null);
+    const sharedManualCaption = manualCaption.trim() || undefined;
+
+    // Cap concurrent uploads; a single shared index ensures fairness when
+    // rows are added mid-upload (future-proofing, not used today).
+    let cursor = 0;
+    async function worker() {
+      while (cursor < pending.length) {
+        const idx = cursor++;
+        if (idx >= pending.length) return;
+        await uploadOne(pending[idx], sharedManualCaption);
+      }
+    }
+    const workers = Array.from({ length: Math.min(UPLOAD_CONCURRENCY, pending.length) }, worker);
+    await Promise.all(workers);
+
+    setSubmitting(false);
+    // Leave manualCaption in place so repeated drops can reuse it; clear only
+    // on explicit reset via "clear all".
+  }
+
+  // Poll for enrichment progress on any image that's been queued.
+  useEffect(() => {
+    const queuedIds = rows
+      .filter((r) => r.status === 'queued' && typeof r.imageId === 'number')
+      .map((r) => r.imageId as number);
+    if (queuedIds.length === 0) return;
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/images?ids=${queuedIds.join(',')}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const body: { images?: HydratedImage[] } = await res.json();
+        const byId = new Map((body.images ?? []).map((img) => [img.id, img] as const));
+        if (cancelled) return;
+        setRows((prev) =>
+          prev.map((r) => {
+            if (r.status !== 'queued' || !r.imageId) return r;
+            const img = byId.get(r.imageId);
+            if (!img) return r;
+            const firstCaption = img.captions[0]?.text;
+            // captions.length > 0 is the signal that enrich.image committed.
+            if (img.captions.length > 0) {
+              return {
+                ...r,
+                status: 'enriched',
+                slug: img.slug,
+                caption: firstCaption
+              };
+            }
+            return r;
+          })
+        );
+      } catch {
+        // Transient fetch failure -- next tick will retry.
+      }
+    };
+
+    const handle = window.setInterval(tick, POLL_INTERVAL_MS);
+    // Run once immediately so the UI updates faster after the last upload
+    // resolves to queued.
+    tick();
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [rows]);
+
+  const pendingCount = rows.filter((r) => r.status === 'pending').length;
+  const uploadingCount = rows.filter((r) => r.status === 'uploading').length;
+  const queuedCount = rows.filter((r) => r.status === 'queued').length;
+  const enrichedCount = rows.filter((r) => r.status === 'enriched').length;
+  const failedCount = rows.filter((r) => r.status === 'failed').length;
 
   return (
     <div className="space-y-6">
@@ -99,7 +241,7 @@ export function UploadZone() {
         <div
           role="button"
           tabIndex={0}
-          aria-label="upload an image; click or press enter to browse, or drop a file"
+          aria-label="upload images; click or press enter to browse, or drop files"
           onDragOver={(e) => {
             e.preventDefault();
             setDragActive(true);
@@ -108,43 +250,27 @@ export function UploadZone() {
           onDrop={onDrop}
           onClick={() => inputRef.current?.click()}
           onKeyDown={onKeyDown}
-          className={`flex h-52 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-400 ${
+          className={`flex h-44 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink-400 ${
             dragActive ? 'border-ink-200 bg-ink-800/40' : 'border-ink-700 bg-ink-900/20'
           } text-center transition`}
         >
-          {previewUrl ? (
-            <img
-              src={previewUrl}
-              alt="preview"
-              className="max-h-44 rounded object-contain"
-            />
-          ) : (
-            <>
-              <p className="font-display text-lg text-ink-200">drop a picture</p>
-              <p className="mt-1 font-mono text-xs text-ink-500">
-                or click to choose. jpeg/png/webp/gif up to ~20MB.
-              </p>
-            </>
-          )}
+          <p className="font-display text-lg text-ink-200">drop pictures</p>
+          <p className="mt-1 font-mono text-xs text-ink-500">
+            or click to choose. jpeg/png/webp/gif up to ~20MB each. multiple files ok.
+          </p>
           <input
             ref={inputRef}
             type="file"
+            multiple
             accept="image/jpeg,image/png,image/webp,image/gif"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) {
-                setFile(f);
-                setResult(null);
-                setError(null);
-              }
-            }}
+            onChange={onInputChange}
             className="hidden"
           />
         </div>
 
         <div className="space-y-1.5">
           <label className="font-mono text-xs uppercase tracking-wider text-ink-500">
-            manual caption (optional)
+            manual caption (optional, applied to every file in this batch)
           </label>
           <Textarea
             value={manualCaption}
@@ -154,75 +280,109 @@ export function UploadZone() {
           />
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button type="submit" disabled={!file || submitting}>
-            {submitting ? 'enriching...' : 'upload'}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="submit" disabled={pendingCount === 0 || submitting}>
+            {submitting
+              ? `uploading... (${uploadingCount + queuedCount + enrichedCount}/${rows.length})`
+              : pendingCount > 0
+                ? `upload ${pendingCount} ${pendingCount === 1 ? 'file' : 'files'}`
+                : 'upload'}
           </Button>
-          {submitting ? (
+          {rows.length > 0 ? (
+            <Button type="button" variant="outline" onClick={clearRows} disabled={submitting}>
+              clear all
+            </Button>
+          ) : null}
+          {rows.length > 0 ? (
             <span className="font-mono text-xs text-ink-500">
-              running captions x3, descriptions x3, tags. sit tight (15-40s).
+              {enrichedCount} enriched / {queuedCount} queued / {uploadingCount} uploading
+              {failedCount > 0 ? ` / ${failedCount} failed` : ''}
             </span>
           ) : null}
         </div>
+        {queuedCount > 0 ? (
+          <p className="font-mono text-xs text-ink-500">
+            enrichment runs in the background. cron drains every minute; each image takes ~15-40s once picked up.{' '}
+            <a href="/admin/jobs" className="underline">
+              live job queue
+            </a>
+            .
+          </p>
+        ) : null}
       </form>
 
-      {error ? (
+      {formError ? (
         <p className="rounded-md border border-red-900/50 bg-red-950/30 p-3 font-mono text-xs text-red-300">
-          {error}
+          {formError}
         </p>
       ) : null}
 
-      {result ? (
-        <section className="space-y-5 rounded-md border border-ink-800 bg-ink-900/30 p-4">
-          <div className="flex items-start gap-4">
-            <img src={result.blobUrl} alt={result.slug} className="h-24 w-24 rounded object-cover" />
-            <div className="space-y-1">
-              <p className="font-mono text-xs text-ink-500">slug</p>
-              <a href={`/${result.slug}`} className="font-mono text-sm text-ink-100 hover:underline">
-                /{result.slug}
-              </a>
-            </div>
-          </div>
-          <div>
-            <p className="mb-1 font-mono text-xs uppercase tracking-wider text-ink-500">captions</p>
-            <ul className="space-y-1 prose-caption text-ink-100">
-              {result.captions.map((c) => (
-                <li key={c.variant}>
-                  <span className="mr-2 font-mono text-xs text-ink-500">v{c.variant}</span>
-                  {c.text}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div>
-            <p className="mb-1 font-mono text-xs uppercase tracking-wider text-ink-500">
-              descriptions
-            </p>
-            <ul className="space-y-2 prose-caption text-ink-200">
-              {result.descriptions.map((d) => (
-                <li key={d.variant}>
-                  <span className="mr-2 font-mono text-xs text-ink-500">v{d.variant}</span>
-                  {d.text}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div>
-            <p className="mb-1 font-mono text-xs uppercase tracking-wider text-ink-500">tags</p>
-            <div className="flex flex-wrap gap-1">
-              {result.tags.map((t) => (
-                <span
-                  key={t.tag}
-                  className={`chip ${t.source === 'taxonomy' ? 'border-ink-500 text-ink-200' : ''}`}
-                  title={t.source}
+      {rows.length > 0 ? (
+        <ul className="space-y-2">
+          {rows.map((r) => (
+            <li
+              key={r.key}
+              className="flex items-start gap-3 rounded-md border border-ink-800 bg-ink-900/30 p-3"
+            >
+              <img
+                src={r.previewUrl}
+                alt="preview"
+                className="h-16 w-16 flex-shrink-0 rounded object-cover"
+              />
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="truncate font-mono text-xs text-ink-300">{r.file.name}</span>
+                  <StatusBadge status={r.status} />
+                </div>
+                {r.slug ? (
+                  <a
+                    href={`/${r.slug}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block truncate font-mono text-xs text-ink-400 hover:underline"
+                  >
+                    /{r.slug}
+                  </a>
+                ) : null}
+                {r.caption ? (
+                  <p className="line-clamp-2 prose-caption text-sm text-ink-100">{r.caption}</p>
+                ) : null}
+                {r.error ? (
+                  <p className="font-mono text-xs text-red-300">{r.error}</p>
+                ) : null}
+              </div>
+              {r.status === 'pending' || r.status === 'failed' ? (
+                <button
+                  type="button"
+                  onClick={() => removeRow(r.key)}
+                  className="font-mono text-xs text-ink-500 hover:text-ink-200"
+                  aria-label={`remove ${r.file.name}`}
                 >
-                  {t.tag}
-                </span>
-              ))}
-            </div>
-          </div>
-        </section>
+                  remove
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
+  );
+}
+
+function StatusBadge({ status }: { status: RowStatus }) {
+  const copy: Record<RowStatus, { label: string; className: string }> = {
+    pending: { label: 'pending', className: 'border-ink-700 text-ink-400' },
+    uploading: { label: 'uploading', className: 'border-ink-500 text-ink-200' },
+    queued: { label: 'queued', className: 'border-ink-500 text-ink-200' },
+    enriched: { label: 'enriched', className: 'border-emerald-700 text-emerald-300' },
+    failed: { label: 'failed', className: 'border-red-800 text-red-300' }
+  };
+  const { label, className } = copy[status];
+  return (
+    <span
+      className={`rounded-sm border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${className}`}
+    >
+      {label}
+    </span>
   );
 }

@@ -18,6 +18,7 @@ function backoffMs(attempt: number): number {
 const JOB_TIMEOUT_MS: Record<string, number> = {
   'webhook.deliver': 25_000, // fetch itself aborts at 10s; leave slack for slow DNS
   'reprocess.image': 50_000, // 3 parallel vision calls; Anthropic can run long
+  'enrich.image': 50_000, // same shape as reprocess.image -- 3 parallel vision calls
   'umap.recompute': 55_000, // single heavy job; fills the tick
   'backup.export': 55_000, // large zip upload; fills the tick
   noop: 5_000

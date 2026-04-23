@@ -1,0 +1,47 @@
+import { eq } from 'drizzle-orm';
+import type { Job } from '@/lib/db/schema';
+import { db } from '@/lib/db/client';
+import { captions, images } from '@/lib/db/schema';
+import { loadAiConfig } from '@/lib/ai/loadConfig';
+import { enrichImage } from '@/lib/enrichment';
+import { persistEnrichment } from '@/lib/enrichment-persist';
+
+// Providers prefer the blob URL; pass an empty buffer to avoid round-tripping
+// the original file through Postgres just to hand it back out to Anthropic.
+const EMPTY_BUFFER = Buffer.alloc(0);
+
+type Payload = { imageId: number };
+
+export async function enrichImageHandler(job: Job): Promise<void> {
+  const payload = job.payload as Payload;
+  const [img] = await db.select().from(images).where(eq(images.id, payload.imageId)).limit(1);
+  if (!img) return;
+
+  // Idempotency guard: if a previous attempt committed the captions tx and
+  // then crashed before markJobDone, a retry would double-enrich. Bail out
+  // silently so the webhook also doesn't re-fire.
+  const [existingCap] = await db
+    .select({ id: captions.id })
+    .from(captions)
+    .where(eq(captions.imageId, img.id))
+    .limit(1);
+  if (existingCap) return;
+
+  const cfg = await loadAiConfig();
+  const manualCaption = img.manualCaption ?? undefined;
+  const enrichment = await enrichImage(
+    EMPTY_BUFFER,
+    img.mime ?? 'image/jpeg',
+    cfg,
+    manualCaption,
+    img.blobUrl
+  );
+
+  await persistEnrichment({
+    imageId: img.id,
+    placeholderSlug: img.slug,
+    manualCaption,
+    enrichment,
+    cfg
+  });
+}

@@ -1,6 +1,7 @@
 import type { Job } from '@/lib/db/schema';
 import { webhookDeliverHandler } from './webhookDeliver';
 import { reprocessImageHandler } from './reprocessImage';
+import { enrichImageHandler } from './enrichImage';
 import { umapRecomputeHandler } from './umapRecompute';
 import { backupExportHandler } from './backupExport';
 
@@ -15,6 +16,7 @@ export const handlers: Record<string, JobHandler> = {
   },
   'webhook.deliver': webhookDeliverHandler,
   'reprocess.image': reprocessImageHandler,
+  'enrich.image': enrichImageHandler,
   'umap.recompute': umapRecomputeHandler,
   'backup.export': backupExportHandler
 };

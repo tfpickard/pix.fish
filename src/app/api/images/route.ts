@@ -1,18 +1,12 @@
 import { NextResponse } from 'next/server';
-import { eq } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { put } from '@vercel/blob';
 import { auth, isOwner } from '@/lib/auth';
-import { getEmbedder } from '@/lib/ai';
-import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { db } from '@/lib/db/client';
-import { captions, descriptions, images, tags } from '@/lib/db/schema';
-import { enrichImage } from '@/lib/enrichment';
+import { images } from '@/lib/db/schema';
 import { extractExif, extractPalette } from '@/lib/image-meta';
-import { slugify } from '@/lib/slug';
-import { uniquifySlug } from '@/lib/db/queries/slugs';
-import { getImageBySlug, listImages } from '@/lib/db/queries/images';
-import { upsertEmbedding } from '@/lib/db/queries/embeddings';
-import { emit } from '@/lib/webhooks/emit';
+import { hydrateImages, listImages } from '@/lib/db/queries/images';
+import { enqueueJob } from '@/lib/db/queries/jobs';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -22,6 +16,23 @@ const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gi
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
+
+  // Scoped id lookup used by the upload UI to poll per-file enrichment
+  // progress. Returns rows hydrated with captions/descriptions/tags so the
+  // client can detect "enriched" by checking captions.length > 0.
+  const idsParam = url.searchParams.get('ids');
+  if (idsParam !== null) {
+    const ids = idsParam
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0)
+      .slice(0, 50);
+    if (ids.length === 0) return NextResponse.json({ images: [] });
+    const rows = await db.select().from(images).where(inArray(images.id, ids));
+    const hydrated = await hydrateImages(rows);
+    return NextResponse.json({ images: hydrated });
+  }
+
   const limit = parseIntParam(url.searchParams.get('limit'), 24);
   const offset = parseIntParam(url.searchParams.get('offset'), 0);
   const tagsFilter = url.searchParams.getAll('tag').filter(Boolean);
@@ -67,9 +78,10 @@ export async function POST(req: Request) {
 
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  // Upload to Vercel Blob first -- we want the URL persisted even if enrichment fails.
-  // A missing/invalid BLOB_READ_WRITE_TOKEN raises here; surface it as JSON so the
-  // client doesn't choke trying to parse Next's HTML error page.
+  // Upload to Vercel Blob first -- we want the URL persisted even if the
+  // enrichment job later fails. A missing/invalid BLOB_READ_WRITE_TOKEN
+  // surfaces here; report it as JSON so the client doesn't choke on Next's
+  // HTML error page.
   const blobKey = `images/${crypto.randomUUID()}-${safeName(file.name)}`;
   let blob: Awaited<ReturnType<typeof put>>;
   try {
@@ -83,16 +95,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'blob upload failed' }, { status: 502 });
   }
 
-  // Extract EXIF + palette from the buffer before the row insert so they
-  // land on the first write. Both helpers swallow their own errors; at worst
-  // we persist nulls and can backfill later.
+  // EXIF + palette land on the first write so the row is self-describing
+  // even before enrichment runs. Both helpers swallow their own errors.
   const [{ exif, takenAt }, palette] = await Promise.all([
     extractExif(buffer),
     extractPalette(buffer)
   ]);
 
-  // Reserve the row with a placeholder slug. We'll replace it with the real
-  // caption-derived slug after enrichment succeeds.
+  // Reserve the row with a placeholder slug. The enrich.image job updates
+  // the slug after captions come back.
   const placeholderSlug = `img-${blob.pathname.split('/').pop()!.slice(0, 32)}`;
   let row: typeof images.$inferSelect | undefined;
   try {
@@ -119,135 +130,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'failed to create image row' }, { status: 500 });
   }
 
-  // Run the synchronous enrichment. On failure we leave the image row with its
-  // placeholder slug so the owner can retry/edit -- better than losing the upload.
-  const cfg = await loadAiConfig();
-  let enrichment;
+  // Hand off enrichment to the background queue. The cron at /api/cron/jobs
+  // drains up to 10 jobs per minute, so worst-case pickup latency is ~60s.
+  // Keeping the POST thin lets the client fire N parallel uploads without
+  // running into the 60s function wall -- see src/components/upload-zone.tsx.
   try {
-    // Pass the blob URL so providers can fetch the image remotely;
-    // Anthropic's base64 path caps at 5 MB and larger uploads would fail.
-    enrichment = await enrichImage(buffer, mime, cfg, manualCaption, blob.url);
+    await enqueueJob({
+      type: 'enrich.image',
+      payload: { imageId: row.id },
+      maxAttempts: 3
+    });
   } catch (err) {
-    // Log full detail server-side; return a generic message to avoid leaking
-    // vendor SDK internals (request ids, stack frames, partial prompts).
-    console.error('enrichment failed for image', row.id, err);
+    // The blob + image row are already persisted; a failure to enqueue is
+    // recoverable via /admin/reprocess. Surface it so the client can flag it.
+    console.error('failed to enqueue enrich.image job', row.id, err);
     return NextResponse.json(
-      { error: 'enrichment failed', imageId: row.id },
-      { status: 502 }
+      { error: 'failed to queue enrichment', image: row },
+      { status: 202 }
     );
   }
 
-  // Persist captions + descriptions + tags + slug in a single transaction so
-  // a mid-pipeline failure cannot leave the image half-enriched.
-  const slugSourceText = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
-  const slugBase = slugify(slugSourceText) || placeholderSlug;
-  const finalSlug = await uniquifySlug(slugBase, row.id);
-
-  await db.transaction(async (tx) => {
-    const capRows = enrichment.captions.map((c, i) => ({
-      imageId: row.id,
-      variant: i + 1,
-      text: c.text,
-      provider: c.provider,
-      model: c.model,
-      isSlugSource: i === 0 && !manualCaption,
-      locked: false
-    }));
-    if (manualCaption) {
-      capRows.push({
-        imageId: row.id,
-        variant: 4,
-        text: manualCaption,
-        provider: 'manual',
-        model: 'manual',
-        isSlugSource: true,
-        locked: true
-      });
-    }
-    if (capRows.length > 0) await tx.insert(captions).values(capRows);
-
-    if (enrichment.descriptions.length > 0) {
-      await tx.insert(descriptions).values(
-        enrichment.descriptions.map((d, i) => ({
-          imageId: row.id,
-          variant: i + 1,
-          text: d.text,
-          provider: d.provider,
-          model: d.model,
-          locked: false
-        }))
-      );
-    }
-
-    if (enrichment.tags.length > 0) {
-      await tx
-        .insert(tags)
-        .values(
-          enrichment.tags.map((t) => ({
-            imageId: row.id,
-            tag: t.tag,
-            source: t.source,
-            confidence: t.confidence ?? null,
-            provider: t.provider,
-            model: t.model
-          }))
-        )
-        .onConflictDoNothing();
-    }
-
-    if (finalSlug !== placeholderSlug) {
-      await tx.update(images).set({ slug: finalSlug }).where(eq(images.id, row.id));
-    }
-  });
-
-  // Generate + store the caption embedding. Runs after the enrichment
-  // transaction so a failure here doesn't roll back the upload -- semantic
-  // search will just miss this image until a Phase 4 reprocess fills it in.
-  try {
-    const embedText = slugSourceText;
-    const embedder = getEmbedder(cfg);
-    const vec = await embedder.embed(embedText);
-    await upsertEmbedding({
-      imageId: row.id,
-      kind: 'caption',
-      vec,
-      provider: embedder.name,
-      model: embedder.model
-    });
-  } catch (err) {
-    console.error('embedding generation failed for image', row.id, err);
-  }
-
-  const full = await getImageBySlug(finalSlug);
-
-  // Fire webhook subscribers after every DB commit so payloads reference
-  // persisted rows. The emitter only enqueues delivery jobs; a slow consumer
-  // can't block this response.
-  if (full) {
-    await emit('image.created', {
-      image: {
-        id: full.id,
-        slug: full.slug,
-        blobUrl: full.blobUrl,
-        width: full.width,
-        height: full.height,
-        takenAt: full.takenAt ? full.takenAt.toISOString() : null,
-        uploadedAt: full.uploadedAt.toISOString()
-      },
-      captions: full.captions.map((c) => ({
-        variant: c.variant,
-        text: c.text,
-        isSlugSource: c.isSlugSource
-      })),
-      tags: full.tags.map((t) => ({
-        tag: t.tag,
-        source: t.source as 'taxonomy' | 'freeform',
-        confidence: t.confidence
-      }))
-    });
-  }
-
-  return NextResponse.json({ image: full }, { status: 201 });
+  return NextResponse.json({ image: row, status: 'queued' }, { status: 202 });
 }
 
 function safeName(name: string): string {

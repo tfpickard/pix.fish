@@ -8,7 +8,7 @@ export default function UploadPage() {
       <header>
         <h1 className="font-display text-2xl text-ink-100">upload</h1>
         <p className="font-mono text-xs text-ink-500">
-          synchronous enrichment. captions, descriptions, tags.
+          drop one or many. enrichment runs in the background queue.
         </p>
       </header>
       <UploadZone />
