@@ -245,14 +245,23 @@ html.light .logo-for-light { display: block; }
    An inline transform on the element itself would win over
    hover:scale-*, which is what we're avoiding here.
    ============================================================ */
+/* Per-tag drift lives in CSS custom properties. Fallback units matter:
+   Safari refuses to parse `rotate(0)` unitless, which silently kills the
+   whole transform and makes :hover look broken (the click-then-stays-big
+   behavior is Safari's tap-as-hover latch, not a working hover state). */
 .tag-cloud-item {
-  transform: translateY(var(--tag-dy, 0)) rotate(var(--tag-rot, 0));
+  transform: translateY(var(--tag-dy, 0px)) rotate(var(--tag-rot, 0deg));
   transform-origin: center;
+  transition: transform 180ms ease, color 180ms ease;
+  will-change: transform;
 }
 /* Sizable hover bump -- base font size is deliberately tiny so the hover
-   lift is how the visitor actually reads each tag. */
-.tag-cloud-item:hover {
-  transform: translateY(0) rotate(0) scale(1.9);
+   lift is how the visitor actually reads each tag. :focus-visible mirrors
+   the same state for keyboard navigation. */
+.tag-cloud-item:hover,
+.tag-cloud-item:focus-visible {
+  transform: translateY(0px) rotate(0deg) scale(1.9);
   z-index: 10;
   position: relative;
+  outline: none;
 }

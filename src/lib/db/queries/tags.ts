@@ -12,6 +12,9 @@ export async function tagCloud(limit = 64): Promise<TagCount[]> {
     })
     .from(tags)
     .groupBy(tags.tag)
+    // Skip singletons -- a tag that appears on only one image is noise in
+    // the cloud. Visitors can still discover it via the image detail page.
+    .having(sql`count(*) > 1`)
     .orderBy(desc(sql`count(*)`))
     .limit(limit);
   return rows;

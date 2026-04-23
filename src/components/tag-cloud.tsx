@@ -59,7 +59,10 @@ export function TagCloud({ tags, activeTags }: Props) {
                   '--tag-dy': `${dy}px`
                 } as React.CSSProperties
               }
-              className={`tag-cloud-item inline-block transition-transform duration-200 ${
+              // transition + hover scale live in the .tag-cloud-item rule in
+              // globals.css; keeping Tailwind transition utilities here
+              // would override it with shorter durations / different easing.
+              className={`tag-cloud-item inline-block ${
                 active ? 'text-ink-100' : 'hover:text-ink-100'
               }`}
             >
