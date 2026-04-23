@@ -20,10 +20,13 @@
 
 .font-fungal {
   font-family: 'Fungal', var(--font-wordmark), ui-serif, Georgia, serif;
-  /* Moderate GROW keeps hyphae visible without sacrificing legibility;
-     THCK is low-moderate so the strokes stay light and the tendrils
-     read as organic filaments rather than thick noise. */
-  font-variation-settings: 'GROW' 300, 'THCK' 200;
+  /* Axis tag casing matters: Fungal ships `grow` lowercase and `THCK`
+     uppercase in its fvar table (verified via fontTools). Using the
+     wrong case silently no-ops and the wordmark falls back to plain
+     DejaVu Sans shape, which is why the tendrils weren't showing.
+     Moderate values: GROW big enough to see visible growth, THCK
+     low-moderate so strokes stay filament-thin. */
+  font-variation-settings: 'grow' 300, 'THCK' 200;
 }
 
 /* ============================================================
