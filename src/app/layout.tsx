@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { Analytics } from '@vercel/analytics/next';
 import { fontDisplay, fontMono, fontSans, fontWordmark } from '@/lib/fonts';
 import { NavBar } from '@/components/nav-bar';
 import { Providers } from '@/components/providers';
@@ -40,6 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <NavBar />
           <main className="mx-auto w-full max-w-6xl px-4 pb-24">{children}</main>
         </Providers>
+        <Analytics />
       </body>
     </html>
   );
