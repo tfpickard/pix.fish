@@ -229,3 +229,12 @@ html.light body::before {
 html.light .grid-floor {
   display: none;
 }
+
+/* ============================================================
+   Theme-aware logo swap -- the nav logo exists in two color
+   variants; show the one that matches the active theme.
+   ============================================================ */
+.logo-for-dark { display: block; }
+.logo-for-light { display: none; }
+html.light .logo-for-dark { display: none; }
+html.light .logo-for-light { display: block; }
