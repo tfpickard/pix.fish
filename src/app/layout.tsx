@@ -7,7 +7,20 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'pix.fish',
   description: 'A personal image gallery with AI enrichment.',
-  icons: { icon: '/favicon.ico' },
+  icons: {
+    // Purple is the default (no media) for UAs that ignore prefers-color-
+    // scheme. Dark/light variants swap via @media so the tab favicon
+    // matches the user's OS theme. apple-touch-icon uses the dark variant
+    // (iOS home-screen backgrounds are usually dark).
+    icon: [
+      { url: '/favicon.ico', sizes: 'any' },
+      { url: '/favicon-dark.ico', media: '(prefers-color-scheme: dark)' },
+      { url: '/favicon-light.ico', media: '(prefers-color-scheme: light)' },
+      { url: '/icons/favicon-16.png', type: 'image/png', sizes: '16x16' },
+      { url: '/icons/favicon-32.png', type: 'image/png', sizes: '32x32' }
+    ],
+    apple: '/icons/apple-touch-icon.png'
+  },
   manifest: '/manifest.webmanifest'
 };
 
