@@ -9,13 +9,38 @@ import { countReactions } from '@/lib/db/queries/reactions';
 import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
 import { ImageActions } from '@/components/image-actions';
-import { ImageGrid } from '@/components/image-grid';
 import { ExifFacts, PaletteStrip } from '@/components/image-meta';
+import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { ReactionBar } from '@/components/reaction-bar';
 import { CommentList } from '@/components/comment-list';
 import { ReportButton } from '@/components/report-button';
 
 export const dynamic = 'force-dynamic';
+
+// Compact 2-column square-crop thumbs for "more like / unlike this". Uses
+// object-cover because the 1:1 crop is intentional -- these are navigation
+// affordances, not the primary display of the image.
+function NeighborGrid({ images }: { images: ImageWithRelations[] }) {
+  return (
+    <div className="mx-auto grid w-full max-w-md grid-cols-2 gap-2">
+      {images.map((img) => (
+        <Link
+          key={img.id}
+          href={`/${img.slug}`}
+          className="group relative block aspect-square overflow-hidden rounded border border-ink-800/60 bg-ink-900/30"
+        >
+          <Image
+            src={img.blobUrl}
+            alt={img.captions[0]?.text ?? img.slug}
+            fill
+            sizes="(min-width: 640px) 208px, 45vw"
+            className="object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+          />
+        </Link>
+      ))}
+    </div>
+  );
+}
 
 export default async function ImageDetailPage({ params }: { params: { slug: string } }) {
   const slug = decodeURIComponent(params.slug);
@@ -123,16 +148,16 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
       </div>
 
       {neighbors.length > 0 ? (
-        <section aria-label="more like this" className="mx-auto max-w-6xl space-y-4 pt-6">
-          <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">more like this</h2>
-          <ImageGrid images={neighbors} />
+        <section aria-label="more like this" className="mx-auto max-w-md space-y-3 pt-6">
+          <h2 className="text-center font-mono text-xs uppercase tracking-wide text-ink-500">more like this</h2>
+          <NeighborGrid images={neighbors} />
         </section>
       ) : null}
 
       {opposites.length > 0 ? (
-        <section aria-label="more unlike this" className="mx-auto max-w-6xl space-y-4 pt-6">
-          <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">more unlike this</h2>
-          <ImageGrid images={opposites} />
+        <section aria-label="more unlike this" className="mx-auto max-w-md space-y-3 pt-6">
+          <h2 className="text-center font-mono text-xs uppercase tracking-wide text-ink-500">more unlike this</h2>
+          <NeighborGrid images={opposites} />
         </section>
       ) : null}
 
