@@ -26,7 +26,7 @@
      DejaVu Sans shape, which is why the tendrils weren't showing.
      Moderate values: GROW big enough to see visible growth, THCK
      low-moderate so strokes stay filament-thin. */
-  font-variation-settings: 'grow' 300, 'THCK' 200;
+  font-variation-settings: 'grow' 800, 'THCK' 350;
 }
 
 /* ============================================================
