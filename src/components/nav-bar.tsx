@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import Link from 'next/link';
 import { auth, isOwner } from '@/lib/auth';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -7,11 +8,29 @@ export async function NavBar() {
   const owner = isOwner(session);
   return (
     <header className="sticky top-0 z-40 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
-        <Link href="/" className="shrink-0 font-display text-xl tracking-tight">
-          <span className="text-secondary">pix</span>
-          <span className="text-primary">.</span>
-          <span className="text-ink-100">fish</span>
+      <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
+        <Link href="/" className="flex shrink-0 items-center gap-2 font-display text-xl tracking-tight">
+          <Image
+            src="/logo-dark.png"
+            alt=""
+            width={28}
+            height={28}
+            priority
+            className="logo-for-dark h-7 w-7 rounded-full"
+          />
+          <Image
+            src="/logo-light.png"
+            alt=""
+            width={28}
+            height={28}
+            priority
+            className="logo-for-light h-7 w-7 rounded-full"
+          />
+          <span>
+            <span className="text-secondary">pix</span>
+            <span className="text-primary">.</span>
+            <span className="text-ink-100">fish</span>
+          </span>
         </Link>
         <form action="/search" method="GET" className="ml-auto flex-1 max-w-xs">
           <input
