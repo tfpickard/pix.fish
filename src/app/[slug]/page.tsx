@@ -30,14 +30,22 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
   const session = await auth();
   const owner = isOwner(session);
 
-  // Fail soft: if the neighbor query throws (missing table, embedding extension
-  // trouble, etc.) the detail page still renders.
+  // Fail soft: if either neighbor query throws (missing table, embedding
+  // extension trouble, etc.) the detail page still renders.
   let neighbors: Awaited<ReturnType<typeof hydrateImages>> = [];
+  let opposites: Awaited<ReturnType<typeof hydrateImages>> = [];
   try {
-    const matches = await getNeighborsByImageId(img.id, { limit: 6, kind: 'caption' });
-    if (matches.length > 0) {
-      const rows = await getImagesByIdsOrdered(matches.map((m) => m.imageId));
+    const [near, far] = await Promise.all([
+      getNeighborsByImageId(img.id, { limit: 6, kind: 'caption', order: 'nearest' }),
+      getNeighborsByImageId(img.id, { limit: 6, kind: 'caption', order: 'farthest' })
+    ]);
+    if (near.length > 0) {
+      const rows = await getImagesByIdsOrdered(near.map((m) => m.imageId));
       neighbors = await hydrateImages(rows);
+    }
+    if (far.length > 0) {
+      const rows = await getImagesByIdsOrdered(far.map((m) => m.imageId));
+      opposites = await hydrateImages(rows);
     }
   } catch (err) {
     console.error('neighbor lookup failed for image', img.id, err);
@@ -118,6 +126,13 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
         <section aria-label="more like this" className="mx-auto max-w-6xl space-y-4 pt-6">
           <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">more like this</h2>
           <ImageGrid images={neighbors} />
+        </section>
+      ) : null}
+
+      {opposites.length > 0 ? (
+        <section aria-label="more unlike this" className="mx-auto max-w-6xl space-y-4 pt-6">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">more unlike this</h2>
+          <ImageGrid images={opposites} />
         </section>
       ) : null}
 

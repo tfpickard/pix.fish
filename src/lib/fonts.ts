@@ -1,4 +1,4 @@
-import { Fraunces, JetBrains_Mono, Inter, Vampiro_One } from 'next/font/google';
+import { Fraunces, JetBrains_Mono, Inter, Monoton } from 'next/font/google';
 
 export const fontDisplay = Fraunces({
   subsets: ['latin'],
@@ -7,10 +7,10 @@ export const fontDisplay = Fraunces({
   axes: ['SOFT', 'WONK', 'opsz']
 });
 
-// Wordmark only. Vampiro One is a decorative serif with small drip-style
-// ornaments on the terminals -- reads as subtly liquid without being
-// obviously melty. Used only on the nav; body copy stays on Fraunces.
-export const fontWordmark = Vampiro_One({
+// Wordmark only. Monoton is a decorative retro sign face -- thin triple-
+// line strokes, art-deco / vintage-neon character. Reads as weird but
+// legible at display size; body copy stays on Fraunces.
+export const fontWordmark = Monoton({
   subsets: ['latin'],
   variable: '--font-wordmark',
   display: 'swap',
