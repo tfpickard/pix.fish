@@ -10,6 +10,7 @@
  */
 import { asc, eq, isNull, sql } from 'drizzle-orm';
 import { getEmbedder } from '../src/lib/ai';
+import { loadAiConfig } from '../src/lib/ai/loadConfig';
 import { db } from '../src/lib/db/client';
 import { captions, embeddings, images } from '../src/lib/db/schema';
 import { upsertEmbedding } from '../src/lib/db/queries/embeddings';
@@ -31,7 +32,8 @@ async function main() {
   }
 
   console.log(`backfilling ${rows.length} image(s)`);
-  const embedder = getEmbedder();
+  const cfg = await loadAiConfig();
+  const embedder = getEmbedder(cfg);
 
   let ok = 0;
   let fail = 0;

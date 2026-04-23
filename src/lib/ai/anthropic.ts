@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AIProvider, AITag } from './types';
 import { parseTagsJson, parseVariantsJson } from './types';
 
-const MODEL = 'claude-sonnet-4-6';
+export const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -15,9 +15,9 @@ function getClient(): Anthropic {
   return client;
 }
 
-async function callVision(image: Buffer, mime: string, prompt: string): Promise<string> {
+async function callVision(model: string, image: Buffer, mime: string, prompt: string): Promise<string> {
   const res = await getClient().messages.create({
-    model: MODEL,
+    model,
     max_tokens: 1024,
     messages: [
       {
@@ -49,22 +49,24 @@ function normalizeMime(mime: string): string {
   return lower;
 }
 
-export const AnthropicProvider: AIProvider = {
-  name: 'anthropic',
-  model: MODEL,
+export function createAnthropicProvider(model: string = ANTHROPIC_DEFAULT_MODEL): AIProvider {
+  return {
+    name: 'anthropic',
+    model,
 
-  async captions(image, mime, prompt) {
-    const text = await callVision(image, mime, prompt);
-    return parseVariantsJson(text);
-  },
+    async captions(image, mime, prompt) {
+      const text = await callVision(model, image, mime, prompt);
+      return parseVariantsJson(text);
+    },
 
-  async descriptions(image, mime, prompt) {
-    const text = await callVision(image, mime, prompt);
-    return parseVariantsJson(text);
-  },
+    async descriptions(image, mime, prompt) {
+      const text = await callVision(model, image, mime, prompt);
+      return parseVariantsJson(text);
+    },
 
-  async tags(image, mime, prompt): Promise<AITag[]> {
-    const text = await callVision(image, mime, prompt);
-    return parseTagsJson(text);
-  }
-};
+    async tags(image, mime, prompt): Promise<AITag[]> {
+      const text = await callVision(model, image, mime, prompt);
+      return parseTagsJson(text);
+    }
+  };
+}

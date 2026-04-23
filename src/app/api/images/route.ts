@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { put } from '@vercel/blob';
 import { auth, isOwner } from '@/lib/auth';
 import { getEmbedder } from '@/lib/ai';
+import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
 import { enrichImage } from '@/lib/enrichment';
@@ -11,6 +12,7 @@ import { slugify } from '@/lib/slug';
 import { uniquifySlug } from '@/lib/db/queries/slugs';
 import { getImageBySlug, listImages } from '@/lib/db/queries/images';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
+import { emit } from '@/lib/webhooks/emit';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -119,9 +121,10 @@ export async function POST(req: Request) {
 
   // Run the synchronous enrichment. On failure we leave the image row with its
   // placeholder slug so the owner can retry/edit -- better than losing the upload.
+  const cfg = await loadAiConfig();
   let enrichment;
   try {
-    enrichment = await enrichImage(buffer, mime, manualCaption);
+    enrichment = await enrichImage(buffer, mime, cfg, manualCaption);
   } catch (err) {
     // Log full detail server-side; return a generic message to avoid leaking
     // vendor SDK internals (request ids, stack frames, partial prompts).
@@ -200,7 +203,7 @@ export async function POST(req: Request) {
   // search will just miss this image until a Phase 4 reprocess fills it in.
   try {
     const embedText = slugSourceText;
-    const embedder = getEmbedder();
+    const embedder = getEmbedder(cfg);
     const vec = await embedder.embed(embedText);
     await upsertEmbedding({
       imageId: row.id,
@@ -214,6 +217,34 @@ export async function POST(req: Request) {
   }
 
   const full = await getImageBySlug(finalSlug);
+
+  // Fire webhook subscribers after every DB commit so payloads reference
+  // persisted rows. The emitter only enqueues delivery jobs; a slow consumer
+  // can't block this response.
+  if (full) {
+    await emit('image.created', {
+      image: {
+        id: full.id,
+        slug: full.slug,
+        blobUrl: full.blobUrl,
+        width: full.width,
+        height: full.height,
+        takenAt: full.takenAt ? full.takenAt.toISOString() : null,
+        uploadedAt: full.uploadedAt.toISOString()
+      },
+      captions: full.captions.map((c) => ({
+        variant: c.variant,
+        text: c.text,
+        isSlugSource: c.isSlugSource
+      })),
+      tags: full.tags.map((t) => ({
+        tag: t.tag,
+        source: t.source as 'taxonomy' | 'freeform',
+        confidence: t.confidence
+      }))
+    });
+  }
+
   return NextResponse.json({ image: full }, { status: 201 });
 }
 

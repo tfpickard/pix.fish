@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getEmbedder } from '@/lib/ai';
+import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { searchByVector } from '@/lib/db/queries/embeddings';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 
@@ -16,7 +17,8 @@ export async function GET(req: Request) {
 
   let embedder: ReturnType<typeof getEmbedder>;
   try {
-    embedder = getEmbedder();
+    const cfg = await loadAiConfig();
+    embedder = getEmbedder(cfg);
   } catch (err) {
     console.error('embedder not configured', err);
     return NextResponse.json({ error: 'search unavailable' }, { status: 503 });

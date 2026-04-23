@@ -8,7 +8,8 @@ const config: Config = {
       fontFamily: {
         display: ['var(--font-display)', 'ui-serif', 'Georgia', 'serif'],
         mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
-        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif']
+        sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        wordmark: ['var(--font-wordmark)', 'ui-serif', 'Georgia', 'serif']
       },
       colors: {
         // Semantic tokens (theme-aware, use in new components)

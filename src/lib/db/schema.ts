@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
   doublePrecision,
@@ -213,12 +213,114 @@ export const reports = pgTable('reports', {
 });
 
 // ----------------------------------------------------------------------------
-// Phase 4+ tables (not created yet; see SPEC.md "Data model" section)
-//   webhooks         -- outbound webhook config
-//   jobs             -- async enrichment queue
-//   ai_config        -- runtime provider routing
-//   saved_prompts    -- hybrid prompt generator output
+// Phase 4 tables
 // ----------------------------------------------------------------------------
+
+// Per-field provider routing. Natural key on `field` so writes are upserts.
+// Seeded from src/lib/ai/config.ts defaults on first run so behavior stays
+// byte-identical until the owner changes a row via /admin/ai.
+export const aiConfig = pgTable('ai_config', {
+  id: serial('id').primaryKey(),
+  field: text('field').notNull().unique(), // 'captions' | 'descriptions' | 'tags' | 'embeddings'
+  provider: text('provider').notNull(),
+  model: text('model').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// Outbound webhook subscriptions. `secret` is shown once at creation so the
+// owner can record it; rotation is delete+recreate until usage warrants a
+// real rotation UI.
+export const webhooks = pgTable('webhooks', {
+  id: serial('id').primaryKey(),
+  url: text('url').notNull(),
+  secret: text('secret').notNull(),
+  events: text('events').array().notNull(),
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// One row per attempted delivery; retries add new rows so the owner gets full
+// history. `responseBody` is truncated to 2 KB before insert.
+export const webhookDeliveries = pgTable(
+  'webhook_deliveries',
+  {
+    id: serial('id').primaryKey(),
+    webhookId: integer('webhook_id')
+      .notNull()
+      .references(() => webhooks.id, { onDelete: 'cascade' }),
+    event: text('event').notNull(),
+    payload: jsonb('payload').notNull(),
+    attempt: integer('attempt').notNull().default(1),
+    status: text('status').notNull(), // 'pending' | 'success' | 'failed'
+    responseStatus: integer('response_status'),
+    responseBody: text('response_body'),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    webhookCreatedIdx: index('webhook_deliveries_webhook_created_idx').on(t.webhookId, t.createdAt)
+  })
+);
+
+// Background job queue drained by /api/cron/jobs. We lease rows with a
+// visibility timeout (`lockedAt`) rather than FOR UPDATE so a Vercel function
+// dying mid-handler doesn't orphan rows until the DB session expires.
+export const jobs = pgTable(
+  'jobs',
+  {
+    id: serial('id').primaryKey(),
+    type: text('type').notNull(),
+    payload: jsonb('payload').notNull(),
+    status: text('status').notNull().default('pending'), // 'pending' | 'processing' | 'done' | 'failed'
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(5),
+    runAt: timestamp('run_at', { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    lockedBy: text('locked_by'),
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    // Partial indexes so cron scans are cheap as the table grows.
+    pendingIdx: index('jobs_pending_idx')
+      .on(t.runAt)
+      .where(sql`status = 'pending'`),
+    processingIdx: index('jobs_processing_idx')
+      .on(t.lockedAt)
+      .where(sql`status = 'processing'`)
+  })
+);
+
+// Cached UMAP projection. The handler inserts a new row per run; read paths
+// select the newest one whose `params` match the requested cache key.
+export const umapProjections = pgTable(
+  'umap_projections',
+  {
+    id: serial('id').primaryKey(),
+    pointCount: integer('point_count').notNull(),
+    points: jsonb('points').notNull(), // [{ imageId, x, y }]
+    params: jsonb('params').notNull(), // { nNeighbors, minDist, kind }
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    createdAtIdx: index('umap_projections_created_at_idx').on(t.createdAt)
+  })
+);
+
+// Owner-composed prompt variants. Promoting one overwrites `prompts.template`
+// for the matching key and bumps `prompts.version`; `fragments` is preserved
+// so the composer can round-trip edits.
+export const savedPrompts = pgTable('saved_prompts', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+  key: text('key').notNull(), // matches prompts.key
+  template: text('template').notNull(),
+  fragments: jsonb('fragments'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
 
 // Relations
 export const imagesRelations = relations(images, ({ many }) => ({
@@ -268,3 +370,15 @@ export type Reaction = typeof reactions.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
 export type Report = typeof reports.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
+export type AiConfig = typeof aiConfig.$inferSelect;
+export type NewAiConfig = typeof aiConfig.$inferInsert;
+export type Webhook = typeof webhooks.$inferSelect;
+export type NewWebhook = typeof webhooks.$inferInsert;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type NewWebhookDelivery = typeof webhookDeliveries.$inferInsert;
+export type Job = typeof jobs.$inferSelect;
+export type NewJob = typeof jobs.$inferInsert;
+export type UmapProjection = typeof umapProjections.$inferSelect;
+export type NewUmapProjection = typeof umapProjections.$inferInsert;
+export type SavedPrompt = typeof savedPrompts.$inferSelect;
+export type NewSavedPrompt = typeof savedPrompts.$inferInsert;

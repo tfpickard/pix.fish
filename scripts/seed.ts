@@ -5,7 +5,8 @@
  *   POSTGRES_URL=... bun run db:seed
  */
 import { db } from '../src/lib/db/client';
-import { prompts, tagTaxonomy } from '../src/lib/db/schema';
+import { aiConfig, prompts, tagTaxonomy } from '../src/lib/db/schema';
+import { defaultAiConfig } from '../src/lib/ai/config';
 import { sql } from 'drizzle-orm';
 
 const CAPTION_TEMPLATE = `You are generating captions for a personal image gallery.
@@ -145,6 +146,19 @@ async function main() {
         set: { template, updatedAt: sql`now()` }
       });
     console.log(`  - upserted prompt "${key}"`);
+  }
+
+  console.log('Seeding ai_config...');
+  for (const [field, { provider, model }] of Object.entries(defaultAiConfig)) {
+    await db
+      .insert(aiConfig)
+      .values({ field, provider, model })
+      .onConflictDoUpdate({
+        target: aiConfig.field,
+        // Only fill in rows that are missing; do not overwrite owner edits.
+        set: { updatedAt: sql`ai_config.updated_at` }
+      });
+    console.log(`  - ensured ai_config["${field}"] (default ${provider}/${model})`);
   }
 
   console.log(`Seeding tag_taxonomy (${TAXONOMY.length} tags)...`);

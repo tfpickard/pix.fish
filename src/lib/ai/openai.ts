@@ -2,11 +2,11 @@ import OpenAI from 'openai';
 import type { AIProvider, AITag } from './types';
 import { parseTagsJson, parseVariantsJson } from './types';
 
-const MODEL = 'gpt-4o';
-const EMBED_MODEL = 'text-embedding-3-small';
+export const OPENAI_DEFAULT_VISION_MODEL = 'gpt-4o';
+export const OPENAI_DEFAULT_EMBED_MODEL = 'text-embedding-3-small';
 // text-embedding-3-small is a fixed 1536-dim model. If we ever route to
-// another model this number has to change in lockstep with the embeddings.vec
-// column dimensions in schema.ts.
+// another embedding model this number has to change in lockstep with the
+// embeddings.vec column dimensions in schema.ts.
 const EMBED_DIMENSIONS = 1536;
 
 let client: OpenAI | null = null;
@@ -20,10 +20,10 @@ function getClient(): OpenAI {
   return client;
 }
 
-async function callVision(image: Buffer, mime: string, prompt: string): Promise<string> {
+async function callVision(model: string, image: Buffer, mime: string, prompt: string): Promise<string> {
   const dataUrl = `data:${mime};base64,${image.toString('base64')}`;
   const res = await getClient().chat.completions.create({
-    model: MODEL,
+    model,
     max_tokens: 1024,
     response_format: { type: 'json_object' },
     messages: [
@@ -41,41 +41,47 @@ async function callVision(image: Buffer, mime: string, prompt: string): Promise<
   return text;
 }
 
-export const OpenAIProvider: AIProvider = {
-  name: 'openai',
-  model: MODEL,
-  embedModel: EMBED_MODEL,
+export function createOpenAIProvider(
+  opts: { visionModel?: string; embedModel?: string } = {}
+): AIProvider {
+  const visionModel = opts.visionModel ?? OPENAI_DEFAULT_VISION_MODEL;
+  const embedModel = opts.embedModel ?? OPENAI_DEFAULT_EMBED_MODEL;
+  return {
+    name: 'openai',
+    model: visionModel,
+    embedModel,
 
-  async captions(image, mime, prompt) {
-    const text = await callVision(image, mime, prompt);
-    return parseVariantsJson(text);
-  },
+    async captions(image, mime, prompt) {
+      const text = await callVision(visionModel, image, mime, prompt);
+      return parseVariantsJson(text);
+    },
 
-  async descriptions(image, mime, prompt) {
-    const text = await callVision(image, mime, prompt);
-    return parseVariantsJson(text);
-  },
+    async descriptions(image, mime, prompt) {
+      const text = await callVision(visionModel, image, mime, prompt);
+      return parseVariantsJson(text);
+    },
 
-  async tags(image, mime, prompt): Promise<AITag[]> {
-    const text = await callVision(image, mime, prompt);
-    return parseTagsJson(text);
-  },
+    async tags(image, mime, prompt): Promise<AITag[]> {
+      const text = await callVision(visionModel, image, mime, prompt);
+      return parseTagsJson(text);
+    },
 
-  async embed(input: string): Promise<number[]> {
-    const res = await getClient().embeddings.create({
-      model: EMBED_MODEL,
-      input
-    });
-    const vec = res.data[0]?.embedding;
-    if (!vec) throw new Error('OpenAI embeddings response had no vector.');
-    if (vec.length !== EMBED_DIMENSIONS) {
-      throw new Error(
-        `OpenAI embeddings returned ${vec.length} dims; expected ${EMBED_DIMENSIONS} for ${EMBED_MODEL}.`
-      );
+    async embed(input: string): Promise<number[]> {
+      const res = await getClient().embeddings.create({
+        model: embedModel,
+        input
+      });
+      const vec = res.data[0]?.embedding;
+      if (!vec) throw new Error('OpenAI embeddings response had no vector.');
+      if (vec.length !== EMBED_DIMENSIONS) {
+        throw new Error(
+          `OpenAI embeddings returned ${vec.length} dims; expected ${EMBED_DIMENSIONS} for ${embedModel}.`
+        );
+      }
+      if (!vec.every((n) => Number.isFinite(n))) {
+        throw new Error('OpenAI embeddings response contained non-finite numbers.');
+      }
+      return vec;
     }
-    if (!vec.every((n) => Number.isFinite(n))) {
-      throw new Error('OpenAI embeddings response contained non-finite numbers.');
-    }
-    return vec;
-  }
-};
+  };
+}
