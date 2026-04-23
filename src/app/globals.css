@@ -3,6 +3,28 @@
 @tailwind utilities;
 
 /* ============================================================
+   Fungal variable font (self-hosted from Velvetyne) -- used only
+   on the pix.fish wordmark. Two axes: GROW (0..1000, length of
+   hyphae tendrils) and THCK (0..1000, stroke weight). License
+   alongside the font in public/fonts/Fungal-LICENSE.txt.
+   ============================================================ */
+@font-face {
+  font-family: 'Fungal';
+  src: url('/fonts/FungalVF.woff2') format('woff2-variations');
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+.font-fungal {
+  font-family: 'Fungal', var(--font-wordmark), ui-serif, Georgia, serif;
+  /* Moderate GROW keeps hyphae visible without sacrificing legibility;
+     THCK is low-moderate so the strokes stay light and the tendrils
+     read as organic filaments rather than thick noise. */
+  font-variation-settings: 'GROW' 300, 'THCK' 200;
+}
+
+/* ============================================================
    DARK MODE -- "after-hours arcade"
    Deep violet ground, hot-pink + cyan accents, warm cream text.
    Applied when no theme class is set OR when class="dark".
