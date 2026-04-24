@@ -7,6 +7,8 @@ import { images } from '@/lib/db/schema';
 import { extractExif, extractPalette } from '@/lib/image-meta';
 import { hydrateImages, listImages } from '@/lib/db/queries/images';
 import { enqueueJob } from '@/lib/db/queries/jobs';
+import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import { isSortMode, type SortMode } from '@/lib/sort/types';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -37,7 +39,20 @@ export async function GET(req: Request) {
   const offset = parseIntParam(url.searchParams.get('offset'), 0);
   const tagsFilter = url.searchParams.getAll('tag').filter(Boolean);
 
-  const rows = await listImages({ limit, offset, tags: tagsFilter });
+  const rawSort = url.searchParams.get('sort');
+  let sort: SortMode | undefined;
+  if (rawSort !== null) {
+    if (!isSortMode(rawSort)) {
+      return NextResponse.json({ error: `invalid sort: ${rawSort}` }, { status: 400 });
+    }
+    sort = rawSort;
+  } else {
+    const defaults = await getGalleryDefaults();
+    sort = defaults.defaultSort;
+  }
+  const seed = url.searchParams.get('seed') ?? undefined;
+
+  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed });
   return NextResponse.json({ images: rows });
 }
 

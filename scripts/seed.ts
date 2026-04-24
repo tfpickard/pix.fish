@@ -5,8 +5,15 @@
  *   POSTGRES_URL=... bun run db:seed
  */
 import { db } from '../src/lib/db/client';
-import { aboutFields, aiConfig, prompts, tagTaxonomy } from '../src/lib/db/schema';
+import {
+  aboutFields,
+  aiConfig,
+  galleryConfig,
+  prompts,
+  tagTaxonomy
+} from '../src/lib/db/schema';
 import { defaultAiConfig } from '../src/lib/ai/config';
+import { DEFAULT_SHUFFLE_PERIOD, DEFAULT_SORT } from '../src/lib/sort/types';
 import { sql } from 'drizzle-orm';
 
 const CAPTION_TEMPLATE = `You are generating captions for a personal image gallery.
@@ -191,6 +198,18 @@ async function main() {
         set: { label: f.label, sortOrder: f.sortOrder }
       });
     console.log(`  - ensured about_fields["${f.key}"]`);
+  }
+
+  console.log('Seeding gallery_config defaults...');
+  for (const [key, value] of [
+    ['default_sort', DEFAULT_SORT],
+    ['default_shuffle_period', DEFAULT_SHUFFLE_PERIOD]
+  ] as const) {
+    await db
+      .insert(galleryConfig)
+      .values({ key, value })
+      .onConflictDoNothing({ target: galleryConfig.key });
+    console.log(`  - ensured gallery_config["${key}"] (default ${value})`);
   }
 
   console.log('Done.');
