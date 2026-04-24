@@ -1,8 +1,15 @@
+import type { Metadata } from 'next';
 import { listAboutFields } from '@/lib/db/queries/about';
 import type { AboutField } from '@/lib/db/schema';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+export const metadata: Metadata = {
+  title: 'about',
+  description: 'About pix.fish -- a personal photography gallery with AI-captioned images, semantic search, and a tag taxonomy.',
+  alternates: { canonical: '/about' }
+};
 
 export default async function AboutPage() {
   let fields: AboutField[] = [];

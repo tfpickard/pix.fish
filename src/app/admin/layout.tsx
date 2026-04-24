@@ -1,6 +1,14 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { auth, isOwner } from '@/lib/auth';
 import { redirect } from 'next/navigation';
+
+// Belt-and-suspenders: middleware redirects unauthenticated hits, robots.txt
+// disallows the path, and this metadata layer adds an in-page noindex in case
+// a subpath ever leaks past the other two gates.
+export const metadata: Metadata = {
+  robots: { index: false, follow: false }
+};
 
 const NAV = [
   { href: '/admin/upload', label: 'upload' },

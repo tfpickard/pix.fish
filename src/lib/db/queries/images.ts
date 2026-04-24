@@ -415,6 +415,19 @@ export async function getImagesByIdsOrdered(ids: number[]): Promise<Image[]> {
   return ids.map((id) => byId.get(id)).filter((r): r is Image => !!r);
 }
 
+// Slim projection for sitemap/feed generation. We don't hydrate captions or
+// tags here: a gallery of several thousand rows would otherwise trigger
+// captions/descriptions/tags fan-outs that the sitemap has no use for.
+export async function listSitemapImages(): Promise<
+  { slug: string; uploadedAt: Date; takenAt: Date | null }[]
+> {
+  const rows = await db
+    .select({ slug: images.slug, uploadedAt: images.uploadedAt, takenAt: images.takenAt })
+    .from(images)
+    .orderBy(desc(images.uploadedAt));
+  return rows;
+}
+
 export async function countImages(tagsFilter?: string[]): Promise<number> {
   if (tagsFilter && tagsFilter.length > 0) {
     const matchingIdsSubquery = db

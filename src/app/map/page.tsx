@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images } from '@/lib/db/schema';
@@ -6,6 +7,14 @@ import { UmapCanvas } from '@/components/umap-canvas';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+// Visualization, not content. Keep crawlable for link equity but don't index.
+export const metadata: Metadata = {
+  title: 'map',
+  description: 'UMAP projection of the pix.fish gallery by caption-embedding similarity.',
+  alternates: { canonical: '/map' },
+  robots: { index: false, follow: true }
+};
 
 export default async function MapPage() {
   const row = await latestProjection();

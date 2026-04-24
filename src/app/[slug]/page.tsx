@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Image from 'next/image';
 import Link from 'next/link';
 import { notFound, permanentRedirect } from 'next/navigation';
@@ -15,8 +16,82 @@ import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { ReactionBar } from '@/components/reaction-bar';
 import { CommentList } from '@/components/comment-list';
 import { ReportButton } from '@/components/report-button';
+import { JsonLd } from '@/components/json-ld';
+import { buildImageObjectLd } from '@/lib/seo/jsonld';
+import {
+  buildImageTitle,
+  buildImageDescription,
+  buildImageKeywords,
+  pickSlugCaption
+} from '@/lib/seo/image-meta';
+import { absoluteUrl } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
+
+// Metadata picks the STABLE slug-source caption, not the random `pickOne()`
+// the page body uses. Crawlers need a deterministic title per URL; the
+// rotating caption is a user-facing UX choice and stays in the render path.
+export async function generateMetadata({ params }: { params: { slug: string } }): Promise<Metadata> {
+  const slug = decodeURIComponent(params.slug);
+  const img = await getImageBySlug(slug).catch((err) => {
+    // Swallow-and-log: a transient DB failure shouldn't bubble into the
+    // render path, but we need trace evidence when metadata looks wrong.
+    console.error('generateMetadata: getImageBySlug failed', slug, err);
+    return null;
+  });
+
+  if (!img) {
+    // If this slug has been retired to slug_history, the page body emits a
+    // permanentRedirect (308). Mark this transient old-URL response noindex
+    // so a bot that ignores the redirect doesn't cache a stale title.
+    const to = await lookupRedirect(slug).catch((err) => {
+      console.error('generateMetadata: lookupRedirect failed', slug, err);
+      return null;
+    });
+    if (to) return { robots: { index: false, follow: true } };
+    return { title: 'not found', robots: { index: false, follow: false } };
+  }
+
+  const title = buildImageTitle(img);
+  const description = buildImageDescription(img);
+  const keywords = buildImageKeywords(img);
+  const canonical = '/' + img.slug;
+  const caption = pickSlugCaption(img);
+
+  // Use the raw blob URL as og:image. The image itself IS the card; adding an
+  // ImageResponse-rendered variant would just letterbox. `width`/`height` on
+  // the `images` row are currently always null (no dimensions probe at upload),
+  // so in practice the 1200x630 fallback is what ships.
+  const ogImage = {
+    url: img.blobUrl,
+    width: img.width ?? 1200,
+    height: img.height ?? 630,
+    alt: caption
+  };
+
+  return {
+    title,
+    description,
+    keywords,
+    alternates: { canonical },
+    openGraph: {
+      type: 'article',
+      url: absoluteUrl(canonical),
+      title,
+      description,
+      images: [ogImage],
+      publishedTime: (img.takenAt ?? img.uploadedAt).toISOString(),
+      modifiedTime: img.uploadedAt.toISOString(),
+      tags: img.tags.map((t) => t.tag)
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      images: [img.blobUrl]
+    }
+  };
+}
 
 // Compact 2-column square-crop thumbs for "more like / unlike this". Uses
 // object-cover because the 1:1 crop is intentional -- these are navigation
@@ -95,6 +170,7 @@ export default async function ImageDetailPage({ params }: { params: { slug: stri
 
   return (
     <article className="space-y-8 pt-6">
+      <JsonLd data={buildImageObjectLd(img, { comments: approvedComments })} />
       <div className="relative mx-auto max-w-4xl">
         {img.width && img.height ? (
           <Image

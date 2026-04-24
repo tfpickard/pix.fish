@@ -2,6 +2,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { auth, isOwner } from '@/lib/auth';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { ShareButton } from '@/components/share-button';
 
 export async function NavBar() {
   const session = await auth();
@@ -62,6 +63,7 @@ export async function NavBar() {
               sign in
             </Link>
           )}
+          <ShareButton />
           <ThemeToggle />
         </nav>
       </div>

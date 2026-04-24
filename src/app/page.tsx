@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { listImages } from '@/lib/db/queries/images';
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
@@ -7,9 +8,21 @@ import { ImageGrid } from '@/components/image-grid';
 import { TagCloud } from '@/components/tag-cloud';
 import { SortBar } from '@/components/sort-bar';
 import { isSortMode } from '@/lib/sort/types';
+import { JsonLd } from '@/components/json-ld';
+import { buildCollectionPageLd } from '@/lib/seo/jsonld';
+import { SITE_NAME, DEFAULT_DESCRIPTION } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+// `?tag=foo` is a UI filter, not a distinct indexable page -- the real tag
+// landing pages live at /tag/[tag]. The canonical alternates here point Google
+// at `/` regardless of the ?tag param so filtered views don't fragment ranking.
+export const metadata: Metadata = {
+  title: { absolute: SITE_NAME },
+  description: DEFAULT_DESCRIPTION,
+  alternates: { canonical: '/' }
+};
 
 type PageProps = {
   searchParams: { tag?: string | string[]; sort?: string; seed?: string };
@@ -74,6 +87,7 @@ export default async function HomePage({ searchParams }: PageProps) {
       </div>
 
       <div className="grid-floor" aria-hidden="true" />
+      {images.length > 0 ? <JsonLd data={buildCollectionPageLd(images)} /> : null}
     </div>
   );
 }
