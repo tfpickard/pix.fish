@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   parseShufflePeriodMs,
@@ -19,12 +19,6 @@ type Props = {
 
 const LS_SORT = 'pix_sort';
 const LS_PERIOD = 'pix_shuffle_period';
-
-const GROUP_LABELS: Record<string, string> = {
-  familiar: 'familiar',
-  dispersion: 'dispersion / clustering',
-  weird: 'novel / weird'
-};
 
 function readLocalStorage(key: string): string | null {
   if (typeof window === 'undefined') return null;
@@ -68,15 +62,6 @@ export function SortBar({ ownerDefaults }: Props) {
     ownerDefaults.defaultShufflePeriod
   );
   const [countdownMs, setCountdownMs] = useState<number | null>(null);
-
-  const currentSortMeta = SORT_META[effectiveSort];
-
-  const grouped = useMemo(() => {
-    return SORT_MODES.reduce<Record<string, typeof SORT_MODES>>((acc, m) => {
-      (acc[m.group] ??= []).push(m);
-      return acc;
-    }, {});
-  }, []);
 
   function buildQuery(sort: SortMode, seed: string | null): string {
     const next = new URLSearchParams();
@@ -186,17 +171,12 @@ export function SortBar({ ownerDefaults }: Props) {
             value={effectiveSort}
             onChange={(e) => changeSort(e.target.value as SortMode)}
             className="rounded border border-ink-800 bg-ink-950/60 px-2 py-1 text-ink-100 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
-            title={currentSortMeta?.description}
           >
-            {Object.keys(grouped).map((group) => (
-              <optgroup key={group} label={GROUP_LABELS[group] ?? group}>
-                {grouped[group]!.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                    {m.id === ownerDefaults.defaultSort ? ' (owner)' : ''}
-                  </option>
-                ))}
-              </optgroup>
+            {SORT_MODES.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+                {m.id === ownerDefaults.defaultSort ? ' (owner)' : ''}
+              </option>
             ))}
           </select>
           {sortIsOverride && (

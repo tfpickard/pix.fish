@@ -12,12 +12,6 @@ import {
 
 type Defaults = { defaultSort: SortMode; defaultShufflePeriod: ShufflePeriod };
 
-const GROUP_LABELS: Record<string, string> = {
-  familiar: 'familiar',
-  dispersion: 'dispersion / clustering',
-  weird: 'novel / weird'
-};
-
 export default function AdminGalleryPage() {
   const [defaults, setDefaults] = useState<Defaults>({
     defaultSort: DEFAULT_SORT,
@@ -58,19 +52,9 @@ export default function AdminGalleryPage() {
     });
   }
 
-  const grouped = SORT_MODES.reduce<Record<string, typeof SORT_MODES>>((acc, m) => {
-    (acc[m.group] ??= []).push(m);
-    return acc;
-  }, {});
-
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="font-display text-2xl text-ink-100">gallery</h1>
-        <p className="font-mono text-xs text-ink-500">
-          owner defaults for the public gallery -- visitors can override in the sort bar
-        </p>
-      </div>
+      <h1 className="font-display text-2xl text-ink-100">gallery</h1>
 
       {loading ? (
         <p className="font-mono text-xs text-ink-500">loading...</p>
@@ -84,19 +68,12 @@ export default function AdminGalleryPage() {
               disabled={isPending}
               className="w-full rounded border border-ink-800 bg-ink-950/60 px-3 py-2 font-mono text-xs text-ink-100 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
             >
-              {Object.keys(grouped).map((group) => (
-                <optgroup key={group} label={GROUP_LABELS[group] ?? group}>
-                  {grouped[group]!.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </optgroup>
+              {SORT_MODES.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
               ))}
             </select>
-            <p className="font-mono text-xs text-ink-500">
-              {SORT_MODES.find((m) => m.id === defaults.defaultSort)?.description}
-            </p>
           </div>
 
           <div className="space-y-2">
@@ -113,9 +90,6 @@ export default function AdminGalleryPage() {
                 </option>
               ))}
             </select>
-            <p className="font-mono text-xs text-ink-500">
-              seeded sorts reshuffle on each tick; stable sorts re-fetch so new uploads appear
-            </p>
           </div>
 
           <div className="flex items-center gap-4 pt-2">
