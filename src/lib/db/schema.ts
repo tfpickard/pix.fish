@@ -334,6 +334,15 @@ export const aboutFields = pgTable('about_fields', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
+// Owner-visible gallery defaults. A minimal key/value store: `default_sort`
+// and `default_shuffle_period` so the owner can tune the landing experience
+// without a redeploy. Visitors override both client-side via localStorage.
+export const galleryConfig = pgTable('gallery_config', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
 // Relations
 export const imagesRelations = relations(images, ({ many }) => ({
   captions: many(captions),
@@ -396,3 +405,5 @@ export type SavedPrompt = typeof savedPrompts.$inferSelect;
 export type NewSavedPrompt = typeof savedPrompts.$inferInsert;
 export type AboutField = typeof aboutFields.$inferSelect;
 export type NewAboutField = typeof aboutFields.$inferInsert;
+export type GalleryConfig = typeof galleryConfig.$inferSelect;
+export type NewGalleryConfig = typeof galleryConfig.$inferInsert;

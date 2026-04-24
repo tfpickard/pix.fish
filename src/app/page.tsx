@@ -1,15 +1,18 @@
 import { listImages } from '@/lib/db/queries/images';
 import { tagCloud } from '@/lib/db/queries/tags';
+import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { HAIKUS } from '@/lib/haikus';
 import { pickOne } from '@/lib/random';
 import { ImageGrid } from '@/components/image-grid';
 import { TagCloud } from '@/components/tag-cloud';
+import { SortBar } from '@/components/sort-bar';
+import { isSortMode } from '@/lib/sort/types';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 type PageProps = {
-  searchParams: { tag?: string | string[] };
+  searchParams: { tag?: string | string[]; sort?: string; seed?: string };
 };
 
 function normalizeTags(input: string | string[] | undefined): string[] {
@@ -21,11 +24,19 @@ function normalizeTags(input: string | string[] | undefined): string[] {
 export default async function HomePage({ searchParams }: PageProps) {
   const activeTags = normalizeTags(searchParams.tag);
 
+  // Owner defaults feed both the server-side query (when no ?sort= is
+  // present) and the client sort bar (for "(owner)" labels + reset).
+  const defaults = await getGalleryDefaults().catch(() => ({
+    defaultSort: 'drifting' as const,
+    defaultShufflePeriod: 'off' as const
+  }));
+  const effectiveSort = isSortMode(searchParams.sort) ? searchParams.sort : defaults.defaultSort;
+
   // Fail soft: if Postgres isn't reachable, still render the shell with empty
   // data rather than crashing the whole page. Makes local dev less painful
   // and avoids a full-page error if the DB hiccups in prod.
   const [imagesRes, cloudRes] = await Promise.allSettled([
-    listImages({ limit: 60, tags: activeTags }),
+    listImages({ limit: 60, tags: activeTags, sort: effectiveSort, seed: searchParams.seed }),
     tagCloud(64)
   ]);
   const images = imagesRes.status === 'fulfilled' ? imagesRes.value : [];
@@ -49,9 +60,13 @@ export default async function HomePage({ searchParams }: PageProps) {
         </p>
       </section>
 
+      <div className="mx-auto mt-8 max-w-2xl">
+        <SortBar ownerDefaults={defaults} />
+      </div>
+
       {/* Images centered in their own column; the tag cloud floats on the
           right at lg+ and stacks below the header at smaller widths. */}
-      <div className="mt-10 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="mt-6 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_18rem]">
         <ImageGrid images={images} />
         <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
           <TagCloud tags={cloud} activeTags={activeTags} />
