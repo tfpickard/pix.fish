@@ -9,8 +9,10 @@ import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
 import { ImageActions } from '@/components/image-actions';
 import { EmbeddingViz } from '@/components/embedding-viz';
-import { ExifFacts, PaletteStrip } from '@/components/image-meta';
+import { ExifFacts, PaletteEdgeBand } from '@/components/image-meta';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
+import { getImageProvenance } from '@/lib/db/queries/provenance';
+import { ProvenancePanel } from '@/components/provenance-panel';
 import { ReactionBar } from '@/components/reaction-bar';
 import { CommentList } from '@/components/comment-list';
 import { ReportButton } from '@/components/report-button';
@@ -134,10 +136,11 @@ export async function ImageDetail({
     console.error('neighbor lookup failed for image', img.id, err);
   }
 
-  const [reactionCounts, approvedComments, captionVector] = await Promise.all([
+  const [reactionCounts, approvedComments, captionVector, provenance] = await Promise.all([
     countReactions(img.id).catch(() => ({ up: 0, down: 0 })),
     listApprovedComments(img.id).catch(() => []),
-    getCaptionVector(img.id).catch(() => null)
+    getCaptionVector(img.id).catch(() => null),
+    getImageProvenance(img.id).catch(() => [])
   ]);
 
   const caption = pickOne(img.captions)?.text ?? '';
@@ -186,6 +189,7 @@ export async function ImageDetail({
             priority
           />
         )}
+        <PaletteEdgeBand colors={img.palette} />
       </div>
 
       {captionVector ? <EmbeddingViz vector={captionVector} /> : null}
@@ -214,7 +218,6 @@ export async function ImageDetail({
 
         <p className="text-center font-mono text-xs text-ink-500">{uploaded}</p>
 
-        <PaletteStrip colors={img.palette} />
         <ExifFacts exif={img.exif as Record<string, unknown> | null} />
 
         <ReactionBar slug={img.slug} initialCounts={reactionCounts} />
@@ -243,6 +246,8 @@ export async function ImageDetail({
       <div className="mx-auto max-w-2xl pb-8">
         <CommentList slug={img.slug} comments={approvedComments} />
       </div>
+
+      <ProvenancePanel entries={provenance} />
     </article>
   );
 }

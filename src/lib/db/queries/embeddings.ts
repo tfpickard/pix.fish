@@ -49,6 +49,15 @@ export async function upsertEmbedding(params: {
 
 export type VectorMatch = { imageId: number; distance: number };
 
+// Total image rows that currently have a caption embedding. Used by /map
+// to flag a stale UMAP projection (`pointCount < this` => recompute hint).
+export async function countCaptionEmbeddings(): Promise<number> {
+  const rows = await db.execute<{ n: number }>(
+    sql`SELECT count(*)::int AS n FROM embeddings WHERE kind = 'caption'`
+  );
+  return Number(rows.rows?.[0]?.n ?? 0);
+}
+
 // pgvector's <=> operator returns cosine distance (lower is closer; 0 means
 // identical direction). We cast the driver param via `::vector` because
 // @vercel/postgres can't infer the parameter type on its own.

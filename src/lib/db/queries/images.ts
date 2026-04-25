@@ -578,7 +578,10 @@ export async function getOwnerHandlesForImages(
 export async function listImagesByHandle(
   handle: string,
   opts: { limit?: number; offset?: number; includeNsfw?: boolean } = {}
-): Promise<{ owner: { handle: string; displayName: string | null } | null; images: ImageWithRelations[] }> {
+): Promise<{
+  owner: { id: string; handle: string; displayName: string | null } | null;
+  images: ImageWithRelations[];
+}> {
   const [user] = await db
     .select({ id: users.id, handle: users.handle, displayName: users.displayName })
     .from(users)
@@ -598,7 +601,7 @@ export async function listImagesByHandle(
     .offset(offset);
   const hydrated = await hydrateImages(rows);
   return {
-    owner: { handle: user.handle, displayName: user.displayName },
+    owner: { id: user.id, handle: user.handle, displayName: user.displayName },
     images: hydrated
   };
 }

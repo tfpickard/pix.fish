@@ -1,9 +1,8 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { auth, isSiteAdmin } from '@/lib/auth';
-import { ThemeToggle } from '@/components/theme-toggle';
-import { ShareButton } from '@/components/share-button';
-import { NsfwToggle } from '@/components/nsfw-toggle';
+import { NavSearch } from '@/components/nav-search';
+import { NavOverflow } from '@/components/nav-overflow';
 
 export async function NavBar() {
   const session = await auth();
@@ -11,10 +10,10 @@ export async function NavBar() {
   // get a small `admin` link to the platform-config sidebar.
   const signedIn = !!session?.user?.id || !!session?.user?.githubId;
   const admin = isSiteAdmin(session);
-  const handle = session?.user?.handle;
+  const handle = session?.user?.handle ?? null;
   return (
     <header className="sticky top-0 z-40 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
+      <div className="relative mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
         <Link href="/" className="flex shrink-0 items-center gap-2 font-fungal text-2xl leading-none">
           <Image
             src="/logo-dark.png"
@@ -38,50 +37,13 @@ export async function NavBar() {
             <span className="text-ink-100">fish</span>
           </span>
         </Link>
-        <form action="/search" method="GET" className="ml-auto flex-1 max-w-xs">
-          <input
-            type="search"
-            name="q"
-            placeholder="search semantically..."
-            className="w-full rounded-md border border-ink-800 bg-ink-950/60 px-3 py-1.5 font-mono text-xs text-ink-100 placeholder:text-ink-500 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-            aria-label="search"
-          />
-        </form>
-        <nav className="flex items-center gap-4 font-mono text-xs text-ink-400">
-          <Link href="/" className="hover:text-ink-100 transition-colors">
-            gallery
-          </Link>
-          <Link href="/about" className="hover:text-ink-100 transition-colors">
-            about
-          </Link>
-          {signedIn ? (
-            <Link href="/admin/upload" className="hover:text-ink-100 transition-colors">
-              upload
-            </Link>
-          ) : null}
-          {handle ? (
-            <Link href={`/u/${handle}`} className="hover:text-ink-100 transition-colors">
-              /u/{handle}
-            </Link>
-          ) : null}
-          {admin ? (
-            <Link href="/admin/ai" className="hover:text-ink-100 transition-colors">
-              admin
-            </Link>
-          ) : null}
-          {session ? (
-            <Link href="/api/auth/signout" className="hover:text-ink-100 transition-colors">
-              sign out
-            </Link>
-          ) : (
-            <Link href="/api/auth/signin" className="hover:text-ink-100 transition-colors">
-              sign in
-            </Link>
-          )}
-          <NsfwToggle />
-          <ShareButton />
-          <ThemeToggle />
-        </nav>
+        <NavSearch />
+        <NavOverflow
+          signedIn={signedIn}
+          admin={admin}
+          handle={handle}
+          authed={!!session}
+        />
       </div>
     </header>
   );

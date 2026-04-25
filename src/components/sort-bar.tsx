@@ -175,7 +175,6 @@ export function SortBar({ ownerDefaults }: Props) {
             {SORT_MODES.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.label}
-                {m.id === ownerDefaults.defaultSort ? ' (owner)' : ''}
               </option>
             ))}
           </select>
@@ -206,7 +205,6 @@ export function SortBar({ ownerDefaults }: Props) {
             {SHUFFLE_PERIODS.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
-                {p.id === ownerDefaults.defaultShufflePeriod ? ' (owner)' : ''}
               </option>
             ))}
           </select>

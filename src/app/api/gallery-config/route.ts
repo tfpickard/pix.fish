@@ -34,7 +34,11 @@ export async function PATCH(req: Request) {
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'invalid body' }, { status: 400 });
   }
-  const payload = body as { defaultSort?: unknown; defaultShufflePeriod?: unknown };
+  const payload = body as {
+    defaultSort?: unknown;
+    defaultShufflePeriod?: unknown;
+    searchSimilarityThreshold?: unknown;
+  };
 
   const ownerId = getSiteAdminId();
   if (payload.defaultSort !== undefined) {
@@ -51,6 +55,22 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'invalid defaultShufflePeriod' }, { status: 400 });
     }
     await setGalleryDefault(ownerId, GALLERY_KEYS.defaultShufflePeriod, payload.defaultShufflePeriod);
+  }
+  if (payload.searchSimilarityThreshold !== undefined) {
+    const n = Number(payload.searchSimilarityThreshold);
+    if (!Number.isFinite(n) || n < 0 || n > 1) {
+      return NextResponse.json(
+        { error: 'invalid searchSimilarityThreshold (expected 0..1)' },
+        { status: 400 }
+      );
+    }
+    // Store with three decimal places of precision; the slider step is
+    // 0.05 but freeform PATCH callers can submit anything in range.
+    await setGalleryDefault(
+      ownerId,
+      GALLERY_KEYS.searchSimilarityThreshold,
+      n.toFixed(3)
+    );
   }
 
   const defaults = await getGalleryDefaults(ownerId);

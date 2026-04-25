@@ -76,6 +76,13 @@ export default async function HomePage({ searchParams }: PageProps) {
         <h1 className="whitespace-pre-line font-fungal-lite text-3xl leading-snug text-ink-100">
           {haiku.join('\n')}
         </h1>
+        {/* Tiny attribution that re-frames the haiku as a tagline rather than
+            a caption-of-the-image-below, so the visual relationship between
+            the headline and the first picture in the stream is intentional
+            (independent) instead of accidental (decoupled). */}
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-700">
+          / a pix.fish haiku /
+        </p>
         <p className="font-mono text-xs text-ink-500">
           {dbDown
             ? 'database not configured -- showing shell only'

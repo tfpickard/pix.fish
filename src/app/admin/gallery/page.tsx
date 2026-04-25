@@ -11,13 +11,19 @@ import {
   type ShufflePeriod,
   type SortMode
 } from '@/lib/sort/types';
+import { DEFAULT_SEARCH_SIM_THRESHOLD } from '@/lib/search/defaults';
 
-type Defaults = { defaultSort: SortMode; defaultShufflePeriod: ShufflePeriod };
+type Defaults = {
+  defaultSort: SortMode;
+  defaultShufflePeriod: ShufflePeriod;
+  searchSimilarityThreshold: number;
+};
 
 export default function AdminGalleryPage() {
   const [defaults, setDefaults] = useState<Defaults>({
     defaultSort: DEFAULT_SORT,
-    defaultShufflePeriod: DEFAULT_SHUFFLE_PERIOD
+    defaultShufflePeriod: DEFAULT_SHUFFLE_PERIOD,
+    searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD
   });
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle');
@@ -39,7 +45,15 @@ export default function AdminGalleryPage() {
             (d as Record<string, unknown>).defaultShufflePeriod as string | null | undefined
           )
         ) {
-          setDefaults(d as Defaults);
+          const obj = d as Record<string, unknown>;
+          const rawN = Number(obj.searchSimilarityThreshold);
+          setDefaults({
+            defaultSort: obj.defaultSort as SortMode,
+            defaultShufflePeriod: obj.defaultShufflePeriod as ShufflePeriod,
+            searchSimilarityThreshold: Number.isFinite(rawN)
+              ? Math.max(0, Math.min(1, rawN))
+              : DEFAULT_SEARCH_SIM_THRESHOLD
+          });
         }
         setLoading(false);
       })
@@ -104,6 +118,54 @@ export default function AdminGalleryPage() {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block font-mono text-sm text-ink-100">
+              search similarity threshold
+            </label>
+            <div className="flex items-center gap-4">
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={defaults.searchSimilarityThreshold}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setDefaults((prev) => ({ ...prev, searchSimilarityThreshold: v }));
+                }}
+                // onPointerUp covers both mouse and touch in one handler;
+                // onKeyUp covers keyboard arrow-key adjustments; onBlur
+                // catches focus-out (e.g. tab away mid-drag) so no input
+                // method drops a save.
+                onPointerUp={(e) =>
+                  save({
+                    searchSimilarityThreshold: Number((e.target as HTMLInputElement).value)
+                  })
+                }
+                onKeyUp={(e) =>
+                  save({
+                    searchSimilarityThreshold: Number((e.target as HTMLInputElement).value)
+                  })
+                }
+                onBlur={(e) =>
+                  save({
+                    searchSimilarityThreshold: Number((e.target as HTMLInputElement).value)
+                  })
+                }
+                disabled={isPending}
+                className="flex-1 accent-primary"
+              />
+              <span className="w-16 text-right font-mono text-sm text-ink-100">
+                {defaults.searchSimilarityThreshold.toFixed(2)}
+              </span>
+            </div>
+            <p className="font-mono text-xs text-ink-500">
+              cosine similarity floor for /search results (0 = keep everything, 1 = exact-match
+              only). 0.30 is the compiled-in default; raise to surface only tighter matches,
+              lower to be more permissive.
+            </p>
           </div>
 
           <div className="flex items-center gap-4 pt-2">

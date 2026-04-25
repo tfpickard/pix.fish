@@ -1,14 +1,48 @@
+import Link from 'next/link';
+
 type Exif = Record<string, unknown>;
+
+function colorHref(hex: string): string {
+  // Drop the leading `#` for clean URL-segment routing.
+  return `/color/${hex.replace(/^#/, '').toLowerCase()}`;
+}
 
 export function PaletteStrip({ colors }: { colors: string[] | null }) {
   if (!colors || colors.length === 0) return null;
   return (
     <div className="flex justify-center gap-1" aria-label="dominant colors">
       {colors.map((hex) => (
-        <span
+        <Link
           key={hex}
-          title={hex}
-          className="h-4 w-8 rounded-sm ring-1 ring-inset ring-ink-900/60"
+          href={colorHref(hex)}
+          aria-label={`find images near ${hex}`}
+          title={`find images near ${hex}`}
+          className="block h-4 w-8 rounded-sm ring-1 ring-inset ring-ink-900/60 transition-transform hover:scale-110"
+          style={{ backgroundColor: hex }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Edge-to-edge palette band. Used directly below the hero image on the
+// detail page so the relationship between picture and dominant colors is
+// visible without scrolling. Each stripe takes equal width and links to
+// /color/<hex> for "find images near this color".
+export function PaletteEdgeBand({ colors }: { colors: string[] | null }) {
+  if (!colors || colors.length === 0) return null;
+  return (
+    <div
+      className="mx-auto flex h-2 w-full max-w-4xl overflow-hidden rounded-b-lg"
+      aria-label="dominant colors"
+    >
+      {colors.map((hex) => (
+        <Link
+          key={hex}
+          href={colorHref(hex)}
+          aria-label={`find images near ${hex}`}
+          title={`find images near ${hex}`}
+          className="block h-full flex-1 transition-[height] hover:h-3"
           style={{ backgroundColor: hex }}
         />
       ))}

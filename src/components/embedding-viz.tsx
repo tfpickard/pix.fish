@@ -21,7 +21,7 @@ export function EmbeddingViz({ vector, className }: Props) {
 
   return (
     <figure
-      className={`mx-auto w-full max-w-2xl overflow-hidden rounded border border-ink-800/60 bg-ink-950 p-2 ${className ?? ''}`}
+      className={`mx-auto w-full max-w-4xl overflow-hidden rounded border border-ink-800/60 bg-ink-950 p-2 ${className ?? ''}`}
       aria-label="semantic fingerprint"
     >
       <svg
