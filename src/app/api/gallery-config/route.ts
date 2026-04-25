@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import {
   GALLERY_KEYS,
   getGalleryDefaults,
@@ -23,7 +23,7 @@ export async function GET() {
 // render. Either field is optional; sending none is a no-op.
 export async function PATCH(req: Request) {
   const session = await auth();
-  if (!isOwner(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  if (!isSiteAdmin(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
   let body: unknown;
   try {

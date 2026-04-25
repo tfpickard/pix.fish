@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { createWebhook, listWebhooks } from '@/lib/db/queries/webhooks';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { newWebhookSecret } from '@/lib/webhooks/sign';
@@ -15,7 +15,7 @@ const createSchema = z.object({
 });
 
 export async function GET() {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const rows = await listWebhooks(getSiteAdminId());
@@ -26,7 +26,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const parsed = createSchema.safeParse(await req.json().catch(() => null));

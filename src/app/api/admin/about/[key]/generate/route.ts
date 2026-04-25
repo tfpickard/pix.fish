@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { getAboutField, updateAboutContent, upsertAboutField } from '@/lib/db/queries/about';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { generateAboutContent } from '@/lib/about/generate';
@@ -9,7 +9,7 @@ export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
 export async function POST(_req: Request, ctx: { params: { key: string } }) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const key = ctx.params.key;

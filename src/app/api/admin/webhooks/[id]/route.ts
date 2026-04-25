@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { deleteWebhook, getWebhook, updateWebhook } from '@/lib/db/queries/webhooks';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { WEBHOOK_EVENTS } from '@/lib/webhooks/schemas';
@@ -20,7 +20,7 @@ function parseId(raw: string): number | null {
 }
 
 export async function PATCH(req: Request, ctx: { params: { id: string } }) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const id = parseId(ctx.params.id);
@@ -35,7 +35,7 @@ export async function PATCH(req: Request, ctx: { params: { id: string } }) {
 }
 
 export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const id = parseId(ctx.params.id);

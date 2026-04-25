@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { getAboutField, updateAboutContent, upsertAboutField } from '@/lib/db/queries/about';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 
@@ -14,7 +14,7 @@ const patchSchema = z.object({
 });
 
 export async function PATCH(req: Request, ctx: { params: { key: string } }) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const key = ctx.params.key;

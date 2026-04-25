@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { redirect } from 'next/navigation';
 
 // Belt-and-suspenders: middleware redirects unauthenticated hits, robots.txt
@@ -31,7 +31,7 @@ const NAV = [
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
   if (!session) redirect('/api/auth/signin?callbackUrl=/admin/upload');
-  if (!isOwner(session)) redirect('/');
+  if (!isSiteAdmin(session)) redirect('/');
 
   return (
     <div className="flex gap-8 pt-8">

@@ -1,19 +1,22 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { listApiKeys, createApiKey, generateToken } from '@/lib/db/queries/api-keys';
 
+// Multi-user: every signed-in user manages their own PATs. The route is
+// per-user shaped end-to-end -- no admin override -- so a site admin
+// cannot accidentally see another user's tokens.
 export async function GET(_req: Request) {
   const session = await auth();
-  if (!isOwner(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  const ownerId = session!.user!.githubId as string;
+  const ownerId = session?.user?.id ?? session?.user?.githubId;
+  if (!ownerId) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   const rows = await listApiKeys(ownerId);
   return NextResponse.json(rows);
 }
 
 export async function POST(req: Request) {
   const session = await auth();
-  if (!isOwner(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  const ownerId = session!.user!.githubId as string;
+  const ownerId = session?.user?.id ?? session?.user?.githubId;
+  if (!ownerId) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
   let label: string;
   try {

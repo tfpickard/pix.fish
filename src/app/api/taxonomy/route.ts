@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { listTaxonomy, addTaxonomyTag } from '@/lib/db/queries/taxonomy';
 
 // GET is intentionally public -- the taxonomy is the allowed tag vocabulary, not sensitive data.
@@ -11,7 +11,7 @@ export async function GET(_req: Request) {
 
 export async function POST(req: Request) {
   const session = await auth();
-  if (!isOwner(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  if (!isSiteAdmin(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
   let tag: string, category: string, sortOrder: number | undefined;
   try {

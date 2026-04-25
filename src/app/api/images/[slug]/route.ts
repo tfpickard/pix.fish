@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { and, eq, inArray, ne } from 'drizzle-orm';
 import { del } from '@vercel/blob';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, canEdit } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
 import { getImageBySlug } from '@/lib/db/queries/images';
@@ -18,8 +18,11 @@ export async function GET(req: Request, ctx: { params: { slug: string } }) {
 
   const redirectTo = await lookupRedirect(slug);
   if (redirectTo) {
-    // Real HTTP 301 so clients that follow redirects land on the canonical URL.
-    return NextResponse.redirect(new URL(`/api/images/${redirectTo}`, req.url), 301);
+    // 301 to the canonical slug. The owner_id from lookupRedirect is
+    // available for routing to /u/<handle>/<slug>; here we just keep the
+    // legacy /api/images/<slug> shape since callers of this API endpoint
+    // historically build URLs from the response, not the redirect Location.
+    return NextResponse.redirect(new URL(`/api/images/${redirectTo.slug}`, req.url), 301);
   }
   return NextResponse.json({ error: 'not found' }, { status: 404 });
 }
@@ -33,13 +36,15 @@ type PatchBody = {
 
 export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
   const session = await auth();
-  if (!isOwner(session)) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
-
+  // Look up the row first so we can authorize against its owner_id.
+  // Phase F: any signed-in user may PATCH their own image; site admins
+  // can patch any image (moderation hatch).
   const [img] = await db.select().from(images).where(eq(images.slug, ctx.params.slug)).limit(1);
   if (!img) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+  if (!canEdit(session, img.ownerId)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   const body = (await req.json()) as PatchBody;
@@ -166,13 +171,12 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
 
 export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   const session = await auth();
-  if (!isOwner(session)) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
-
   const [img] = await db.select().from(images).where(eq(images.slug, ctx.params.slug)).limit(1);
   if (!img) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+  if (!canEdit(session, img.ownerId)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   // Delete the DB row first. Captions/descriptions/tags/embeddings cascade via

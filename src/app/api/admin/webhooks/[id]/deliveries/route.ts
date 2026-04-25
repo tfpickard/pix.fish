@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { listDeliveries } from '@/lib/db/queries/webhooks';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request, ctx: { params: { id: string } }) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const id = Number(ctx.params.id);

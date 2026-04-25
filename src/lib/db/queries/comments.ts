@@ -62,3 +62,17 @@ export async function setCommentStatus(
 export async function deleteComment(id: number): Promise<void> {
   await db.delete(comments).where(eq(comments.id, id));
 }
+
+// Phase F: comment moderation gating. Returns the owner_id of the image
+// the comment is on, so route handlers can pass it to canEdit() (which
+// allows the image's owner OR a site admin). Returns null when the
+// comment doesn't exist.
+export async function getCommentImageOwner(commentId: number): Promise<string | null> {
+  const [row] = await db
+    .select({ ownerId: images.ownerId })
+    .from(comments)
+    .innerJoin(images, eq(images.id, comments.imageId))
+    .where(eq(comments.id, commentId))
+    .limit(1);
+  return row?.ownerId ?? null;
+}

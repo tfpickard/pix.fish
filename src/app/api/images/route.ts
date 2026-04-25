@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { inArray } from 'drizzle-orm';
 import { put } from '@vercel/blob';
-import { auth, isOwner } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { images } from '@/lib/db/schema';
 import { extractExif, extractPalette } from '@/lib/image-meta';
@@ -73,7 +73,11 @@ function parseIntParam(raw: string | null, fallback: number): number {
 
 export async function POST(req: Request) {
   const session = await auth();
-  if (!isOwner(session)) {
+  // Multi-user: any signed-in user can upload. The image row is stamped
+  // with their user id and ownership is enforced at edit/delete time via
+  // canEdit().
+  const userId = session?.user?.id ?? session?.user?.githubId;
+  if (!userId) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
@@ -161,7 +165,7 @@ export async function POST(req: Request) {
         blobUrl: blob.url,
         blobKey: blob.pathname,
         mime,
-        ownerId: session!.user!.githubId!,
+        ownerId: userId,
         manualCaption: manualCaption ?? null,
         exif: exif ?? null,
         palette: palette.length > 0 ? palette : null,

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { createSavedPrompt, listSavedPrompts } from '@/lib/db/queries/saved-prompts';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 
@@ -15,14 +15,14 @@ const bodySchema = z.object({
 });
 
 export async function GET() {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   return NextResponse.json({ rows: await listSavedPrompts(getSiteAdminId()) });
 }
 
 export async function POST(req: Request) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));

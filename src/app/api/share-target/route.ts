@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { POST as uploadPost } from '@/app/api/images/route';
 
 export const runtime = 'nodejs';
@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 // handler so enrichment + webhooks + slug generation all happen in one place.
 export async function POST(req: Request) {
   const session = await auth();
-  if (!isOwner(session)) {
+  if (!isSiteAdmin(session)) {
     // Bounce to login so a signed-out share intent doesn't silently drop.
     return NextResponse.redirect(new URL('/api/auth/signin?callbackUrl=/admin/upload', req.url), 303);
   }
