@@ -43,8 +43,14 @@ function FieldCard({ row, onSaved }: { row: Row; onSaved: (r: Row) => void }) {
   function generate() {
     setError('');
     startGen(async () => {
+      // Send the in-flight textarea value as `reference` so the LLM can
+      // match the owner's voice/tone on unsaved drafts. The server falls
+      // back to the persisted DB value when reference is absent or empty.
+      const reference = content.trim();
       const res = await fetch(`/api/admin/about/${encodeURIComponent(row.key)}/generate`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reference ? { reference } : {})
       });
       if (res.ok) {
         const data = await res.json();
