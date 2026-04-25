@@ -81,7 +81,7 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
       if (newSlugSource && body.slug === undefined) {
         const base = slugify(newSlugSource.text) || img.slug;
         if (base !== img.slug) {
-          const newSlug = await uniquifySlug(base, img.id);
+          const newSlug = await uniquifySlug(base, img.ownerId, img.id);
           await pushSlugToHistory(img.id, img.slug);
           await db.update(images).set({ slug: newSlug }).where(eq(images.id, img.id));
         }
@@ -128,7 +128,7 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
   if (typeof body.slug === 'string' && body.slug.trim()) {
     const base = slugify(body.slug) || img.slug;
     if (base !== img.slug) {
-      const newSlug = await uniquifySlug(base, img.id);
+      const newSlug = await uniquifySlug(base, img.ownerId, img.id);
       await pushSlugToHistory(img.id, img.slug);
       await db.update(images).set({ slug: newSlug }).where(eq(images.id, img.id));
     }

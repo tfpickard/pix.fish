@@ -36,20 +36,21 @@ const MAX_SLUG_RETRIES = 5;
  */
 export async function persistEnrichment(args: {
   imageId: number;
+  ownerId: string;
   placeholderSlug: string;
   manualCaption?: string;
   enrichment: EnrichmentResult;
   cfg: AiConfigMap;
   userKeys: UserProviderKeys;
 }): Promise<void> {
-  const { imageId, placeholderSlug, manualCaption, enrichment, cfg, userKeys } = args;
+  const { imageId, ownerId, placeholderSlug, manualCaption, enrichment, cfg, userKeys } = args;
 
   const slugSourceText = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
   const slugBase = slugify(slugSourceText) || placeholderSlug;
 
   let finalSlug = placeholderSlug;
   for (let attempt = 0; attempt < MAX_SLUG_RETRIES; attempt++) {
-    const candidate = await uniquifySlug(slugBase, imageId);
+    const candidate = await uniquifySlug(slugBase, ownerId, imageId);
     try {
       await db.transaction(async (tx) => {
         // Insert/replace relations first so a subsequent slug collision

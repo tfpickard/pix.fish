@@ -45,6 +45,7 @@ export async function enrichImageHandler(job: Job): Promise<void> {
 
   await persistEnrichment({
     imageId: img.id,
+    ownerId: img.ownerId,
     placeholderSlug: img.slug,
     manualCaption,
     enrichment,

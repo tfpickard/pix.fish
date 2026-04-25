@@ -8,6 +8,7 @@ import {
   images,
   reactions,
   tags,
+  users,
   type Image
 } from '../schema';
 import {
@@ -408,8 +409,30 @@ export async function hydrateImages(imageRows: Image[]): Promise<ImageWithRelati
   }));
 }
 
+// Global slug lookup for legacy /<slug> URLs. Slugs are now unique per
+// owner, so a slug like `sunset` may exist for multiple users. Tie-break:
+// prefer the site admin's row (so original-owner URLs keep resolving),
+// otherwise pick the oldest by id (deterministic). Phase F's canonical
+// detail page lives at /u/<handle>/<slug> and uses
+// `getImageByHandleAndSlug` instead.
 export async function getImageBySlug(slug: string): Promise<ImageWithRelations | null> {
-  const [img] = await db.select().from(images).where(eq(images.slug, slug)).limit(1);
+  const adminId = process.env.OWNER_GITHUB_ID;
+  let img: Image | undefined;
+  if (adminId) {
+    [img] = await db
+      .select()
+      .from(images)
+      .where(and(eq(images.slug, slug), eq(images.ownerId, adminId)))
+      .limit(1);
+  }
+  if (!img) {
+    [img] = await db
+      .select()
+      .from(images)
+      .where(eq(images.slug, slug))
+      .orderBy(asc(images.id))
+      .limit(1);
+  }
   if (!img) return null;
   const [capRows, descRows, tagRows] = await Promise.all([
     db
@@ -445,6 +468,88 @@ export async function getImageBySlug(slug: string): Promise<ImageWithRelations |
       source: t.source,
       confidence: t.confidence
     }))
+  };
+}
+
+// Canonical owner-scoped lookup powering /u/[handle]/[slug]. Joins users
+// to resolve handle -> ownerId in one round-trip. Returns null if the
+// handle is unknown or the owner has no image with that slug. Phase D
+// callers should prefer this over getImageBySlug; the latter only stays
+// for backward-compat redirects.
+export async function getImageByHandleAndSlug(
+  handle: string,
+  slug: string
+): Promise<ImageWithRelations | null> {
+  const [row] = await db
+    .select({ image: images })
+    .from(images)
+    .innerJoin(users, eq(users.id, images.ownerId))
+    .where(and(eq(users.handle, handle), eq(images.slug, slug)))
+    .limit(1);
+  if (!row) return null;
+  return getImageBySlugInner(row.image);
+}
+
+async function getImageBySlugInner(img: Image): Promise<ImageWithRelations> {
+  const [capRows, descRows, tagRows] = await Promise.all([
+    db.select().from(captions).where(eq(captions.imageId, img.id)).orderBy(asc(captions.variant)),
+    db
+      .select()
+      .from(descriptions)
+      .where(eq(descriptions.imageId, img.id))
+      .orderBy(asc(descriptions.variant)),
+    db.select().from(tags).where(eq(tags.imageId, img.id)).orderBy(asc(tags.tag))
+  ]);
+  return {
+    ...img,
+    captions: capRows.map((c) => ({
+      id: c.id,
+      variant: c.variant,
+      text: c.text,
+      isSlugSource: c.isSlugSource,
+      locked: c.locked
+    })),
+    descriptions: descRows.map((d) => ({
+      id: d.id,
+      variant: d.variant,
+      text: d.text,
+      locked: d.locked
+    })),
+    tags: tagRows.map((t) => ({
+      id: t.id,
+      tag: t.tag,
+      source: t.source,
+      confidence: t.confidence
+    }))
+  };
+}
+
+// Per-user gallery for /u/[handle]. Newest-first listing scoped to one
+// owner; no embedding-driven sort modes (visitor sees the public stream
+// for those). Hydrates captions/descriptions/tags so the grid can render.
+export async function listImagesByHandle(
+  handle: string,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<{ owner: { handle: string; displayName: string | null } | null; images: ImageWithRelations[] }> {
+  const [user] = await db
+    .select({ id: users.id, handle: users.handle, displayName: users.displayName })
+    .from(users)
+    .where(eq(users.handle, handle))
+    .limit(1);
+  if (!user) return { owner: null, images: [] };
+  const limit = clampInt(opts.limit, 60, 1, 200);
+  const offset = clampInt(opts.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const rows = await db
+    .select()
+    .from(images)
+    .where(eq(images.ownerId, user.id))
+    .orderBy(desc(images.uploadedAt), desc(images.id))
+    .limit(limit)
+    .offset(offset);
+  const hydrated = await hydrateImages(rows);
+  return {
+    owner: { handle: user.handle, displayName: user.displayName },
+    images: hydrated
   };
 }
 
