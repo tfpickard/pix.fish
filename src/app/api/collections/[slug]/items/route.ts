@@ -2,17 +2,20 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import {
   addItemToCollection,
-  getCollectionBySlug
+  getCollectionBySlug,
+  isShelfOwner
 } from '@/lib/db/queries/collections';
-import { getImageBySlug } from '@/lib/db/queries/images';
 import { hashIp, getRequestIp } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
-// Add an image to a shelf. Body: { slug } (image slug) or { imageId }.
-// Owner-only: we check the requester's hash against the shelf's ownerHash
-// before mutating, so a leaked share URL can be browsed but not modified.
+// Add an image to a shelf. Body: { imageId, fingerprint }. We require
+// imageId (not slug) because image slugs are per-owner unique on this
+// site -- two users can have /u/alice/sunset and /u/bob/sunset, so a
+// global slug lookup would resolve to the wrong row half the time.
+// Anonymous mutations also require the fingerprint to match the stored
+// one so a shared-IP visitor with the URL can't tamper with the shelf.
 export async function POST(req: Request, ctx: { params: { slug: string } }) {
   const ip = getRequestIp(req);
   const ipHash = hashIp(ip);
@@ -25,26 +28,27 @@ export async function POST(req: Request, ctx: { params: { slug: string } }) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
-  const session = await auth();
-  const requesterHash = session?.user?.id ?? ipHash;
-  if (requesterHash !== collection.ownerHash) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
-
   let imageId: number | null = null;
+  let fingerprint: string | null = null;
   try {
-    const body = (await req.json()) as { slug?: unknown; imageId?: unknown };
+    const body = (await req.json()) as { imageId?: unknown; fingerprint?: unknown };
     if (typeof body.imageId === 'number' && Number.isFinite(body.imageId)) {
       imageId = body.imageId;
-    } else if (typeof body.slug === 'string' && body.slug.trim().length > 0) {
-      const img = await getImageBySlug(body.slug.trim());
-      if (img) imageId = img.id;
+    }
+    if (typeof body.fingerprint === 'string') {
+      fingerprint = body.fingerprint.slice(0, 64);
     }
   } catch {
     return NextResponse.json({ error: 'invalid body' }, { status: 400 });
   }
   if (imageId === null) {
-    return NextResponse.json({ error: 'image not found' }, { status: 404 });
+    return NextResponse.json({ error: 'imageId required' }, { status: 400 });
+  }
+
+  const session = await auth();
+  const requesterHash = session?.user?.id ?? ipHash;
+  if (!isShelfOwner(collection, requesterHash, !!session?.user?.id, fingerprint)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   const result = await addItemToCollection({ collectionId: collection.id, imageId });

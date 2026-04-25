@@ -223,7 +223,7 @@ export async function ImageDetail({
 
         <ReactionBar slug={img.slug} initialCounts={reactionCounts} />
 
-        <SaveToShelf imageSlug={img.slug} />
+        <SaveToShelf imageId={img.id} />
 
         {owner ? <ImageActions slug={img.slug} /> : null}
 

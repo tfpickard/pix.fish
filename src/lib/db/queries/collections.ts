@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import {
   collectionItems,
@@ -10,13 +10,42 @@ import {
   hydrateImages,
   type ImageWithRelations
 } from './images';
-import { isValidCollectionSlug, mintCollectionSlug } from '../../collections/slug';
+import {
+  isValidCollectionSlug,
+  mintCollectionSlug,
+  mintCollectionSlugFallback
+} from '../../collections/slug';
 
-export type CollectionWithItems = Collection & {
+// Shape returned to callers/clients. Strips ownerHash and fingerprint
+// so neither the share URL nor the public read API leaks the visitor's
+// IP-derived identifier. ownerHash is hashed but it's still a stable
+// per-visitor fingerprint that should stay server-only.
+export type PublicCollection = {
+  id: number;
+  slug: string;
+  title: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export function toPublicCollection(c: Collection): PublicCollection {
+  return {
+    id: c.id,
+    slug: c.slug,
+    title: c.title,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt
+  };
+}
+
+export type CollectionWithItems = PublicCollection & {
   items: ImageWithRelations[];
 };
 
-const SLUG_RETRIES = 5;
+// Bumped from 5; with the new 6-hex tail the pool is ~135B, so even 25
+// retries is virtually impossible to exhaust until the table has
+// astronomical rows.
+const SLUG_RETRIES = 25;
 
 // Mint a new collection with an unused slug. Retries on the unique-
 // constraint collision; falls back to a longer numeric tail after a few
@@ -45,9 +74,9 @@ export async function createCollection(params: {
       if (code !== '23505') throw err;
     }
   }
-  // Fallback: append a longer suffix so a unique slug is virtually
-  // guaranteed even after multiple base-pool collisions.
-  const fallback = `${mintCollectionSlug()}-${Math.floor(Math.random() * 1e6)}`;
+  // Fallback: longer hex tail. Stays inside the same SLUG_RE so the
+  // inserted row is still resolvable through getCollectionBySlug.
+  const fallback = mintCollectionSlugFallback();
   const [row] = await db
     .insert(collections)
     .values({
@@ -72,6 +101,8 @@ export async function getCollectionBySlug(
 
 // Hydrate a collection's items as full ImageWithRelations rows ordered
 // by addedAt desc, so a freshly-saved image appears first on the shelf.
+// Returns the public shape (no ownerHash/fingerprint) since this powers
+// the share-link page.
 export async function getCollectionWithItems(
   slug: string
 ): Promise<CollectionWithItems | null> {
@@ -82,29 +113,24 @@ export async function getCollectionWithItems(
     .from(collectionItems)
     .where(eq(collectionItems.collectionId, col.id))
     .orderBy(desc(collectionItems.createdAt));
-  if (itemRows.length === 0) return { ...col, items: [] };
-  // Re-fetch image rows in the same order the join returned them.
+  if (itemRows.length === 0) return { ...toPublicCollection(col), items: [] };
   const ids = itemRows.map((r) => r.imageId);
-  const imageRows = await db
-    .select()
-    .from(images)
-    .where(sql`${images.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  // inArray is the right tool here -- the previous hand-built `IN (...)`
+  // template was easy to misread as unbalanced and harder to maintain.
+  const imageRows = await db.select().from(images).where(inArray(images.id, ids));
   const orderMap = new Map(ids.map((id, i) => [id, i] as const));
   imageRows.sort((a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0));
   const hydrated = await hydrateImages(imageRows);
-  return { ...col, items: hydrated };
+  return { ...toPublicCollection(col), items: hydrated };
 }
 
-// First-or-create the visitor's default shelf. We key on (ownerHash,
-// fingerprint) so two visitors behind a shared NAT each get their own,
-// while reloading the same browser keeps adding to the same shelf.
-// Returns the resolved collection plus a flag that says "we just made
-// this", so callers can include the slug in the response and the client
-// can persist it to localStorage.
-export async function findOrCreateDefaultShelf(params: {
+// Read the visitor's default shelf without creating one. Used by
+// DELETE flows so an unsave attempt by a first-time visitor doesn't
+// insert an empty shelf as a side effect.
+export async function findDefaultShelf(params: {
   ownerHash: string;
   fingerprint: string | null;
-}): Promise<{ collection: Collection; created: boolean }> {
+}): Promise<Collection | null> {
   const where = params.fingerprint
     ? and(
         eq(collections.ownerHash, params.ownerHash),
@@ -117,12 +143,44 @@ export async function findOrCreateDefaultShelf(params: {
     .where(where)
     .orderBy(desc(collections.updatedAt))
     .limit(1);
+  return existing ?? null;
+}
+
+// First-or-create the visitor's default shelf. We key on (ownerHash,
+// fingerprint) so two visitors behind a shared NAT each get their own,
+// while reloading the same browser keeps adding to the same shelf.
+// Returns the resolved collection plus a flag that says "we just made
+// this", so callers can include the slug in the response and the client
+// can persist it to localStorage.
+export async function findOrCreateDefaultShelf(params: {
+  ownerHash: string;
+  fingerprint: string | null;
+}): Promise<{ collection: Collection; created: boolean }> {
+  const existing = await findDefaultShelf(params);
   if (existing) return { collection: existing, created: false };
   const created = await createCollection({
     ownerHash: params.ownerHash,
     fingerprint: params.fingerprint
   });
   return { collection: created, created: true };
+}
+
+// Owner-check helper used by mutating routes. For signed-in users the
+// ownerHash itself is sufficient (it's their user.id, which the
+// session proves). For anonymous shelves the (ip_hash, fingerprint)
+// pair is the identity, so we also require the inbound fingerprint to
+// match the stored one. A null stored fingerprint -- legacy or
+// pre-migration row -- falls back to ownerHash-only behavior.
+export function isShelfOwner(
+  collection: Pick<Collection, 'ownerHash' | 'fingerprint'>,
+  requesterHash: string,
+  isSignedIn: boolean,
+  requesterFingerprint: string | null
+): boolean {
+  if (collection.ownerHash !== requesterHash) return false;
+  if (isSignedIn) return true;
+  if (!collection.fingerprint) return true;
+  return !!requesterFingerprint && requesterFingerprint === collection.fingerprint;
 }
 
 // Upsert-style add: returns true if a new row was inserted, false if

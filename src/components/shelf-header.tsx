@@ -1,25 +1,64 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { Pencil, Check, X } from 'lucide-react';
 
 type Props = {
   slug: string;
   initialTitle: string;
-  canEdit: boolean;
+  // Server-side hint: true when the viewer is a signed-in shelf owner.
+  // For anonymous shelves this is always false (the server can't see
+  // localStorage); we lift it to true on hydration if the visitor's
+  // pix_shelf_slug matches and the rename API accepts the fingerprint.
+  canEditFromServer: boolean;
   count: number;
 };
 
+const FP_KEY = 'pix_fp';
+const SHELF_SLUG_KEY = 'pix_shelf_slug';
+
+function readFingerprint(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(FP_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function readSavedShelfSlug(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(SHELF_SLUG_KEY);
+  } catch {
+    return null;
+  }
+}
+
 // Shelf header with inline rename for the owner. The viewer-vs-owner
-// distinction is decided server-side in the page component (compares
-// ownerHash to the requester's hash); this component just renders the
-// pencil affordance when canEdit is true.
-export function ShelfHeader({ slug, initialTitle, canEdit, count }: Props) {
+// distinction is decided server-side for signed-in users and on the
+// client (via localStorage match) for anonymous users -- the server
+// can't read the visitor's fingerprint until the request body carries
+// it, so anonymous owners get the rename affordance after hydration.
+export function ShelfHeader({ slug, initialTitle, canEditFromServer, count }: Props) {
   const [title, setTitle] = useState(initialTitle);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(initialTitle);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const [canEdit, setCanEdit] = useState(canEditFromServer);
+
+  useEffect(() => {
+    if (canEditFromServer) {
+      setCanEdit(true);
+      return;
+    }
+    // Anonymous-owner heuristic: their localStorage holds this exact
+    // shelf slug. Server-side PATCH still validates the fingerprint, so
+    // a malicious sibling tab can't get past auth even if they set the
+    // slug -- this is purely about *showing* the affordance.
+    if (readSavedShelfSlug() === slug) setCanEdit(true);
+  }, [slug, canEditFromServer]);
 
   function save() {
     setError(null);
@@ -32,7 +71,7 @@ export function ShelfHeader({ slug, initialTitle, canEdit, count }: Props) {
       const res = await fetch(`/api/collections/${encodeURIComponent(slug)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: next })
+        body: JSON.stringify({ title: next, fingerprint: readFingerprint() })
       });
       if (res.ok) {
         setTitle(next);
@@ -52,7 +91,7 @@ export function ShelfHeader({ slug, initialTitle, canEdit, count }: Props) {
 
   return (
     <header className="mx-auto max-w-2xl space-y-2">
-      {editing ? (
+      {editing && canEdit ? (
         <div className="flex items-center gap-2">
           <input
             type="text"

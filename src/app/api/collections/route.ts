@@ -1,14 +1,15 @@
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
-import { createCollection } from '@/lib/db/queries/collections';
+import { createCollection, toPublicCollection } from '@/lib/db/queries/collections';
 import { hashIp, getRequestIp } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
-// Mint a new shelf for the requesting visitor. We don't auto-bind the
-// just-minted shelf to the visitor's localStorage on the server; the
-// client persists `pix_shelf_slug` on its own (see save-to-shelf.tsx).
+// Mint a new shelf for the requesting visitor. The response strips
+// ownerHash and fingerprint so the client never sees the IP-derived
+// identifier even though it kicked off the request -- both fields are
+// server-only.
 export async function POST(req: Request) {
   const ip = getRequestIp(req);
   const ipHash = hashIp(ip);
@@ -36,5 +37,8 @@ export async function POST(req: Request) {
   }
 
   const collection = await createCollection({ ownerHash, fingerprint, title });
-  return NextResponse.json({ collection }, { status: 201 });
+  return NextResponse.json(
+    { collection: toPublicCollection(collection) },
+    { status: 201 }
+  );
 }

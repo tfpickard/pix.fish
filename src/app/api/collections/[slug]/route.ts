@@ -3,13 +3,18 @@ import { auth } from '@/lib/auth';
 import {
   getCollectionBySlug,
   getCollectionWithItems,
-  renameCollection
+  isShelfOwner,
+  renameCollection,
+  toPublicCollection
 } from '@/lib/db/queries/collections';
 import { hashIp, getRequestIp } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
+// Returns the public shape (slug, title, items, timestamps) -- no
+// ownerHash or fingerprint. Anyone with the share link can read; the
+// owner-identifying columns stay server-only.
 export async function GET(_req: Request, ctx: { params: { slug: string } }) {
   const slug = ctx.params.slug;
   const collection = await getCollectionWithItems(slug);
@@ -19,10 +24,11 @@ export async function GET(_req: Request, ctx: { params: { slug: string } }) {
   return NextResponse.json({ collection });
 }
 
-// Owner-only rename. We compare the request's owner-hash (signed-in
-// user.id, or the visitor's ip_hash for anonymous shelves) against the
-// stored ownerHash on the collection. No third-party can rename a
-// shelf they don't own even if they can read it via the share URL.
+// Owner-only rename. Anonymous shelves require BOTH a matching ownerHash
+// (ip_hash) and a matching fingerprint -- otherwise any visitor sharing
+// a public IP behind the same NAT could rename the shelf if they had
+// the URL. Signed-in users skip the fingerprint check; the session
+// itself is the proof.
 export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
   const ip = getRequestIp(req);
   const ipHash = hashIp(ip);
@@ -36,15 +42,10 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
-  const session = await auth();
-  const requesterHash = session?.user?.id ?? ipHash;
-  if (requesterHash !== collection.ownerHash) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
-
   let title: string | null;
+  let fingerprint: string | null = null;
   try {
-    const body = (await req.json()) as { title?: unknown };
+    const body = (await req.json()) as { title?: unknown; fingerprint?: unknown };
     if (body.title === null) {
       title = null;
     } else if (typeof body.title === 'string') {
@@ -53,10 +54,25 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
     } else {
       return NextResponse.json({ error: 'title must be string or null' }, { status: 400 });
     }
+    if (typeof body.fingerprint === 'string') {
+      fingerprint = body.fingerprint.slice(0, 64);
+    }
   } catch {
     return NextResponse.json({ error: 'invalid body' }, { status: 400 });
   }
 
+  const session = await auth();
+  const requesterHash = session?.user?.id ?? ipHash;
+  if (!isShelfOwner(collection, requesterHash, !!session?.user?.id, fingerprint)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  }
+
   const updated = await renameCollection({ id: collection.id, title });
-  return NextResponse.json({ collection: updated });
+  if (!updated) {
+    // Row vanished between the read and the update (concurrent delete);
+    // surface as 404 instead of returning {collection: null} 200, which
+    // would be awkward for clients to interpret.
+    return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+  return NextResponse.json({ collection: toPublicCollection(updated) });
 }
