@@ -158,6 +158,14 @@ export async function ImageDetail({
         })}
       />
       <div className="relative mx-auto max-w-4xl">
+        {/* width/height are unknown for most rows -- the upload pipeline
+            doesn't probe dimensions (per CLAUDE.md: "image-meta.ts does not
+            probe dimensions"). Use next/image's `width=0 height=0` + `sizes`
+            pattern: it routes through the optimizer (so the URL is fetched
+            server-side and re-served same-origin, sidestepping any
+            client-side cross-origin gotchas) and lets CSS size the rendered
+            element to the image's natural aspect once it loads. When
+            dimensions ARE known, pass them so layout stabilizes faster. */}
         {img.width && img.height ? (
           <Image
             src={img.blobUrl}
@@ -168,10 +176,14 @@ export async function ImageDetail({
             priority
           />
         ) : (
-          <img
+          <Image
             src={img.blobUrl}
             alt={caption || img.slug}
+            width={0}
+            height={0}
+            sizes="(min-width: 1024px) 1024px, 100vw"
             className="h-auto w-full rounded-lg border border-ink-800"
+            priority
           />
         )}
       </div>
