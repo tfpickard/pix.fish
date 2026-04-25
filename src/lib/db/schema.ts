@@ -274,6 +274,51 @@ export const reports = pgTable('reports', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });
 
+// Phase F: anonymous-friendly "shelves". Visitors save images to a
+// collection by ip_hash + fingerprint; signed-in users use their user.id
+// as ownerHash. The slug is human-readable (adjective-noun-NNNN) so
+// shelves are shareable without leaking IDs. `title` defaults to "shelf"
+// at the API layer when null. Cascading delete on items follows the
+// images table -- removing an image from /admin/gallery removes it from
+// every shelf.
+export const collections = pgTable(
+  'collections',
+  {
+    id: serial('id').primaryKey(),
+    slug: text('slug').notNull().unique(),
+    title: text('title'),
+    // For anonymous visitors: ip_hash. For signed-in users: user.id.
+    // The same column covers both so authorization is one comparison.
+    ownerHash: text('owner_hash').notNull(),
+    // Secondary dedupe (localStorage UUID) -- mirrors the reactions
+    // pattern. Lets a visitor on a shared IP keep their own shelf.
+    fingerprint: text('fingerprint'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    ownerHashIdx: index('collections_owner_hash_idx').on(t.ownerHash)
+  })
+);
+
+export const collectionItems = pgTable(
+  'collection_items',
+  {
+    id: serial('id').primaryKey(),
+    collectionId: integer('collection_id')
+      .notNull()
+      .references(() => collections.id, { onDelete: 'cascade' }),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    uniq: uniqueIndex('collection_items_uniq').on(t.collectionId, t.imageId),
+    collectionIdx: index('collection_items_collection_idx').on(t.collectionId)
+  })
+);
+
 // ----------------------------------------------------------------------------
 // Phase 4 tables
 // ----------------------------------------------------------------------------
@@ -478,6 +523,18 @@ export const commentsRelations = relations(comments, ({ one }) => ({
   image: one(images, { fields: [comments.imageId], references: [images.id] })
 }));
 
+export const collectionsRelations = relations(collections, ({ many }) => ({
+  items: many(collectionItems)
+}));
+
+export const collectionItemsRelations = relations(collectionItems, ({ one }) => ({
+  collection: one(collections, {
+    fields: [collectionItems.collectionId],
+    references: [collections.id]
+  }),
+  image: one(images, { fields: [collectionItems.imageId], references: [images.id] })
+}));
+
 // Convenience type exports
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -512,3 +569,7 @@ export type AboutField = typeof aboutFields.$inferSelect;
 export type NewAboutField = typeof aboutFields.$inferInsert;
 export type GalleryConfig = typeof galleryConfig.$inferSelect;
 export type NewGalleryConfig = typeof galleryConfig.$inferInsert;
+export type Collection = typeof collections.$inferSelect;
+export type NewCollection = typeof collections.$inferInsert;
+export type CollectionItem = typeof collectionItems.$inferSelect;
+export type NewCollectionItem = typeof collectionItems.$inferInsert;
