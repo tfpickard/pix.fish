@@ -88,12 +88,15 @@ Only use tags from the list above for source="taxonomy". Use lower-case exactly 
 
 Aim for 6 to 14 tags total with a roughly even mix of taxonomy and freeform. Include a taxonomy tag only if it actually applies. Do not invent new taxonomy tags.
 
+Also classify the image for adult content. Set "nsfw": true when the image contains nudity, sexual content, graphic violence or gore, or other content most viewers would consider unsafe for general audiences. Set false otherwise. Err on the side of false for ambiguous artistic nudity, suggestive-but-clothed, or merely intense imagery -- a separate manual override exists for edge cases.
+
 Return ONLY valid JSON in this shape, with no prose around it:
 {
   "tags": [
     { "tag": "photograph",   "source": "taxonomy", "confidence": 0.95 },
     { "tag": "fire-escape",  "source": "freeform", "confidence": 0.8 }
-  ]
+  ],
+  "nsfw": false
 }`;
 
 type Taxon = { tag: string; category: string };

@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { AIProvider, AITag } from './types';
+import type { AIProvider, TagsAndNsfw } from './types';
 import { parseTagsJson, parseVariantsJson } from './types';
 
 export const OPENAI_DEFAULT_VISION_MODEL = 'gpt-4o';
@@ -69,7 +69,7 @@ export function createOpenAIProvider(
       return parseVariantsJson(text);
     },
 
-    async tags(image, mime, prompt, imageUrl): Promise<AITag[]> {
+    async tags(image, mime, prompt, imageUrl): Promise<TagsAndNsfw> {
       const text = await callVision(apiKey, visionModel, image, mime, prompt, imageUrl);
       return parseTagsJson(text);
     },

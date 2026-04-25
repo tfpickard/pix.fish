@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { auth, isOwner } from '@/lib/auth';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { ShareButton } from '@/components/share-button';
+import { NsfwToggle } from '@/components/nsfw-toggle';
 
 export async function NavBar() {
   const session = await auth();
@@ -63,6 +64,7 @@ export async function NavBar() {
               sign in
             </Link>
           )}
+          <NsfwToggle />
           <ShareButton />
           <ThemeToggle />
         </nav>

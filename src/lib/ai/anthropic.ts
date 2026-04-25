@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AIProvider, AITag } from './types';
+import type { AIProvider, TagsAndNsfw } from './types';
 import { parseTagsJson, parseVariantsJson } from './types';
 
 export const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -81,7 +81,7 @@ export function createAnthropicProvider(
       return parseVariantsJson(text);
     },
 
-    async tags(image, mime, prompt, imageUrl): Promise<AITag[]> {
+    async tags(image, mime, prompt, imageUrl): Promise<TagsAndNsfw> {
       const text = await callVision(apiKey, model, image, mime, prompt, imageUrl);
       return parseTagsJson(text);
     },

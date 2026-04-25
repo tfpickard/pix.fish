@@ -59,11 +59,11 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
         // Delete + insert in the same tx so a rollback doesn't leave an
         // image with no tags.
         await tx.delete(tags).where(eq(tags.imageId, img.id));
-        if (result.length > 0) {
+        if (result.tags.length > 0) {
           await tx
             .insert(tags)
             .values(
-              result.map((t) => ({
+              result.tags.map((t) => ({
                 imageId: img.id,
                 tag: t.tag,
                 source: t.source,
@@ -73,6 +73,14 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
               }))
             )
             .onConflictDoNothing();
+        }
+        // NSFW: only update if the existing source is 'auto' (or null on
+        // legacy rows). A manual override sticks across reprocess.
+        if (img.nsfwSource !== 'manual') {
+          await tx
+            .update(images)
+            .set({ isNsfw: result.nsfw, nsfwSource: 'auto' })
+            .where(eq(images.id, img.id));
         }
       });
     } else if (field === 'embeddings') {

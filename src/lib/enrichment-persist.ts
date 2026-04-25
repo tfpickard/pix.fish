@@ -39,11 +39,42 @@ export async function persistEnrichment(args: {
   ownerId: string;
   placeholderSlug: string;
   manualCaption?: string;
+  // Manual description from the upload form, persisted as variant=4
+  // locked=true (mirrors the manual caption shape) so reprocess passes
+  // can't clobber it.
+  manualDescription?: string;
+  // Manual NSFW override from the upload form. true = force-NSFW with
+  // source='manual'; the AI verdict is ignored. Undefined = trust the AI
+  // (or default false when no AI ran).
+  manualNsfw?: boolean;
+  // Manual freeform tags from the upload form. Inserted alongside any
+  // AI-generated tags; the unique (imageId, tag) constraint dedupes if the
+  // AI also produced the same tag.
+  manualTags?: string[];
   enrichment: EnrichmentResult;
   cfg: AiConfigMap;
   userKeys: UserProviderKeys;
 }): Promise<void> {
-  const { imageId, ownerId, placeholderSlug, manualCaption, enrichment, cfg, userKeys } = args;
+  const {
+    imageId,
+    ownerId,
+    placeholderSlug,
+    manualCaption,
+    manualDescription,
+    manualNsfw,
+    manualTags,
+    enrichment,
+    cfg,
+    userKeys
+  } = args;
+  // NSFW resolution. Manual override always wins. Otherwise, if a tag
+  // provider produced any tags we trust its nsfw verdict (source='auto');
+  // if no provider ran (key-less user) we fall through to manualNsfw with
+  // source='manual', defaulting false.
+  const aiClassified = enrichment.tags.length > 0;
+  const isNsfw = manualNsfw === true ? true : aiClassified ? enrichment.nsfw : !!manualNsfw;
+  const nsfwSource: 'auto' | 'manual' =
+    manualNsfw !== undefined || !aiClassified ? 'manual' : 'auto';
 
   const slugSourceText = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
   const slugBase = slugify(slugSourceText) || placeholderSlug;
@@ -82,38 +113,59 @@ export async function persistEnrichment(args: {
         }
         if (capRows.length > 0) await tx.insert(captions).values(capRows);
 
-        if (enrichment.descriptions.length > 0) {
-          await tx.insert(descriptions).values(
-            enrichment.descriptions.map((d, i) => ({
+        const descRows = enrichment.descriptions.map((d, i) => ({
+          imageId,
+          variant: i + 1,
+          text: d.text,
+          provider: d.provider as string | null,
+          model: d.model as string | null,
+          locked: false
+        }));
+        if (manualDescription) {
+          descRows.push({
+            imageId,
+            variant: 4,
+            text: manualDescription,
+            provider: null,
+            model: null,
+            locked: true
+          });
+        }
+        if (descRows.length > 0) await tx.insert(descriptions).values(descRows);
+
+        const allTags = [
+          ...enrichment.tags.map((t) => ({
+            imageId,
+            tag: t.tag,
+            source: t.source,
+            confidence: t.confidence ?? null,
+            provider: t.provider as string | null,
+            model: t.model as string | null
+          })),
+          ...(manualTags ?? [])
+            .map((raw) => raw.trim().toLowerCase())
+            .filter(Boolean)
+            .map((tag) => ({
               imageId,
-              variant: i + 1,
-              text: d.text,
-              provider: d.provider,
-              model: d.model,
-              locked: false
+              tag,
+              source: 'freeform' as const,
+              confidence: null as number | null,
+              provider: null as string | null,
+              model: null as string | null
             }))
-          );
+        ];
+        if (allTags.length > 0) {
+          await tx.insert(tags).values(allTags).onConflictDoNothing();
         }
 
-        if (enrichment.tags.length > 0) {
-          await tx
-            .insert(tags)
-            .values(
-              enrichment.tags.map((t) => ({
-                imageId,
-                tag: t.tag,
-                source: t.source,
-                confidence: t.confidence ?? null,
-                provider: t.provider,
-                model: t.model
-              }))
-            )
-            .onConflictDoNothing();
-        }
-
-        if (candidate !== placeholderSlug) {
-          await tx.update(images).set({ slug: candidate }).where(eq(images.id, imageId));
-        }
+        // Apply NSFW + final slug update in the same tx as captions/tags so
+        // a unique-violation rollback also reverts the flag.
+        const updates: Record<string, unknown> = {
+          isNsfw,
+          nsfwSource
+        };
+        if (candidate !== placeholderSlug) updates.slug = candidate;
+        await tx.update(images).set(updates).where(eq(images.id, imageId));
       });
       finalSlug = candidate;
       break;

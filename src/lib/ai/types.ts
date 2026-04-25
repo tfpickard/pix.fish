@@ -4,6 +4,10 @@ export type AITag = {
   confidence?: number;
 };
 
+// Result of the tag pass. The same call also classifies NSFW so we don't
+// burn an extra round-trip on a separate vision request.
+export type TagsAndNsfw = { tags: AITag[]; nsfw: boolean };
+
 // imageUrl is optional; when the caller has a public URL (Vercel Blob),
 // passing it lets providers fetch the image remotely instead of base64'ing
 // a buffer inline. Anthropic caps inline base64 at 5 MB; URL source has no
@@ -15,7 +19,7 @@ export interface AIProvider {
 
   captions(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<string[]>;
   descriptions(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<string[]>;
-  tags(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<AITag[]>;
+  tags(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<TagsAndNsfw>;
   // Text-only completion, no image. Used by non-vision generators (about
   // page copy, etc.). Optional because an embeddings-only provider instance
   // doesn't need it.
@@ -47,7 +51,9 @@ export function parseVariantsJson(raw: string): string[] {
   return cleaned.slice(0, 3);
 }
 
-export function parseTagsJson(raw: string): AITag[] {
+// Phase E: the tag-pass response carries a sibling `nsfw: boolean` next
+// to `tags: [...]`. Old responses without `nsfw` parse as nsfw=false.
+export function parseTagsJson(raw: string): TagsAndNsfw {
   const obj = tryParseJson(raw);
   const list = Array.isArray(obj?.tags) ? obj.tags : [];
   const out: AITag[] = [];
@@ -68,7 +74,10 @@ export function parseTagsJson(raw: string): AITag[] {
       byTag.set(t.tag, t);
     }
   }
-  return [...byTag.values()];
+  return {
+    tags: [...byTag.values()],
+    nsfw: obj?.nsfw === true
+  };
 }
 
 function tryParseJson(raw: string): any {

@@ -11,7 +11,15 @@ import { persistEnrichment } from '@/lib/enrichment-persist';
 // the original file through Postgres just to hand it back out to Anthropic.
 const EMPTY_BUFFER = Buffer.alloc(0);
 
-type Payload = { imageId: number };
+type Payload = {
+  imageId: number;
+  // Phase E: manual upload-form values that ride along the enrich job so
+  // the persist step can apply them after the AI pass (or in lieu of it,
+  // for key-less uploads).
+  manualDescription?: string;
+  manualTags?: string[];
+  manualNsfw?: boolean;
+};
 
 export async function enrichImageHandler(job: Job): Promise<void> {
   const payload = job.payload as Payload;
@@ -48,6 +56,9 @@ export async function enrichImageHandler(job: Job): Promise<void> {
     ownerId: img.ownerId,
     placeholderSlug: img.slug,
     manualCaption,
+    manualDescription: payload.manualDescription,
+    manualTags: payload.manualTags,
+    manualNsfw: payload.manualNsfw,
     enrichment,
     cfg,
     userKeys

@@ -1,10 +1,15 @@
 import { getProvider, type AITag, type AiConfigMap, type UserProviderKeys } from '@/lib/ai';
+import type { TagsAndNsfw } from '@/lib/ai/types';
 import { resolvePrompt } from '@/lib/prompts';
 
 export type EnrichmentResult = {
   captions: { text: string; provider: string; model: string }[];
   descriptions: { text: string; provider: string; model: string }[];
   tags: { tag: string; source: 'taxonomy' | 'freeform'; confidence?: number; provider: string; model: string }[];
+  // Phase E: the tag pass also classifies NSFW. False when no tag provider
+  // ran (key-less user) -- the upload form's manual_nsfw checkbox is the
+  // override path in that case.
+  nsfw: boolean;
 };
 
 /**
@@ -42,7 +47,8 @@ export async function enrichImage(
   const descriptionsProvider = getProvider('descriptions', cfg, userKeys);
   const tagsProvider = getProvider('tags', cfg, userKeys);
 
-  const [captionsRaw, descriptionsRaw, tagsRaw] = await Promise.all([
+  const emptyTags: TagsAndNsfw = { tags: [], nsfw: false };
+  const [captionsRaw, descriptionsRaw, tagsResult] = await Promise.all([
     captionsProvider
       ? captionsProvider.captions(buffer, mime, captionPrompt, imageUrl)
       : Promise.resolve<string[]>([]),
@@ -51,7 +57,7 @@ export async function enrichImage(
       : Promise.resolve<string[]>([]),
     tagsProvider
       ? tagsProvider.tags(buffer, mime, tagsPrompt, imageUrl)
-      : Promise.resolve<AITag[]>([])
+      : Promise.resolve(emptyTags)
   ]);
 
   return {
@@ -70,13 +76,16 @@ export async function enrichImage(
         }))
       : [],
     tags: tagsProvider
-      ? tagsRaw.map((t: AITag) => ({
+      ? tagsResult.tags.map((t: AITag) => ({
           tag: t.tag,
           source: t.source,
           confidence: t.confidence,
           provider: tagsProvider.name,
           model: tagsProvider.model
         }))
-      : []
+      : [],
+    // Default false when no tag provider ran -- the upload route applies
+    // manual_nsfw on top before persisting.
+    nsfw: tagsProvider ? tagsResult.nsfw : false
   };
 }

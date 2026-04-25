@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { listImagesByHandle } from '@/lib/db/queries/images';
 import { ImageGrid } from '@/components/image-grid';
 import { SITE_NAME } from '@/lib/site';
+import { readShowNsfwCookie } from '@/lib/nsfw';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,7 +31,8 @@ export default async function HandleGalleryPage({
   params: { handle: string };
 }) {
   const handle = decodeURIComponent(params.handle);
-  const { owner, images } = await listImagesByHandle(handle, { limit: 60 });
+  const includeNsfw = await readShowNsfwCookie();
+  const { owner, images } = await listImagesByHandle(handle, { limit: 60, includeNsfw });
   if (!owner) notFound();
   return (
     <div className="pt-8">

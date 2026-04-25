@@ -9,6 +9,7 @@ import { hydrateImages, listImages } from '@/lib/db/queries/images';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
+import { readShowNsfwCookie } from '@/lib/nsfw';
 import { isSortMode, type SortMode } from '@/lib/sort/types';
 
 export const runtime = 'nodejs';
@@ -52,8 +53,15 @@ export async function GET(req: Request) {
     sort = defaults.defaultSort;
   }
   const seed = url.searchParams.get('seed') ?? undefined;
+  // The query param overrides the cookie -- lets clients force include
+  // (e.g. signed-in admin tooling) without flipping the visitor cookie.
+  const queryIncludeNsfw = url.searchParams.get('include_nsfw');
+  const includeNsfw =
+    queryIncludeNsfw === '1' || queryIncludeNsfw === 'true'
+      ? true
+      : await readShowNsfwCookie();
 
-  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed });
+  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed, includeNsfw });
   return NextResponse.json({ images: rows });
 }
 
@@ -82,6 +90,29 @@ export async function POST(req: Request) {
   const manualCaption =
     typeof rawManualCaption === 'string' && rawManualCaption.trim()
       ? rawManualCaption.trim()
+      : undefined;
+  const rawManualDescription = form.get('manual_description');
+  const manualDescription =
+    typeof rawManualDescription === 'string' && rawManualDescription.trim()
+      ? rawManualDescription.trim()
+      : undefined;
+  // Comma-separated manual tags from the upload form. Empty fragments are
+  // dropped; lowercasing happens in persistEnrichment.
+  const rawManualTags = form.get('manual_tags');
+  const manualTags =
+    typeof rawManualTags === 'string' && rawManualTags.trim()
+      ? rawManualTags
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : undefined;
+  // Checkbox: present-and-truthy means owner asserts NSFW. Absent or
+  // explicit 'false'/'0' means no override; the AI verdict (or default
+  // false for key-less uploads) wins.
+  const rawManualNsfw = form.get('manual_nsfw');
+  const manualNsfw =
+    rawManualNsfw === 'true' || rawManualNsfw === 'on' || rawManualNsfw === '1'
+      ? true
       : undefined;
 
   if (!(file instanceof File)) {
@@ -153,7 +184,12 @@ export async function POST(req: Request) {
   try {
     await enqueueJob({
       type: 'enrich.image',
-      payload: { imageId: row.id },
+      payload: {
+        imageId: row.id,
+        manualDescription,
+        manualTags,
+        manualNsfw
+      },
       maxAttempts: 3
     });
   } catch (err) {
