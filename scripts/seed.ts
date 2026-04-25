@@ -10,11 +10,26 @@ import {
   aiConfig,
   galleryConfig,
   prompts,
-  tagTaxonomy
+  tagTaxonomy,
+  users
 } from '../src/lib/db/schema';
 import { defaultAiConfig } from '../src/lib/ai/config';
 import { DEFAULT_SHUFFLE_PERIOD, DEFAULT_SORT } from '../src/lib/sort/types';
 import { sql } from 'drizzle-orm';
+
+// Site admin's stable id. Drives ownership of seeded rows (about_fields,
+// gallery_config) and is the row that backs public-facing /about and the
+// home gallery defaults. The auth callback will upsert the same row on
+// first sign-in -- this insert is just so seed-only environments work.
+function ownerId(): string {
+  const id = process.env.OWNER_GITHUB_ID;
+  if (!id) throw new Error('OWNER_GITHUB_ID is required to seed -- it is the site admin user id');
+  return id;
+}
+
+function ownerHandle(): string {
+  return process.env.OWNER_HANDLE || 'admin';
+}
 
 const CAPTION_TEMPLATE = `You are generating captions for a personal image gallery.
 
@@ -179,6 +194,25 @@ async function main() {
         set: { category: t.category, sortOrder: i }
       });
   }
+  console.log('Seeding site admin user...');
+  const adminId = ownerId();
+  const adminHandle = ownerHandle();
+  await db
+    .insert(users)
+    .values({
+      id: adminId,
+      handle: adminHandle,
+      provider: 'github',
+      role: 'admin'
+    })
+    .onConflictDoUpdate({
+      target: users.id,
+      // Promote to admin on every reseed; leave handle/profile alone so the
+      // OAuth callback can keep them fresh.
+      set: { role: 'admin', updatedAt: new Date() }
+    });
+  console.log(`  - ensured admin user "${adminHandle}" (id ${adminId})`);
+
   console.log('Seeding about_fields defaults...');
   const aboutDefaults: { key: string; label: string; sortOrder: number }[] = [
     { key: 'intro', label: 'intro', sortOrder: 10 },
@@ -190,11 +224,11 @@ async function main() {
   for (const f of aboutDefaults) {
     await db
       .insert(aboutFields)
-      .values({ key: f.key, label: f.label, content: '', sortOrder: f.sortOrder })
+      .values({ ownerId: adminId, key: f.key, label: f.label, content: '', sortOrder: f.sortOrder })
       .onConflictDoUpdate({
         // Don't clobber owner content on reseed -- only ensure row exists
         // and the label/sortOrder stay synced with defaults.
-        target: aboutFields.key,
+        target: [aboutFields.ownerId, aboutFields.key],
         set: { label: f.label, sortOrder: f.sortOrder }
       });
     console.log(`  - ensured about_fields["${f.key}"]`);
@@ -207,8 +241,8 @@ async function main() {
   ] as const) {
     await db
       .insert(galleryConfig)
-      .values({ key, value })
-      .onConflictDoNothing({ target: galleryConfig.key });
+      .values({ ownerId: adminId, key, value })
+      .onConflictDoNothing({ target: [galleryConfig.ownerId, galleryConfig.key] });
     console.log(`  - ensured gallery_config["${key}"] (default ${value})`);
   }
 

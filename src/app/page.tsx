@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { listImages } from '@/lib/db/queries/images';
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 import { HAIKUS } from '@/lib/haikus';
 import { pickOne } from '@/lib/random';
 import { ImageGrid } from '@/components/image-grid';
@@ -39,7 +40,7 @@ export default async function HomePage({ searchParams }: PageProps) {
 
   // Owner defaults feed both the server-side query (when no ?sort= is
   // present) and the client sort bar (for "(owner)" labels + reset).
-  const defaults = await getGalleryDefaults().catch(() => ({
+  const defaults = await getGalleryDefaults(getSiteAdminId()).catch(() => ({
     defaultSort: 'drifting' as const,
     defaultShufflePeriod: 'off' as const
   }));

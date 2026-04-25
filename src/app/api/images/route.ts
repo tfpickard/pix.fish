@@ -8,6 +8,7 @@ import { extractExif, extractPalette } from '@/lib/image-meta';
 import { hydrateImages, listImages } from '@/lib/db/queries/images';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 import { isSortMode, type SortMode } from '@/lib/sort/types';
 
 export const runtime = 'nodejs';
@@ -47,7 +48,7 @@ export async function GET(req: Request) {
     }
     sort = rawSort;
   } else {
-    const defaults = await getGalleryDefaults();
+    const defaults = await getGalleryDefaults(getSiteAdminId());
     sort = defaults.defaultSort;
   }
   const seed = url.searchParams.get('seed') ?? undefined;

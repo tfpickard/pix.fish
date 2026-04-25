@@ -1,18 +1,27 @@
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../client';
 import { savedPrompts } from '../schema';
 import type { SavedPrompt } from '../schema';
 
-export async function listSavedPrompts(): Promise<SavedPrompt[]> {
-  return db.select().from(savedPrompts).orderBy(desc(savedPrompts.updatedAt));
+export async function listSavedPrompts(ownerId: string): Promise<SavedPrompt[]> {
+  return db
+    .select()
+    .from(savedPrompts)
+    .where(eq(savedPrompts.ownerId, ownerId))
+    .orderBy(desc(savedPrompts.updatedAt));
 }
 
-export async function getSavedPrompt(id: number): Promise<SavedPrompt | null> {
-  const [row] = await db.select().from(savedPrompts).where(eq(savedPrompts.id, id)).limit(1);
+export async function getSavedPrompt(ownerId: string, id: number): Promise<SavedPrompt | null> {
+  const [row] = await db
+    .select()
+    .from(savedPrompts)
+    .where(and(eq(savedPrompts.ownerId, ownerId), eq(savedPrompts.id, id)))
+    .limit(1);
   return row ?? null;
 }
 
 export async function createSavedPrompt(input: {
+  ownerId: string;
   name: string;
   key: string;
   template: string;
@@ -21,6 +30,7 @@ export async function createSavedPrompt(input: {
   const [row] = await db
     .insert(savedPrompts)
     .values({
+      ownerId: input.ownerId,
       name: input.name,
       key: input.key,
       template: input.template,
@@ -32,6 +42,7 @@ export async function createSavedPrompt(input: {
 }
 
 export async function updateSavedPrompt(
+  ownerId: string,
   id: number,
   patch: Partial<{ name: string; template: string; fragments: unknown }>
 ): Promise<SavedPrompt | null> {
@@ -42,11 +53,13 @@ export async function updateSavedPrompt(
   const [row] = await db
     .update(savedPrompts)
     .set(toSet)
-    .where(eq(savedPrompts.id, id))
+    .where(and(eq(savedPrompts.ownerId, ownerId), eq(savedPrompts.id, id)))
     .returning();
   return row ?? null;
 }
 
-export async function deleteSavedPrompt(id: number): Promise<void> {
-  await db.delete(savedPrompts).where(eq(savedPrompts.id, id));
+export async function deleteSavedPrompt(ownerId: string, id: number): Promise<void> {
+  await db
+    .delete(savedPrompts)
+    .where(and(eq(savedPrompts.ownerId, ownerId), eq(savedPrompts.id, id)));
 }

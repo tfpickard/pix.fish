@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { listAboutFields } from '@/lib/db/queries/about';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 import type { AboutField } from '@/lib/db/schema';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +15,7 @@ export const metadata: Metadata = {
 export default async function AboutPage() {
   let fields: AboutField[] = [];
   try {
-    fields = await listAboutFields();
+    fields = await listAboutFields(getSiteAdminId());
   } catch (err) {
     console.error('about page: listAboutFields failed', err);
   }
