@@ -2,7 +2,7 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { Job } from '@/lib/db/schema';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
-import { getProvider, getEmbedder, type ProviderField } from '@/lib/ai';
+import { getProvider, getEmbedder, loadUserProviderKeys, type ProviderField } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { resolvePrompt } from '@/lib/prompts';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
@@ -20,11 +20,15 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
   if (!img) return;
 
   const cfg = await loadAiConfig();
+  const userKeys = await loadUserProviderKeys(img.ownerId);
   const mime = img.mime ?? 'image/jpeg';
 
   for (const field of payload.fields) {
     if (field === 'captions' || field === 'descriptions') {
-      const provider = getProvider(field, cfg);
+      const provider = getProvider(field, cfg, userKeys);
+      // No key for the configured provider -- skip silently. Reprocess is
+      // best-effort; the image keeps whatever variants it already has.
+      if (!provider) continue;
       const promptKey = field === 'captions' ? 'caption' : 'description';
       const prompt = await resolvePrompt(promptKey, { existing_caption: img.manualCaption ?? undefined });
       const variants = await provider[field](EMPTY_BUFFER, mime, prompt, img.blobUrl);
@@ -47,7 +51,8 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
         if (rows.length > 0) await tx.insert(table).values(rows as (typeof rows)[number][]);
       });
     } else if (field === 'tags') {
-      const provider = getProvider('tags', cfg);
+      const provider = getProvider('tags', cfg, userKeys);
+      if (!provider) continue;
       const prompt = await resolvePrompt('tags');
       const result = await provider.tags(EMPTY_BUFFER, mime, prompt, img.blobUrl);
       await db.transaction(async (tx) => {
@@ -79,7 +84,8 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
         .orderBy(asc(captions.variant));
       const slugSource = slugRows.find((r) => r.isSlugSource) ?? slugRows[0];
       const text = img.manualCaption ?? slugSource?.text ?? img.slug;
-      const embedder = getEmbedder(cfg);
+      const embedder = getEmbedder(cfg, userKeys);
+      if (!embedder) continue;
       const vec = await embedder.embed(text);
       await upsertEmbedding({
         imageId: img.id,

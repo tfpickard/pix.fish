@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getEmbedder } from '@/lib/ai';
+import { getEmbedder, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { searchByVector } from '@/lib/db/queries/embeddings';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,12 +16,15 @@ export async function GET(req: Request) {
   }
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 24) | 0, 1), 100);
 
-  let embedder: ReturnType<typeof getEmbedder>;
-  try {
-    const cfg = await loadAiConfig();
-    embedder = getEmbedder(cfg);
-  } catch (err) {
-    console.error('embedder not configured', err);
+  // Visitor-side semantic search runs against the site admin's keys so
+  // unauthenticated visitors can still query. Per-user keys are billed by
+  // the user; using site admin's here means the admin's OpenAI account
+  // pays for visitor queries -- intentional, matches the public-by-default
+  // visibility model.
+  const cfg = await loadAiConfig();
+  const adminKeys = await loadUserProviderKeys(getSiteAdminId());
+  const embedder = getEmbedder(cfg, adminKeys);
+  if (!embedder) {
     return NextResponse.json({ error: 'search unavailable' }, { status: 503 });
   }
 

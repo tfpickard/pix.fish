@@ -1,4 +1,4 @@
-import { getProvider, type AITag, type AiConfigMap } from '@/lib/ai';
+import { getProvider, type AITag, type AiConfigMap, type UserProviderKeys } from '@/lib/ai';
 import { resolvePrompt } from '@/lib/prompts';
 
 export type EnrichmentResult = {
@@ -14,6 +14,12 @@ export type EnrichmentResult = {
  * Caller is responsible for persisting the results and for loading aiConfig
  * once (via loadAiConfig) to pass in as cfg.
  *
+ * `userKeys` carries the per-user BYO credentials. Any field whose
+ * configured provider has no key for this user is silently skipped --
+ * captions/descriptions/tags arrays come back empty for those fields, the
+ * upload still succeeds, and the user can fill manual values from the
+ * upload form.
+ *
  * `imageUrl` (optional) lets providers fetch the image remotely instead of
  * base64-encoding the buffer inline. Anthropic's base64 path caps at 5 MB;
  * pass the public blob URL here to sidestep that limit.
@@ -22,6 +28,7 @@ export async function enrichImage(
   buffer: Buffer,
   mime: string,
   cfg: AiConfigMap,
+  userKeys: UserProviderKeys,
   manualCaption?: string,
   imageUrl?: string
 ): Promise<EnrichmentResult> {
@@ -31,33 +38,45 @@ export async function enrichImage(
     resolvePrompt('tags')
   ]);
 
-  const captionsProvider = getProvider('captions', cfg);
-  const descriptionsProvider = getProvider('descriptions', cfg);
-  const tagsProvider = getProvider('tags', cfg);
+  const captionsProvider = getProvider('captions', cfg, userKeys);
+  const descriptionsProvider = getProvider('descriptions', cfg, userKeys);
+  const tagsProvider = getProvider('tags', cfg, userKeys);
 
   const [captionsRaw, descriptionsRaw, tagsRaw] = await Promise.all([
-    captionsProvider.captions(buffer, mime, captionPrompt, imageUrl),
-    descriptionsProvider.descriptions(buffer, mime, descriptionPrompt, imageUrl),
-    tagsProvider.tags(buffer, mime, tagsPrompt, imageUrl)
+    captionsProvider
+      ? captionsProvider.captions(buffer, mime, captionPrompt, imageUrl)
+      : Promise.resolve<string[]>([]),
+    descriptionsProvider
+      ? descriptionsProvider.descriptions(buffer, mime, descriptionPrompt, imageUrl)
+      : Promise.resolve<string[]>([]),
+    tagsProvider
+      ? tagsProvider.tags(buffer, mime, tagsPrompt, imageUrl)
+      : Promise.resolve<AITag[]>([])
   ]);
 
   return {
-    captions: captionsRaw.slice(0, 3).map((text) => ({
-      text,
-      provider: captionsProvider.name,
-      model: captionsProvider.model
-    })),
-    descriptions: descriptionsRaw.slice(0, 3).map((text) => ({
-      text,
-      provider: descriptionsProvider.name,
-      model: descriptionsProvider.model
-    })),
-    tags: tagsRaw.map((t: AITag) => ({
-      tag: t.tag,
-      source: t.source,
-      confidence: t.confidence,
-      provider: tagsProvider.name,
-      model: tagsProvider.model
-    }))
+    captions: captionsProvider
+      ? captionsRaw.slice(0, 3).map((text) => ({
+          text,
+          provider: captionsProvider.name,
+          model: captionsProvider.model
+        }))
+      : [],
+    descriptions: descriptionsProvider
+      ? descriptionsRaw.slice(0, 3).map((text) => ({
+          text,
+          provider: descriptionsProvider.name,
+          model: descriptionsProvider.model
+        }))
+      : [],
+    tags: tagsProvider
+      ? tagsRaw.map((t: AITag) => ({
+          tag: t.tag,
+          source: t.source,
+          confidence: t.confidence,
+          provider: tagsProvider.name,
+          model: tagsProvider.model
+        }))
+      : []
   };
 }

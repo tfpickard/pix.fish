@@ -9,18 +9,16 @@ export const OPENAI_DEFAULT_EMBED_MODEL = 'text-embedding-3-small';
 // embeddings.vec column dimensions in schema.ts.
 const EMBED_DIMENSIONS = 1536;
 
-let client: OpenAI | null = null;
-function getClient(): OpenAI {
-  if (client) return client;
-  const apiKey = process.env.OPENAI_API_KEY;
+// Per-key client (multi-user). SDK construction is cheap so we don't pool.
+function getClient(apiKey: string): OpenAI {
   if (!apiKey) {
-    throw new Error('OPENAI_API_KEY is not set; cannot call OpenAI provider.');
+    throw new Error('OpenAI API key is required; pass it from the per-user provider keys.');
   }
-  client = new OpenAI({ apiKey });
-  return client;
+  return new OpenAI({ apiKey });
 }
 
 async function callVision(
+  apiKey: string,
   model: string,
   image: Buffer,
   mime: string,
@@ -31,7 +29,7 @@ async function callVision(
   // path is the fallback for reprocess jobs that already have a Buffer in
   // hand but no URL (rare; the current reprocess handler passes the URL).
   const url = imageUrl ?? `data:${mime};base64,${image.toString('base64')}`;
-  const res = await getClient().chat.completions.create({
+  const res = await getClient(apiKey).chat.completions.create({
     model,
     max_tokens: 1024,
     response_format: { type: 'json_object' },
@@ -51,6 +49,7 @@ async function callVision(
 }
 
 export function createOpenAIProvider(
+  apiKey: string,
   opts: { visionModel?: string; embedModel?: string } = {}
 ): AIProvider {
   const visionModel = opts.visionModel ?? OPENAI_DEFAULT_VISION_MODEL;
@@ -61,22 +60,22 @@ export function createOpenAIProvider(
     embedModel,
 
     async captions(image, mime, prompt, imageUrl) {
-      const text = await callVision(visionModel, image, mime, prompt, imageUrl);
+      const text = await callVision(apiKey, visionModel, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
     async descriptions(image, mime, prompt, imageUrl) {
-      const text = await callVision(visionModel, image, mime, prompt, imageUrl);
+      const text = await callVision(apiKey, visionModel, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
     async tags(image, mime, prompt, imageUrl): Promise<AITag[]> {
-      const text = await callVision(visionModel, image, mime, prompt, imageUrl);
+      const text = await callVision(apiKey, visionModel, image, mime, prompt, imageUrl);
       return parseTagsJson(text);
     },
 
     async text(prompt: string): Promise<string> {
-      const res = await getClient().chat.completions.create({
+      const res = await getClient(apiKey).chat.completions.create({
         model: visionModel,
         max_tokens: 1024,
         messages: [{ role: 'user', content: prompt }]
@@ -87,7 +86,7 @@ export function createOpenAIProvider(
     },
 
     async embed(input: string): Promise<number[]> {
-      const res = await getClient().embeddings.create({
+      const res = await getClient(apiKey).embeddings.create({
         model: embedModel,
         input
       });

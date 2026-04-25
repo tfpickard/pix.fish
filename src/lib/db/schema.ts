@@ -144,25 +144,46 @@ export const prompts = pgTable('prompts', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
-// User-supplied AI provider keys. `provider` names the upstream
-// ('anthropic' | 'openai'); `keyEncrypted` is AES-GCM ciphertext (IV is the
-// first 12 bytes, base64-encoded together) using a key derived from
-// AUTH_SECRET so the row is useless without the app secret. `keyHash` is
-// retained for verification scenarios (lookup-by-key) but is not the source
-// of truth for outbound provider calls -- those decrypt `keyEncrypted` at
-// request time.
+// Personal access tokens for the public REST API. Distinct from
+// providerKeys (which holds outbound BYO credentials for Anthropic/OpenAI).
+// Only the SHA-256 hash is stored; the raw token is shown once at creation.
 export const apiKeys = pgTable('api_keys', {
   id: serial('id').primaryKey(),
   ownerId: text('owner_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   label: text('label'),
-  provider: text('provider'), // 'anthropic' | 'openai' | null (legacy)
   keyHash: text('key_hash').notNull().unique(),
-  keyEncrypted: text('key_encrypted'), // null on legacy rows; required for new inserts
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });
+
+// User-supplied outbound AI provider credentials (BYO key). One row per
+// (owner, provider) pair. `keyEncrypted` is AES-GCM ciphertext stored as
+// base64(iv || tag || ciphertext) using a key derived from AUTH_SECRET via
+// PBKDF2; the row is useless without the app secret. Plaintext is never
+// persisted, returned to the client, or logged. The provider literal is
+// constrained to the supported set so the per-user key lookup stays a
+// trivial table read.
+export const providerKeys = pgTable(
+  'provider_keys',
+  {
+    id: serial('id').primaryKey(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(), // 'anthropic' | 'openai'
+    label: text('label'),
+    keyEncrypted: text('key_encrypted').notNull(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    // One key per user per provider. Adding a second key for the same
+    // provider is rotation: replace, don't append.
+    ownerProviderUniq: uniqueIndex('provider_keys_owner_provider_uniq').on(t.ownerId, t.provider)
+  })
+);
 
 // ----------------------------------------------------------------------------
 // Phase 2 tables
@@ -417,6 +438,7 @@ export const galleryConfig = pgTable(
 export const usersRelations = relations(users, ({ many }) => ({
   images: many(images),
   apiKeys: many(apiKeys),
+  providerKeys: many(providerKeys),
   savedPrompts: many(savedPrompts),
   aboutFields: many(aboutFields),
   webhooks: many(webhooks)
@@ -472,6 +494,8 @@ export type Reaction = typeof reactions.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
 export type Report = typeof reports.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
+export type ProviderKey = typeof providerKeys.$inferSelect;
+export type NewProviderKey = typeof providerKeys.$inferInsert;
 export type AiConfig = typeof aiConfig.$inferSelect;
 export type NewAiConfig = typeof aiConfig.$inferInsert;
 export type Webhook = typeof webhooks.$inferSelect;

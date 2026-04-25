@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
-import { getEmbedder, type AiConfigMap } from '@/lib/ai';
+import { getEmbedder, type AiConfigMap, type UserProviderKeys } from '@/lib/ai';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
 import { uniquifySlug, pushSlugToHistory } from '@/lib/db/queries/slugs';
 import { getImageBySlug } from '@/lib/db/queries/images';
@@ -40,8 +40,9 @@ export async function persistEnrichment(args: {
   manualCaption?: string;
   enrichment: EnrichmentResult;
   cfg: AiConfigMap;
+  userKeys: UserProviderKeys;
 }): Promise<void> {
-  const { imageId, placeholderSlug, manualCaption, enrichment, cfg } = args;
+  const { imageId, placeholderSlug, manualCaption, enrichment, cfg, userKeys } = args;
 
   const slugSourceText = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
   const slugBase = slugify(slugSourceText) || placeholderSlug;
@@ -130,20 +131,26 @@ export async function persistEnrichment(args: {
     await pushSlugToHistory(imageId, placeholderSlug);
   }
 
-  // Caption embedding -- best effort. A failure here leaves the image
-  // eligible for scripts/backfill-embeddings.ts.
-  try {
-    const embedder = getEmbedder(cfg);
-    const vec = await embedder.embed(slugSourceText);
-    await upsertEmbedding({
-      imageId,
-      kind: 'caption',
-      vec,
-      provider: embedder.name,
-      model: embedder.model
-    });
-  } catch (err) {
-    console.error('embedding generation failed for image', imageId, err);
+  // Caption embedding -- best effort, and only attempted when this user
+  // has a key for the configured embeddings provider. A user without an
+  // OpenAI key gets no embedding row, which means their image is excluded
+  // from semantic search but everything else (tag search, palette, recency
+  // sort) still works. A failure here leaves the image eligible for
+  // scripts/backfill-embeddings.ts.
+  const embedder = getEmbedder(cfg, userKeys);
+  if (embedder) {
+    try {
+      const vec = await embedder.embed(slugSourceText);
+      await upsertEmbedding({
+        imageId,
+        kind: 'caption',
+        vec,
+        provider: embedder.name,
+        model: embedder.model
+      });
+    } catch (err) {
+      console.error('embedding generation failed for image', imageId, err);
+    }
   }
 
   // Webhook fan-out -- also best effort; emit() only enqueues delivery jobs.

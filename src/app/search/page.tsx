@@ -1,8 +1,9 @@
 import type { Metadata } from 'next';
-import { getEmbedder } from '@/lib/ai';
+import { getEmbedder, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { searchByVector } from '@/lib/db/queries/embeddings';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 import { ImageGrid } from '@/components/image-grid';
 
 export const dynamic = 'force-dynamic';
@@ -41,7 +42,9 @@ export default async function SearchPage({ searchParams }: PageProps) {
   let failed = false;
   try {
     const cfg = await loadAiConfig();
-    const embedder = getEmbedder(cfg);
+    const adminKeys = await loadUserProviderKeys(getSiteAdminId());
+    const embedder = getEmbedder(cfg, adminKeys);
+    if (!embedder) throw new Error('embedder unavailable');
     const vec = await embedder.embed(q);
     const matches = await searchByVector(vec, { limit: 60, kind: 'caption' });
     const rows = await getImagesByIdsOrdered(matches.map((m) => m.imageId));

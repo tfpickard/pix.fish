@@ -60,6 +60,16 @@ CREATE TABLE "jobs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "provider_keys" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"owner_id" text NOT NULL,
+	"provider" text NOT NULL,
+	"label" text,
+	"key_encrypted" text NOT NULL,
+	"last_used_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "reactions" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"image_id" integer NOT NULL,
@@ -135,14 +145,13 @@ CREATE TABLE "webhooks" (
 );
 --> statement-breakpoint
 ALTER TABLE "images" DROP CONSTRAINT "images_slug_unique";--> statement-breakpoint
-ALTER TABLE "api_keys" ADD COLUMN "provider" text;--> statement-breakpoint
-ALTER TABLE "api_keys" ADD COLUMN "key_encrypted" text;--> statement-breakpoint
 ALTER TABLE "images" ADD COLUMN "is_nsfw" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "images" ADD COLUMN "nsfw_source" text;--> statement-breakpoint
 ALTER TABLE "about_fields" ADD CONSTRAINT "about_fields_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "comments" ADD CONSTRAINT "comments_image_id_images_id_fk" FOREIGN KEY ("image_id") REFERENCES "public"."images"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "embeddings" ADD CONSTRAINT "embeddings_image_id_images_id_fk" FOREIGN KEY ("image_id") REFERENCES "public"."images"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "gallery_config" ADD CONSTRAINT "gallery_config_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "provider_keys" ADD CONSTRAINT "provider_keys_owner_id_users_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reactions" ADD CONSTRAINT "reactions_image_id_images_id_fk" FOREIGN KEY ("image_id") REFERENCES "public"."images"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reports" ADD CONSTRAINT "reports_image_id_images_id_fk" FOREIGN KEY ("image_id") REFERENCES "public"."images"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reports" ADD CONSTRAINT "reports_comment_id_comments_id_fk" FOREIGN KEY ("comment_id") REFERENCES "public"."comments"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -157,6 +166,7 @@ CREATE INDEX "embeddings_image_id_idx" ON "embeddings" USING btree ("image_id");
 CREATE UNIQUE INDEX "gallery_config_owner_key_pk" ON "gallery_config" USING btree ("owner_id","key");--> statement-breakpoint
 CREATE INDEX "jobs_pending_idx" ON "jobs" USING btree ("run_at") WHERE status = 'pending';--> statement-breakpoint
 CREATE INDEX "jobs_processing_idx" ON "jobs" USING btree ("locked_at") WHERE status = 'processing';--> statement-breakpoint
+CREATE UNIQUE INDEX "provider_keys_owner_provider_uniq" ON "provider_keys" USING btree ("owner_id","provider");--> statement-breakpoint
 CREATE UNIQUE INDEX "reactions_image_ip_uniq" ON "reactions" USING btree ("image_id","ip_hash");--> statement-breakpoint
 CREATE INDEX "reactions_image_id_idx" ON "reactions" USING btree ("image_id");--> statement-breakpoint
 CREATE INDEX "umap_projections_created_at_idx" ON "umap_projections" USING btree ("created_at");--> statement-breakpoint

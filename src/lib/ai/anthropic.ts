@@ -4,18 +4,18 @@ import { parseTagsJson, parseVariantsJson } from './types';
 
 export const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-6';
 
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
-  if (client) return client;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+// Per-key client. Multi-user means we cannot share a singleton -- each
+// user's BYO key creates its own client. Constructing an SDK is cheap so
+// we don't bother pooling.
+function getClient(apiKey: string): Anthropic {
   if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY is not set; cannot call Anthropic provider.');
+    throw new Error('Anthropic API key is required; pass it from the per-user provider keys.');
   }
-  client = new Anthropic({ apiKey });
-  return client;
+  return new Anthropic({ apiKey });
 }
 
 async function callVision(
+  apiKey: string,
   model: string,
   image: Buffer,
   mime: string,
@@ -37,7 +37,7 @@ async function callVision(
     media_type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
     data: string;
   };
-  const res = await getClient().messages.create({
+  const res = await getClient(apiKey).messages.create({
     model,
     max_tokens: 1024,
     messages: [
@@ -63,28 +63,31 @@ function normalizeMime(mime: string): string {
   return lower;
 }
 
-export function createAnthropicProvider(model: string = ANTHROPIC_DEFAULT_MODEL): AIProvider {
+export function createAnthropicProvider(
+  apiKey: string,
+  model: string = ANTHROPIC_DEFAULT_MODEL
+): AIProvider {
   return {
     name: 'anthropic',
     model,
 
     async captions(image, mime, prompt, imageUrl) {
-      const text = await callVision(model, image, mime, prompt, imageUrl);
+      const text = await callVision(apiKey, model, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
     async descriptions(image, mime, prompt, imageUrl) {
-      const text = await callVision(model, image, mime, prompt, imageUrl);
+      const text = await callVision(apiKey, model, image, mime, prompt, imageUrl);
       return parseVariantsJson(text);
     },
 
     async tags(image, mime, prompt, imageUrl): Promise<AITag[]> {
-      const text = await callVision(model, image, mime, prompt, imageUrl);
+      const text = await callVision(apiKey, model, image, mime, prompt, imageUrl);
       return parseTagsJson(text);
     },
 
     async text(prompt: string): Promise<string> {
-      const res = await getClient().messages.create({
+      const res = await getClient(apiKey).messages.create({
         model,
         max_tokens: 1024,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }]

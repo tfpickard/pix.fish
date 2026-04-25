@@ -3,6 +3,7 @@ import type { Job } from '@/lib/db/schema';
 import { db } from '@/lib/db/client';
 import { captions, images } from '@/lib/db/schema';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
+import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { enrichImage } from '@/lib/enrichment';
 import { persistEnrichment } from '@/lib/enrichment-persist';
 
@@ -28,11 +29,16 @@ export async function enrichImageHandler(job: Job): Promise<void> {
   if (existingCap) return;
 
   const cfg = await loadAiConfig();
+  // BYO: every outbound provider call uses the image owner's key. If a
+  // user has no key for the configured provider, that field is skipped
+  // and the upload's manual fields take over (handled in persistEnrichment).
+  const userKeys = await loadUserProviderKeys(img.ownerId);
   const manualCaption = img.manualCaption ?? undefined;
   const enrichment = await enrichImage(
     EMPTY_BUFFER,
     img.mime ?? 'image/jpeg',
     cfg,
+    userKeys,
     manualCaption,
     img.blobUrl
   );
@@ -42,6 +48,7 @@ export async function enrichImageHandler(job: Job): Promise<void> {
     placeholderSlug: img.slug,
     manualCaption,
     enrichment,
-    cfg
+    cfg,
+    userKeys
   });
 }
