@@ -119,7 +119,7 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
     }
-  }, [points, size, projectPoint, scale]);
+  }, [points, size, projectPoint, scale, metaById]);
 
   function hitTest(clientX: number, clientY: number): Point | null {
     const rect = canvasRef.current!.getBoundingClientRect();

@@ -14,6 +14,7 @@ import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { getImageProvenance } from '@/lib/db/queries/provenance';
 import { ProvenancePanel } from '@/components/provenance-panel';
 import { ReactionBar } from '@/components/reaction-bar';
+import { SaveToShelf } from '@/components/save-to-shelf';
 import { CommentList } from '@/components/comment-list';
 import { ReportButton } from '@/components/report-button';
 import { JsonLd } from '@/components/json-ld';
@@ -221,6 +222,8 @@ export async function ImageDetail({
         <ExifFacts exif={img.exif as Record<string, unknown> | null} />
 
         <ReactionBar slug={img.slug} initialCounts={reactionCounts} />
+
+        <SaveToShelf imageSlug={img.slug} />
 
         {owner ? <ImageActions slug={img.slug} /> : null}
 

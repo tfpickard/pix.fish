@@ -15,6 +15,13 @@
       "when": 1777082412205,
       "tag": "0001_known_texas_twister",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777104683854,
+      "tag": "0002_sparkling_the_initiative",
+      "breakpoints": true
     }
   ]
 }
