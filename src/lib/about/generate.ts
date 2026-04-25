@@ -1,5 +1,6 @@
-import { getProvider } from '@/lib/ai';
+import { getProvider, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 
 // Build the bizarre-biography prompt around a field. Kept inline (not in
 // the prompts table) because this generator is a one-off owner tool, not a
@@ -26,8 +27,15 @@ export async function generateAboutContent(label: string, existing?: string | nu
   const cfg = await loadAiConfig();
   // Route through whatever provider is handling captions today (Anthropic
   // by default). The configured model has the right voice for short
-  // creative copy.
-  const provider = getProvider('captions', cfg);
+  // creative copy. Site-admin's keys: this is admin-only generation today;
+  // when per-user about pages land, the caller passes their own user id.
+  const adminKeys = await loadUserProviderKeys(getSiteAdminId());
+  const provider = getProvider('captions', cfg, adminKeys);
+  if (!provider) {
+    throw new Error(
+      'no anthropic key configured for site admin -- about generation requires a key'
+    );
+  }
   if (!provider.text) {
     throw new Error(`provider ${provider.name} does not implement text() for about generation`);
   }

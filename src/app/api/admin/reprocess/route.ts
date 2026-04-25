@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { allImageIds, staleCount, staleImageIds } from '@/lib/db/queries/reprocess';
 import { enqueueJob } from '@/lib/db/queries/jobs';
@@ -20,7 +20,7 @@ const bodySchema = z.object({
 // GET: current config + stale counts per field. The admin UI uses this to
 // render action buttons and the "N stale" counter next to each field.
 export async function GET() {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const cfg = await loadAiConfig();
@@ -36,7 +36,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));

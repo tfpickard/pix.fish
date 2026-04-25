@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
-import { getEmbedder, type AiConfigMap } from '@/lib/ai';
+import { getEmbedder, type AiConfigMap, type UserProviderKeys } from '@/lib/ai';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
 import { uniquifySlug, pushSlugToHistory } from '@/lib/db/queries/slugs';
 import { getImageBySlug } from '@/lib/db/queries/images';
@@ -36,19 +36,52 @@ const MAX_SLUG_RETRIES = 5;
  */
 export async function persistEnrichment(args: {
   imageId: number;
+  ownerId: string;
   placeholderSlug: string;
   manualCaption?: string;
+  // Manual description from the upload form, persisted as variant=4
+  // locked=true (mirrors the manual caption shape) so reprocess passes
+  // can't clobber it.
+  manualDescription?: string;
+  // Manual NSFW override from the upload form. true = force-NSFW with
+  // source='manual'; the AI verdict is ignored. Undefined = trust the AI
+  // (or default false when no AI ran).
+  manualNsfw?: boolean;
+  // Manual freeform tags from the upload form. Inserted alongside any
+  // AI-generated tags; the unique (imageId, tag) constraint dedupes if the
+  // AI also produced the same tag.
+  manualTags?: string[];
   enrichment: EnrichmentResult;
   cfg: AiConfigMap;
+  userKeys: UserProviderKeys;
 }): Promise<void> {
-  const { imageId, placeholderSlug, manualCaption, enrichment, cfg } = args;
+  const {
+    imageId,
+    ownerId,
+    placeholderSlug,
+    manualCaption,
+    manualDescription,
+    manualNsfw,
+    manualTags,
+    enrichment,
+    cfg,
+    userKeys
+  } = args;
+  // NSFW resolution. Manual override always wins. Otherwise, if the AI
+  // tag pass actually executed (regardless of whether it produced any
+  // tags) we trust its nsfw verdict with source='auto'; if no provider
+  // ran (key-less user) we fall through to manualNsfw with source='manual',
+  // defaulting false.
+  const isNsfw = manualNsfw === true ? true : enrichment.tagsRan ? enrichment.nsfw : !!manualNsfw;
+  const nsfwSource: 'auto' | 'manual' =
+    manualNsfw !== undefined || !enrichment.tagsRan ? 'manual' : 'auto';
 
   const slugSourceText = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
   const slugBase = slugify(slugSourceText) || placeholderSlug;
 
   let finalSlug = placeholderSlug;
   for (let attempt = 0; attempt < MAX_SLUG_RETRIES; attempt++) {
-    const candidate = await uniquifySlug(slugBase, imageId);
+    const candidate = await uniquifySlug(slugBase, ownerId, imageId);
     try {
       await db.transaction(async (tx) => {
         // Insert/replace relations first so a subsequent slug collision
@@ -80,38 +113,59 @@ export async function persistEnrichment(args: {
         }
         if (capRows.length > 0) await tx.insert(captions).values(capRows);
 
-        if (enrichment.descriptions.length > 0) {
-          await tx.insert(descriptions).values(
-            enrichment.descriptions.map((d, i) => ({
+        const descRows = enrichment.descriptions.map((d, i) => ({
+          imageId,
+          variant: i + 1,
+          text: d.text,
+          provider: d.provider as string | null,
+          model: d.model as string | null,
+          locked: false
+        }));
+        if (manualDescription) {
+          descRows.push({
+            imageId,
+            variant: 4,
+            text: manualDescription,
+            provider: null,
+            model: null,
+            locked: true
+          });
+        }
+        if (descRows.length > 0) await tx.insert(descriptions).values(descRows);
+
+        const allTags = [
+          ...enrichment.tags.map((t) => ({
+            imageId,
+            tag: t.tag,
+            source: t.source,
+            confidence: t.confidence ?? null,
+            provider: t.provider as string | null,
+            model: t.model as string | null
+          })),
+          ...(manualTags ?? [])
+            .map((raw) => raw.trim().toLowerCase())
+            .filter(Boolean)
+            .map((tag) => ({
               imageId,
-              variant: i + 1,
-              text: d.text,
-              provider: d.provider,
-              model: d.model,
-              locked: false
+              tag,
+              source: 'freeform' as const,
+              confidence: null as number | null,
+              provider: null as string | null,
+              model: null as string | null
             }))
-          );
+        ];
+        if (allTags.length > 0) {
+          await tx.insert(tags).values(allTags).onConflictDoNothing();
         }
 
-        if (enrichment.tags.length > 0) {
-          await tx
-            .insert(tags)
-            .values(
-              enrichment.tags.map((t) => ({
-                imageId,
-                tag: t.tag,
-                source: t.source,
-                confidence: t.confidence ?? null,
-                provider: t.provider,
-                model: t.model
-              }))
-            )
-            .onConflictDoNothing();
-        }
-
-        if (candidate !== placeholderSlug) {
-          await tx.update(images).set({ slug: candidate }).where(eq(images.id, imageId));
-        }
+        // Apply NSFW + final slug update in the same tx as captions/tags so
+        // a unique-violation rollback also reverts the flag.
+        const updates: Record<string, unknown> = {
+          isNsfw,
+          nsfwSource
+        };
+        if (candidate !== placeholderSlug) updates.slug = candidate;
+        await tx.update(images).set(updates).where(eq(images.id, imageId));
       });
       finalSlug = candidate;
       break;
@@ -130,20 +184,26 @@ export async function persistEnrichment(args: {
     await pushSlugToHistory(imageId, placeholderSlug);
   }
 
-  // Caption embedding -- best effort. A failure here leaves the image
-  // eligible for scripts/backfill-embeddings.ts.
-  try {
-    const embedder = getEmbedder(cfg);
-    const vec = await embedder.embed(slugSourceText);
-    await upsertEmbedding({
-      imageId,
-      kind: 'caption',
-      vec,
-      provider: embedder.name,
-      model: embedder.model
-    });
-  } catch (err) {
-    console.error('embedding generation failed for image', imageId, err);
+  // Caption embedding -- best effort, and only attempted when this user
+  // has a key for the configured embeddings provider. A user without an
+  // OpenAI key gets no embedding row, which means their image is excluded
+  // from semantic search but everything else (tag search, palette, recency
+  // sort) still works. A failure here leaves the image eligible for
+  // scripts/backfill-embeddings.ts.
+  const embedder = getEmbedder(cfg, userKeys);
+  if (embedder) {
+    try {
+      const vec = await embedder.embed(slugSourceText);
+      await upsertEmbedding({
+        imageId,
+        kind: 'caption',
+        vec,
+        provider: embedder.name,
+        model: embedder.model
+      });
+    } catch (err) {
+      console.error('embedding generation failed for image', imageId, err);
+    }
   }
 
   // Webhook fan-out -- also best effort; emit() only enqueues delivery jobs.

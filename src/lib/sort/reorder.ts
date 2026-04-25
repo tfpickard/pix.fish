@@ -33,11 +33,12 @@ export function seedFromString(s: string): number {
   return h >>> 0;
 }
 
-// Cosine distance in [0, 2]. Vectors that are undefined or mis-sized are
-// treated as maximally distant -- they don't pull the sequence toward them
-// or cluster into anyone else's neighborhood.
-export function cosineDistance(a: number[] | null, b: number[] | null): number {
-  if (!a || !b || a.length !== b.length) return 2;
+// Cosine distance in [0, 2]. Returns null for rows without a usable vector
+// so callers can separate "no signal" from "maximally dissimilar". Treating
+// missing vectors as distance 2 would bias farthest-point and MMR-style
+// algorithms toward picking un-embedded rows first.
+export function cosineDistance(a: number[] | null, b: number[] | null): number | null {
+  if (!a || !b || a.length !== b.length) return null;
   let dot = 0;
   let na = 0;
   let nb = 0;
@@ -46,9 +47,26 @@ export function cosineDistance(a: number[] | null, b: number[] | null): number {
     na += a[i]! * a[i]!;
     nb += b[i]! * b[i]!;
   }
-  if (na === 0 || nb === 0) return 2;
+  if (na === 0 || nb === 0) return null;
   const sim = dot / (Math.sqrt(na) * Math.sqrt(nb));
   return 1 - sim;
+}
+
+// Splits candidates into embedded vs un-embedded while preserving the
+// caller's base order in both buckets. Reorder algorithms operate on the
+// embedded bucket; the un-embedded bucket is appended after so rows without
+// a caption embedding fall back to base (recency) order rather than being
+// preferred or hidden.
+function partitionByEmbedding<I extends Image>(
+  items: Candidate<I>[]
+): { embedded: Candidate<I>[]; missing: Candidate<I>[] } {
+  const embedded: Candidate<I>[] = [];
+  const missing: Candidate<I>[] = [];
+  for (const c of items) {
+    if (c.embedding && c.embedding.length > 0) embedded.push(c);
+    else missing.push(c);
+  }
+  return { embedded, missing };
 }
 
 // MMR-style greedy reorder. Starts with the first item (already in the
@@ -66,35 +84,42 @@ export function drift<I extends Image>(
   const alpha = opts.alpha ?? 0.65;
   const K = Math.max(1, opts.lookback ?? 3);
 
-  const remaining = items.slice();
+  const { embedded, missing } = partitionByEmbedding(items);
+  if (embedded.length < 2) return items.map((c) => c.image);
+
+  // Stamp each candidate with its ORIGINAL base-order rank so recencyScore
+  // stays anchored to the caller's ordering instead of drifting as items
+  // get removed from `remaining`.
+  type Ranked = { cand: Candidate<I>; rank: number };
+  const denom = Math.max(1, embedded.length - 1);
+  const remaining: Ranked[] = embedded.map((cand, i) => ({ cand, rank: i / denom }));
   const picked: Candidate<I>[] = [];
-  picked.push(remaining.shift()!);
+  picked.push(remaining.shift()!.cand);
 
   while (remaining.length > 0) {
     let bestIdx = 0;
     let bestScore = -Infinity;
     for (let i = 0; i < remaining.length; i++) {
-      const cand = remaining[i]!;
-      const rankNorm = i / Math.max(1, remaining.length - 1);
-      const recencyScore = 1 - rankNorm;
-      let minDist = 2;
+      const { cand, rank } = remaining[i]!;
+      const recencyScore = 1 - rank;
+      let minDist = Infinity;
       const lookbackStart = Math.max(0, picked.length - K);
       for (let j = lookbackStart; j < picked.length; j++) {
         const d = cosineDistance(cand.embedding, picked[j]!.embedding);
-        if (d < minDist) minDist = d;
+        if (d !== null && d < minDist) minDist = d;
       }
-      // Normalize cosine distance (0..2) to 0..1 so the two terms live on
-      // comparable scales.
-      const dispersionScore = minDist / 2;
+      // If no usable distance was available against the lookback window,
+      // treat the dispersion term as neutral rather than maximum.
+      const dispersionScore = minDist === Infinity ? 0.5 : minDist / 2;
       const score = alpha * recencyScore + (1 - alpha) * dispersionScore;
       if (score > bestScore) {
         bestScore = score;
         bestIdx = i;
       }
     }
-    picked.push(remaining.splice(bestIdx, 1)[0]!);
+    picked.push(remaining.splice(bestIdx, 1)[0]!.cand);
   }
-  return picked.map((c) => c.image);
+  return picked.concat(missing).map((c) => c.image);
 }
 
 // Chain-cluster: start with the first item, then repeatedly append the
@@ -108,8 +133,11 @@ export function clump<I extends Image>(
 ): I[] {
   if (items.length < 2) return items.map((c) => c.image);
   const breakAt = opts.breakAt ?? 0.55;
+  const { embedded, missing } = partitionByEmbedding(items);
+  if (embedded.length < 2) return items.map((c) => c.image);
+
   const out: Candidate<I>[] = [];
-  const pool = items.slice();
+  const pool = embedded.slice();
   while (pool.length > 0) {
     const seed = pool.shift()!;
     out.push(seed);
@@ -119,7 +147,7 @@ export function clump<I extends Image>(
       const tail = out[out.length - 1]!;
       for (let i = 0; i < pool.length; i++) {
         const d = cosineDistance(tail.embedding, pool[i]!.embedding);
-        if (d < bestDist) {
+        if (d !== null && d < bestDist) {
           bestDist = d;
           bestIdx = i;
         }
@@ -128,7 +156,7 @@ export function clump<I extends Image>(
       out.push(pool.splice(bestIdx, 1)[0]!);
     }
   }
-  return out.map((c) => c.image);
+  return out.concat(missing).map((c) => c.image);
 }
 
 // Global farthest-point traversal. Seed with the first item, then each next
@@ -136,25 +164,32 @@ export function clump<I extends Image>(
 // remaining pool. Produces a maximally spread sequence.
 export function antiClump<I extends Image>(items: Candidate<I>[]): I[] {
   if (items.length < 2) return items.map((c) => c.image);
-  const picked: Candidate<I>[] = [items[0]!];
-  const remaining = items.slice(1);
+  const { embedded, missing } = partitionByEmbedding(items);
+  if (embedded.length < 2) return items.map((c) => c.image);
+
+  const picked: Candidate<I>[] = [embedded[0]!];
+  const remaining = embedded.slice(1);
   while (remaining.length > 0) {
     let bestIdx = 0;
-    let bestMinDist = -1;
+    let bestMinDist = -Infinity;
     for (let i = 0; i < remaining.length; i++) {
       let minDist = Infinity;
       for (const p of picked) {
         const d = cosineDistance(remaining[i]!.embedding, p.embedding);
-        if (d < minDist) minDist = d;
+        if (d !== null && d < minDist) minDist = d;
       }
-      if (minDist > bestMinDist) {
-        bestMinDist = minDist;
+      // minDist === Infinity would mean no usable distance against any
+      // already-picked row, which shouldn't happen after partitioning but
+      // falls back to neutral spread so ordering stays stable.
+      const spread = minDist === Infinity ? 0 : minDist;
+      if (spread > bestMinDist) {
+        bestMinDist = spread;
         bestIdx = i;
       }
     }
     picked.push(remaining.splice(bestIdx, 1)[0]!);
   }
-  return picked.map((c) => c.image);
+  return picked.concat(missing).map((c) => c.image);
 }
 
 // A seeded random walk through embedding space. Starts at a random item,
@@ -169,7 +204,10 @@ export function drunkardsWalk<I extends Image>(
   const jumpChance = opts.jumpChance ?? 0.1;
   const neighborK = opts.neighborK ?? 5;
 
-  const pool = items.slice();
+  const { embedded, missing } = partitionByEmbedding(items);
+  if (embedded.length < 2) return items.map((c) => c.image);
+
+  const pool = embedded.slice();
   const startIdx = Math.floor(rand() * pool.length);
   const walk: Candidate<I>[] = [pool.splice(startIdx, 1)[0]!];
 
@@ -181,14 +219,18 @@ export function drunkardsWalk<I extends Image>(
       continue;
     }
     // Score every remaining candidate by distance to the tail, pick among
-    // the closest K.
-    const scored = pool.map((c, i) => ({ i, d: cosineDistance(tail.embedding, c.embedding) }));
+    // the closest K. Candidates with unusable distance sink to the bottom
+    // so the walk stays coherent.
+    const scored = pool.map((c, i) => ({
+      i,
+      d: cosineDistance(tail.embedding, c.embedding) ?? Infinity
+    }));
     scored.sort((a, b) => a.d - b.d);
     const top = scored.slice(0, Math.min(neighborK, scored.length));
     const pick = top[Math.floor(rand() * top.length)]!;
     walk.push(pool.splice(pick.i, 1)[0]!);
   }
-  return walk.map((c) => c.image);
+  return walk.concat(missing).map((c) => c.image);
 }
 
 // Interleave newest and oldest. Caller is expected to pass rows in newest-

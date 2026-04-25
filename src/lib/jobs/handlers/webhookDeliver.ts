@@ -1,5 +1,5 @@
 import type { Job } from '@/lib/db/schema';
-import { getWebhook, recordDelivery } from '@/lib/db/queries/webhooks';
+import { getWebhookById, recordDelivery } from '@/lib/db/queries/webhooks';
 import { signBody } from '@/lib/webhooks/sign';
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -18,7 +18,7 @@ function truncate(s: string): string {
 
 export async function webhookDeliverHandler(job: Job): Promise<void> {
   const payload = job.payload as Payload;
-  const webhook = await getWebhook(payload.webhookId);
+  const webhook = await getWebhookById(payload.webhookId);
   // If the subscription has been deleted since enqueue, swallow silently --
   // not an error and we don't want it to keep retrying.
   if (!webhook || !webhook.active) return;

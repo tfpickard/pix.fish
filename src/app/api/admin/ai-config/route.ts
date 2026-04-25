@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { listAiConfig, upsertAiConfig } from '@/lib/db/queries/ai-config';
 
 export const runtime = 'nodejs';
@@ -16,7 +16,7 @@ const putSchema = z.object({
 });
 
 export async function GET() {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const rows = await listAiConfig();
@@ -24,7 +24,7 @@ export async function GET() {
 }
 
 export async function PUT(req: Request) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const parsed = putSchema.safeParse(await req.json().catch(() => null));

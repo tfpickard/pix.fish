@@ -41,6 +41,9 @@ const POLL_INTERVAL_MS = 3_000;
 export function UploadZone() {
   const [rows, setRows] = useState<FileRow[]>([]);
   const [manualCaption, setManualCaption] = useState('');
+  const [manualDescription, setManualDescription] = useState('');
+  const [manualTags, setManualTags] = useState('');
+  const [manualNsfw, setManualNsfw] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -107,14 +110,25 @@ export function UploadZone() {
     });
   }
 
-  async function uploadOne(row: FileRow, sharedManualCaption: string | undefined) {
+  async function uploadOne(
+    row: FileRow,
+    shared: {
+      manualCaption?: string;
+      manualDescription?: string;
+      manualTags?: string;
+      manualNsfw: boolean;
+    }
+  ) {
     setRows((prev) =>
       prev.map((r) => (r.key === row.key ? { ...r, status: 'uploading', error: undefined } : r))
     );
     try {
       const fd = new FormData();
       fd.append('file', row.file);
-      if (sharedManualCaption) fd.append('manual_caption', sharedManualCaption);
+      if (shared.manualCaption) fd.append('manual_caption', shared.manualCaption);
+      if (shared.manualDescription) fd.append('manual_description', shared.manualDescription);
+      if (shared.manualTags) fd.append('manual_tags', shared.manualTags);
+      if (shared.manualNsfw) fd.append('manual_nsfw', 'true');
       const res = await fetch('/api/images', { method: 'POST', body: fd });
       const raw = await res.text();
       let payload:
@@ -161,7 +175,12 @@ export function UploadZone() {
     if (pending.length === 0) return;
     setSubmitting(true);
     setFormError(null);
-    const sharedManualCaption = manualCaption.trim() || undefined;
+    const shared = {
+      manualCaption: manualCaption.trim() || undefined,
+      manualDescription: manualDescription.trim() || undefined,
+      manualTags: manualTags.trim() || undefined,
+      manualNsfw
+    };
 
     // Cap concurrent uploads; a single shared index ensures fairness when
     // rows are added mid-upload (future-proofing, not used today).
@@ -170,7 +189,7 @@ export function UploadZone() {
       while (cursor < pending.length) {
         const idx = cursor++;
         if (idx >= pending.length) return;
-        await uploadOne(pending[idx], sharedManualCaption);
+        await uploadOne(pending[idx], shared);
       }
     }
     const workers = Array.from({ length: Math.min(UPLOAD_CONCURRENCY, pending.length) }, worker);
@@ -278,7 +297,45 @@ export function UploadZone() {
             placeholder="a soft hint for the AI, or your own canonical caption"
             rows={2}
           />
+          <p className="font-mono text-xs text-ink-500">
+            without an AI key, manual caption + manual tags below become the only text on the image.
+          </p>
         </div>
+
+        <div className="space-y-1.5">
+          <label className="font-mono text-xs uppercase tracking-wider text-ink-500">
+            manual description (optional)
+          </label>
+          <Textarea
+            value={manualDescription}
+            onChange={(e) => setManualDescription(e.target.value)}
+            placeholder="a longer note. only applied if you have no AI key, or if you want a locked description alongside the AI variants."
+            rows={2}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="font-mono text-xs uppercase tracking-wider text-ink-500">
+            manual tags (optional, comma-separated)
+          </label>
+          <input
+            type="text"
+            value={manualTags}
+            onChange={(e) => setManualTags(e.target.value)}
+            placeholder="film, sunset, fire-escape"
+            className="w-full rounded-md border border-ink-800 bg-ink-950/60 px-3 py-1.5 font-mono text-sm text-ink-100 placeholder:text-ink-500 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+          />
+        </div>
+
+        <label className="flex items-center gap-2 font-mono text-xs uppercase tracking-wider text-ink-500">
+          <input
+            type="checkbox"
+            checked={manualNsfw}
+            onChange={(e) => setManualNsfw(e.target.checked)}
+            className="h-4 w-4 accent-primary"
+          />
+          mark as nsfw
+        </label>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={pendingCount === 0 || submitting}>

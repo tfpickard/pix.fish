@@ -1,11 +1,17 @@
 import Image from 'next/image';
 import Link from 'next/link';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { ShareButton } from '@/components/share-button';
+import { NsfwToggle } from '@/components/nsfw-toggle';
 
 export async function NavBar() {
   const session = await auth();
-  const owner = isOwner(session);
+  // Phase F: any signed-in user sees `upload`. Site admins additionally
+  // get a small `admin` link to the platform-config sidebar.
+  const signedIn = !!session?.user?.id || !!session?.user?.githubId;
+  const admin = isSiteAdmin(session);
+  const handle = session?.user?.handle;
   return (
     <header className="sticky top-0 z-40 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
       <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
@@ -48,9 +54,19 @@ export async function NavBar() {
           <Link href="/about" className="hover:text-ink-100 transition-colors">
             about
           </Link>
-          {owner ? (
+          {signedIn ? (
             <Link href="/admin/upload" className="hover:text-ink-100 transition-colors">
               upload
+            </Link>
+          ) : null}
+          {handle ? (
+            <Link href={`/u/${handle}`} className="hover:text-ink-100 transition-colors">
+              /u/{handle}
+            </Link>
+          ) : null}
+          {admin ? (
+            <Link href="/admin/ai" className="hover:text-ink-100 transition-colors">
+              admin
             </Link>
           ) : null}
           {session ? (
@@ -62,6 +78,8 @@ export async function NavBar() {
               sign in
             </Link>
           )}
+          <NsfwToggle />
+          <ShareButton />
           <ThemeToggle />
         </nav>
       </div>

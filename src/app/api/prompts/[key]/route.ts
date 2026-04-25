@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { updatePrompt, type PromptKey } from '@/lib/db/queries/prompts';
 
 const VALID_KEYS = new Set<PromptKey>(['caption', 'description', 'tags']);
 
 export async function PATCH(req: Request, ctx: { params: { key: string } }) {
   const session = await auth();
-  if (!isOwner(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  if (!isSiteAdmin(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
   const key = ctx.params.key as PromptKey;
   if (!VALID_KEYS.has(key)) return NextResponse.json({ error: 'invalid key' }, { status: 400 });

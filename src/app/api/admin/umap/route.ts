@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { inArray } from 'drizzle-orm';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { images } from '@/lib/db/schema';
 import { latestProjection } from '@/lib/db/queries/umap';
@@ -9,7 +9,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const row = await latestProjection();

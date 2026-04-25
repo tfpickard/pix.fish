@@ -17,11 +17,28 @@ import {
 // Phase 1 tables
 // ----------------------------------------------------------------------------
 
+// Users. One row per signed-in identity. PK is provider-scoped:
+// for GitHub it's the numeric `profile.id` as text. `handle` is the
+// public, URL-safe identifier used in /u/<handle>/<slug>; collisions get a
+// numeric suffix at first sign-in. `role` gates site-admin features:
+// the bootstrap user (`OWNER_GITHUB_ID`) is upserted as 'admin' on first run.
+export const users = pgTable('users', {
+  id: text('id').primaryKey(),
+  handle: text('handle').notNull().unique(),
+  displayName: text('display_name'),
+  avatarUrl: text('avatar_url'),
+  email: text('email'),
+  provider: text('provider').notNull().default('github'),
+  role: text('role').notNull().default('user'), // 'user' | 'admin'
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
 export const images = pgTable(
   'images',
   {
     id: serial('id').primaryKey(),
-    slug: text('slug').notNull().unique(),
+    slug: text('slug').notNull(),
     slugHistory: text('slug_history').array().notNull().default([]),
     blobUrl: text('blob_url').notNull(),
     blobKey: text('blob_key').notNull(),
@@ -30,14 +47,27 @@ export const images = pgTable(
     height: integer('height'),
     takenAt: timestamp('taken_at', { withTimezone: true }),
     uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
-    ownerId: text('owner_id').notNull(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
     exif: jsonb('exif'),
     palette: text('palette').array(),
-    manualCaption: text('manual_caption')
+    manualCaption: text('manual_caption'),
+    // NSFW flag set by the AI tag pass or manual override. `nsfwSource`
+    // tracks which side last touched it so reprocess passes don't clobber
+    // an owner's manual call. Default-hide on the public stream is enforced
+    // at the query layer.
+    isNsfw: boolean('is_nsfw').notNull().default(false),
+    nsfwSource: text('nsfw_source') // 'auto' | 'manual' | null (legacy rows)
   },
   (t) => ({
     uploadedAtIdx: index('images_uploaded_at_idx').on(t.uploadedAt),
-    slugHistoryIdx: index('images_slug_history_idx').using('gin', t.slugHistory)
+    slugHistoryIdx: index('images_slug_history_idx').using('gin', t.slugHistory),
+    // Per-user slug namespace. Two users can both have /u/alice/sunset and
+    // /u/bob/sunset; the legacy /<slug> redirect resolves to whichever owner
+    // currently holds it (with slug_history covering renames).
+    ownerSlugUniq: uniqueIndex('images_owner_slug_uniq').on(t.ownerId, t.slug),
+    nsfwIdx: index('images_is_nsfw_idx').on(t.isNsfw)
   })
 );
 
@@ -114,14 +144,46 @@ export const prompts = pgTable('prompts', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
+// Personal access tokens for the public REST API. Distinct from
+// providerKeys (which holds outbound BYO credentials for Anthropic/OpenAI).
+// Only the SHA-256 hash is stored; the raw token is shown once at creation.
 export const apiKeys = pgTable('api_keys', {
   id: serial('id').primaryKey(),
-  ownerId: text('owner_id').notNull(),
+  ownerId: text('owner_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   label: text('label'),
   keyHash: text('key_hash').notNull().unique(),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });
+
+// User-supplied outbound AI provider credentials (BYO key). One row per
+// (owner, provider) pair. `keyEncrypted` is AES-GCM ciphertext stored as
+// base64(iv || tag || ciphertext) using a key derived from AUTH_SECRET via
+// PBKDF2; the row is useless without the app secret. Plaintext is never
+// persisted, returned to the client, or logged. The provider literal is
+// constrained to the supported set so the per-user key lookup stays a
+// trivial table read.
+export const providerKeys = pgTable(
+  'provider_keys',
+  {
+    id: serial('id').primaryKey(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(), // 'anthropic' | 'openai'
+    label: text('label'),
+    keyEncrypted: text('key_encrypted').notNull(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    // One key per user per provider. Adding a second key for the same
+    // provider is rotation: replace, don't append.
+    ownerProviderUniq: uniqueIndex('provider_keys_owner_provider_uniq').on(t.ownerId, t.provider)
+  })
+);
 
 // ----------------------------------------------------------------------------
 // Phase 2 tables
@@ -229,9 +291,14 @@ export const aiConfig = pgTable('ai_config', {
 
 // Outbound webhook subscriptions. `secret` is shown once at creation so the
 // owner can record it; rotation is delete+recreate until usage warrants a
-// real rotation UI.
+// real rotation UI. Per-user: each user manages outbound webhooks for
+// events on *their* images. Site-admin platform webhooks live here too,
+// distinguished by the owner's role.
 export const webhooks = pgTable('webhooks', {
   id: serial('id').primaryKey(),
+  ownerId: text('owner_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   url: text('url').notNull(),
   secret: text('secret').notNull(),
   events: text('events').array().notNull(),
@@ -309,11 +376,15 @@ export const umapProjections = pgTable(
   })
 );
 
-// Owner-composed prompt variants. Promoting one overwrites `prompts.template`
+// User-composed prompt variants. Promoting one overwrites `prompts.template`
 // for the matching key and bumps `prompts.version`; `fragments` is preserved
-// so the composer can round-trip edits.
+// so the composer can round-trip edits. Currently only site admins promote
+// to the global `prompts` table, but every user can keep their own variants.
 export const savedPrompts = pgTable('saved_prompts', {
   id: serial('id').primaryKey(),
+  ownerId: text('owner_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   key: text('key').notNull(), // matches prompts.key
   template: text('template').notNull(),
@@ -322,29 +393,59 @@ export const savedPrompts = pgTable('saved_prompts', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
-// Owner-editable fields that power /about. Each row is one named field
-// (key = stable slug) with a display label, body text, and sort order.
-// Owner can edit content inline or ask the LLM to regenerate per-field.
-export const aboutFields = pgTable('about_fields', {
-  id: serial('id').primaryKey(),
-  key: text('key').notNull().unique(),
-  label: text('label').notNull(),
-  content: text('content').notNull().default(''),
-  sortOrder: integer('sort_order').notNull().default(0),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
-});
+// Per-user about-page fields. Each row is one named field (key = stable
+// slug) with a display label, body text, and sort order. The site admin's
+// rows back the global /about page; non-admin users see their own fields
+// at /u/<handle>/about (future).
+export const aboutFields = pgTable(
+  'about_fields',
+  {
+    id: serial('id').primaryKey(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    content: text('content').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    ownerKeyUniq: uniqueIndex('about_fields_owner_key_uniq').on(t.ownerId, t.key)
+  })
+);
 
-// Owner-visible gallery defaults. A minimal key/value store: `default_sort`
-// and `default_shuffle_period` so the owner can tune the landing experience
-// without a redeploy. Visitors override both client-side via localStorage.
-export const galleryConfig = pgTable('gallery_config', {
-  key: text('key').primaryKey(),
-  value: text('value').notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
-});
+// Per-user gallery defaults. Key/value store covering `default_sort` and
+// `default_shuffle_period`. The site-admin row backs the public landing
+// page; signed-in users override their own /u/<handle> view. Visitors
+// further override on the client via localStorage.
+export const galleryConfig = pgTable(
+  'gallery_config',
+  {
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    value: text('value').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    pk: uniqueIndex('gallery_config_owner_key_pk').on(t.ownerId, t.key)
+  })
+);
 
 // Relations
-export const imagesRelations = relations(images, ({ many }) => ({
+export const usersRelations = relations(users, ({ many }) => ({
+  images: many(images),
+  apiKeys: many(apiKeys),
+  providerKeys: many(providerKeys),
+  savedPrompts: many(savedPrompts),
+  aboutFields: many(aboutFields),
+  webhooks: many(webhooks)
+}));
+
+export const imagesRelations = relations(images, ({ many, one }) => ({
+  owner: one(users, { fields: [images.ownerId], references: [users.id] }),
   captions: many(captions),
   descriptions: many(descriptions),
   tags: many(tags),
@@ -378,6 +479,8 @@ export const commentsRelations = relations(comments, ({ one }) => ({
 }));
 
 // Convenience type exports
+export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
 export type Image = typeof images.$inferSelect;
 export type NewImage = typeof images.$inferInsert;
 export type Caption = typeof captions.$inferSelect;
@@ -391,6 +494,8 @@ export type Reaction = typeof reactions.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
 export type Report = typeof reports.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
+export type ProviderKey = typeof providerKeys.$inferSelect;
+export type NewProviderKey = typeof providerKeys.$inferInsert;
 export type AiConfig = typeof aiConfig.$inferSelect;
 export type NewAiConfig = typeof aiConfig.$inferInsert;
 export type Webhook = typeof webhooks.$inferSelect;

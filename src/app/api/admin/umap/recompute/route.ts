@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 
 export const runtime = 'nodejs';
@@ -14,7 +14,7 @@ const bodySchema = z
   .default({});
 
 export async function POST(req: Request) {
-  if (!isOwner(await auth())) {
+  if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const parsed = bodySchema.safeParse(await req.json().catch(() => ({})));

@@ -1,15 +1,56 @@
 import { NextResponse } from 'next/server';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import type { Session } from 'next-auth';
+import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { del } from '@vercel/blob';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, canEdit, isSiteAdmin } from '@/lib/auth';
 import { db } from '@/lib/db/client';
-import { captions, descriptions, images, tags } from '@/lib/db/schema';
+import { captions, descriptions, images, tags, type Image } from '@/lib/db/schema';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { lookupRedirect, pushSlugToHistory, uniquifySlug } from '@/lib/db/queries/slugs';
 import { slugify } from '@/lib/slug';
 import { emit } from '@/lib/webhooks/emit';
 
 export const runtime = 'nodejs';
+
+// Slugs are unique per (owner_id, slug), so a bare /api/images/<slug> is
+// ambiguous when two users share the same slug. Resolve by preferring the
+// requesting user's row -- they are almost always editing their own
+// image. Site admins may need to moderate any user's image with that
+// slug, so fall back to a global lookup with admin tiebreak (matches the
+// public legacy /<slug> page resolution).
+async function resolveSlugForMutation(
+  session: Session | null,
+  slug: string
+): Promise<Image | null> {
+  const userId = session?.user?.id ?? session?.user?.githubId;
+  if (userId) {
+    const [own] = await db
+      .select()
+      .from(images)
+      .where(and(eq(images.slug, slug), eq(images.ownerId, userId)))
+      .limit(1);
+    if (own) return own;
+  }
+  if (!isSiteAdmin(session)) return null;
+  // Admin moderation hatch: pick the site admin's row if it exists, else
+  // the oldest match across all users.
+  const adminId = process.env.OWNER_GITHUB_ID;
+  if (adminId) {
+    const [hit] = await db
+      .select()
+      .from(images)
+      .where(and(eq(images.slug, slug), eq(images.ownerId, adminId)))
+      .limit(1);
+    if (hit) return hit;
+  }
+  const [fallback] = await db
+    .select()
+    .from(images)
+    .where(eq(images.slug, slug))
+    .orderBy(asc(images.id))
+    .limit(1);
+  return fallback ?? null;
+}
 
 export async function GET(req: Request, ctx: { params: { slug: string } }) {
   const slug = ctx.params.slug;
@@ -18,8 +59,11 @@ export async function GET(req: Request, ctx: { params: { slug: string } }) {
 
   const redirectTo = await lookupRedirect(slug);
   if (redirectTo) {
-    // Real HTTP 301 so clients that follow redirects land on the canonical URL.
-    return NextResponse.redirect(new URL(`/api/images/${redirectTo}`, req.url), 301);
+    // 301 to the canonical slug. The owner_id from lookupRedirect is
+    // available for routing to /u/<handle>/<slug>; here we just keep the
+    // legacy /api/images/<slug> shape since callers of this API endpoint
+    // historically build URLs from the response, not the redirect Location.
+    return NextResponse.redirect(new URL(`/api/images/${redirectTo.slug}`, req.url), 301);
   }
   return NextResponse.json({ error: 'not found' }, { status: 404 });
 }
@@ -33,13 +77,12 @@ type PatchBody = {
 
 export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
   const session = await auth();
-  if (!isOwner(session)) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
-
-  const [img] = await db.select().from(images).where(eq(images.slug, ctx.params.slug)).limit(1);
+  const img = await resolveSlugForMutation(session, ctx.params.slug);
   if (!img) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+  if (!canEdit(session, img.ownerId)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   const body = (await req.json()) as PatchBody;
@@ -81,7 +124,7 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
       if (newSlugSource && body.slug === undefined) {
         const base = slugify(newSlugSource.text) || img.slug;
         if (base !== img.slug) {
-          const newSlug = await uniquifySlug(base, img.id);
+          const newSlug = await uniquifySlug(base, img.ownerId, img.id);
           await pushSlugToHistory(img.id, img.slug);
           await db.update(images).set({ slug: newSlug }).where(eq(images.id, img.id));
         }
@@ -128,7 +171,7 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
   if (typeof body.slug === 'string' && body.slug.trim()) {
     const base = slugify(body.slug) || img.slug;
     if (base !== img.slug) {
-      const newSlug = await uniquifySlug(base, img.id);
+      const newSlug = await uniquifySlug(base, img.ownerId, img.id);
       await pushSlugToHistory(img.id, img.slug);
       await db.update(images).set({ slug: newSlug }).where(eq(images.id, img.id));
     }
@@ -166,13 +209,12 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
 
 export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   const session = await auth();
-  if (!isOwner(session)) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
-
-  const [img] = await db.select().from(images).where(eq(images.slug, ctx.params.slug)).limit(1);
+  const img = await resolveSlugForMutation(session, ctx.params.slug);
   if (!img) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+  if (!canEdit(session, img.ownerId)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   // Delete the DB row first. Captions/descriptions/tags/embeddings cascade via

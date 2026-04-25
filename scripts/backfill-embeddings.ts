@@ -9,7 +9,7 @@
  *   bun scripts/backfill-embeddings.ts
  */
 import { asc, eq, isNull, sql } from 'drizzle-orm';
-import { getEmbedder } from '../src/lib/ai';
+import { getEmbedder, loadUserProviderKeys } from '../src/lib/ai';
 import { loadAiConfig } from '../src/lib/ai/loadConfig';
 import { db } from '../src/lib/db/client';
 import { captions, embeddings, images } from '../src/lib/db/schema';
@@ -17,7 +17,12 @@ import { upsertEmbedding } from '../src/lib/db/queries/embeddings';
 
 async function main() {
   const rows = await db
-    .select({ imageId: images.id, slug: images.slug, manualCaption: images.manualCaption })
+    .select({
+      imageId: images.id,
+      slug: images.slug,
+      manualCaption: images.manualCaption,
+      ownerId: images.ownerId
+    })
     .from(images)
     .leftJoin(
       embeddings,
@@ -33,7 +38,17 @@ async function main() {
 
   console.log(`backfilling ${rows.length} image(s)`);
   const cfg = await loadAiConfig();
-  const embedder = getEmbedder(cfg);
+  // Cache embedder per-owner so we don't re-decrypt and re-construct the
+  // SDK client for every row owned by the same user.
+  const embedderByOwner = new Map<string, ReturnType<typeof getEmbedder>>();
+  async function embedderFor(ownerId: string) {
+    let e = embedderByOwner.get(ownerId);
+    if (e !== undefined) return e;
+    const keys = await loadUserProviderKeys(ownerId);
+    e = getEmbedder(cfg, keys);
+    embedderByOwner.set(ownerId, e);
+    return e;
+  }
 
   let ok = 0;
   let fail = 0;
@@ -45,6 +60,12 @@ async function main() {
       .orderBy(sql`${captions.isSlugSource} DESC`, asc(captions.variant))
       .limit(1);
     const text = row.manualCaption ?? slugSource[0]?.text ?? row.slug;
+    const embedder = await embedderFor(row.ownerId);
+    if (!embedder) {
+      fail++;
+      console.error(`  [${row.imageId}] ${row.slug} -- skipped (owner has no embeddings key)`);
+      continue;
+    }
     try {
       const vec = await embedder.embed(text);
       await upsertEmbedding({

@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { galleryConfig } from '../schema';
 import {
@@ -18,12 +18,16 @@ export type GalleryDefaults = {
 const KEY_DEFAULT_SORT = 'default_sort';
 const KEY_DEFAULT_SHUFFLE = 'default_shuffle_period';
 
-// Single SELECT, fall back to compiled-in defaults for any row the owner
-// hasn't set yet. Soft-fails to defaults if the table itself is missing
-// (pre-migration environments) so the gallery still renders.
-export async function getGalleryDefaults(): Promise<GalleryDefaults> {
+// Per-user gallery defaults. Single SELECT, fall back to compiled-in
+// defaults for any row the user hasn't set yet. Soft-fails to defaults if
+// the table itself is missing (pre-migration environments) so the gallery
+// still renders.
+export async function getGalleryDefaults(ownerId: string): Promise<GalleryDefaults> {
   try {
-    const rows = await db.select().from(galleryConfig);
+    const rows = await db
+      .select()
+      .from(galleryConfig)
+      .where(eq(galleryConfig.ownerId, ownerId));
     const byKey = new Map(rows.map((r) => [r.key, r.value]));
     const rawSort = byKey.get(KEY_DEFAULT_SORT);
     const rawPeriod = byKey.get(KEY_DEFAULT_SHUFFLE);
@@ -36,12 +40,16 @@ export async function getGalleryDefaults(): Promise<GalleryDefaults> {
   }
 }
 
-export async function setGalleryDefault(key: string, value: string): Promise<void> {
+export async function setGalleryDefault(
+  ownerId: string,
+  key: string,
+  value: string
+): Promise<void> {
   await db
     .insert(galleryConfig)
-    .values({ key, value })
+    .values({ ownerId, key, value })
     .onConflictDoUpdate({
-      target: galleryConfig.key,
+      target: [galleryConfig.ownerId, galleryConfig.key],
       set: { value, updatedAt: sql`now()` }
     });
 }

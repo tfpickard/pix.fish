@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import {
   GALLERY_KEYS,
   getGalleryDefaults,
   setGalleryDefault
 } from '@/lib/db/queries/gallery-config';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 import { isShufflePeriod, isSortMode } from '@/lib/sort/types';
 
 export const dynamic = 'force-dynamic';
@@ -13,7 +14,7 @@ export const dynamic = 'force-dynamic';
 // sort bar can render the correct "(owner default)" labels and pre-apply
 // the cadence before the user touches anything.
 export async function GET() {
-  const defaults = await getGalleryDefaults();
+  const defaults = await getGalleryDefaults(getSiteAdminId());
   return NextResponse.json(defaults);
 }
 
@@ -22,7 +23,7 @@ export async function GET() {
 // render. Either field is optional; sending none is a no-op.
 export async function PATCH(req: Request) {
   const session = await auth();
-  if (!isOwner(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  if (!isSiteAdmin(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
   let body: unknown;
   try {
@@ -35,11 +36,12 @@ export async function PATCH(req: Request) {
   }
   const payload = body as { defaultSort?: unknown; defaultShufflePeriod?: unknown };
 
+  const ownerId = getSiteAdminId();
   if (payload.defaultSort !== undefined) {
     if (typeof payload.defaultSort !== 'string' || !isSortMode(payload.defaultSort)) {
       return NextResponse.json({ error: 'invalid defaultSort' }, { status: 400 });
     }
-    await setGalleryDefault(GALLERY_KEYS.defaultSort, payload.defaultSort);
+    await setGalleryDefault(ownerId, GALLERY_KEYS.defaultSort, payload.defaultSort);
   }
   if (payload.defaultShufflePeriod !== undefined) {
     if (
@@ -48,9 +50,9 @@ export async function PATCH(req: Request) {
     ) {
       return NextResponse.json({ error: 'invalid defaultShufflePeriod' }, { status: 400 });
     }
-    await setGalleryDefault(GALLERY_KEYS.defaultShufflePeriod, payload.defaultShufflePeriod);
+    await setGalleryDefault(ownerId, GALLERY_KEYS.defaultShufflePeriod, payload.defaultShufflePeriod);
   }
 
-  const defaults = await getGalleryDefaults();
+  const defaults = await getGalleryDefaults(ownerId);
   return NextResponse.json(defaults);
 }

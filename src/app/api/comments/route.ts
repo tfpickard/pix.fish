@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { auth, isOwner } from '@/lib/auth';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { listCommentsByStatus } from '@/lib/db/queries/comments';
 
 const VALID_STATUSES = new Set(['pending', 'approved', 'rejected']);
 
 export async function GET(req: Request) {
   const session = await auth();
-  if (!isOwner(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  if (!isSiteAdmin(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
   const status = new URL(req.url).searchParams.get('status') ?? 'pending';
   if (!VALID_STATUSES.has(status)) {

@@ -1,15 +1,30 @@
-import { listImages } from '@/lib/db/queries/images';
+import type { Metadata } from 'next';
+import { listImages, getOwnerHandlesForImages } from '@/lib/db/queries/images';
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import { getSiteAdminId } from '@/lib/db/queries/users';
+import { readShowNsfwCookie } from '@/lib/nsfw';
 import { HAIKUS } from '@/lib/haikus';
 import { pickOne } from '@/lib/random';
 import { ImageGrid } from '@/components/image-grid';
 import { TagCloud } from '@/components/tag-cloud';
 import { SortBar } from '@/components/sort-bar';
 import { isSortMode } from '@/lib/sort/types';
+import { JsonLd } from '@/components/json-ld';
+import { buildCollectionPageLd } from '@/lib/seo/jsonld';
+import { SITE_NAME, DEFAULT_DESCRIPTION } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
+
+// `?tag=foo` is a UI filter, not a distinct indexable page -- the real tag
+// landing pages live at /tag/[tag]. The canonical alternates here point Google
+// at `/` regardless of the ?tag param so filtered views don't fragment ranking.
+export const metadata: Metadata = {
+  title: { absolute: SITE_NAME },
+  description: DEFAULT_DESCRIPTION,
+  alternates: { canonical: '/' }
+};
 
 type PageProps = {
   searchParams: { tag?: string | string[]; sort?: string; seed?: string };
@@ -26,17 +41,25 @@ export default async function HomePage({ searchParams }: PageProps) {
 
   // Owner defaults feed both the server-side query (when no ?sort= is
   // present) and the client sort bar (for "(owner)" labels + reset).
-  const defaults = await getGalleryDefaults().catch(() => ({
+  const defaults = await getGalleryDefaults(getSiteAdminId()).catch(() => ({
     defaultSort: 'drifting' as const,
     defaultShufflePeriod: 'off' as const
   }));
   const effectiveSort = isSortMode(searchParams.sort) ? searchParams.sort : defaults.defaultSort;
 
+  const includeNsfw = await readShowNsfwCookie();
+
   // Fail soft: if Postgres isn't reachable, still render the shell with empty
   // data rather than crashing the whole page. Makes local dev less painful
   // and avoids a full-page error if the DB hiccups in prod.
   const [imagesRes, cloudRes] = await Promise.allSettled([
-    listImages({ limit: 60, tags: activeTags, sort: effectiveSort, seed: searchParams.seed }),
+    listImages({
+      limit: 60,
+      tags: activeTags,
+      sort: effectiveSort,
+      seed: searchParams.seed,
+      includeNsfw
+    }),
     tagCloud(64)
   ]);
   const images = imagesRes.status === 'fulfilled' ? imagesRes.value : [];
@@ -74,6 +97,22 @@ export default async function HomePage({ searchParams }: PageProps) {
       </div>
 
       <div className="grid-floor" aria-hidden="true" />
+      {images.length > 0 ? <CollectionLd images={images} /> : null}
     </div>
   );
+}
+
+// Server component that resolves owner handles for the visible image set
+// in one round-trip and feeds them into the CollectionPage JSON-LD so list
+// items emit canonical /u/<handle>/<slug> URLs. Pre-backfill rows fall
+// back to /<slug> automatically.
+async function CollectionLd({
+  images
+}: {
+  images: Awaited<ReturnType<typeof listImages>>;
+}) {
+  const handlesByImageId = await getOwnerHandlesForImages(images.map((i) => i.id)).catch(
+    () => new Map<number, string>()
+  );
+  return <JsonLd data={buildCollectionPageLd(images, handlesByImageId)} />;
 }
