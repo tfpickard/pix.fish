@@ -77,9 +77,10 @@ export function buildImageDetailMetadata(
 
 // Compact 2-column thumb grid for "more like / unlike this". Square crops
 // because these are navigation affordances, not the primary display. Links
-// route through the canonical /u/<handle>/<slug> when we have the owner's
-// handle hydrated, falling back to legacy /<slug> otherwise so neighbors
-// from accounts whose handle hasn't loaded still resolve.
+// route through legacy /<slug>; the destination page emits a canonical
+// link to /u/<handle>/<slug> via metadata, so search engines still pick
+// up the canonical URL. A future polish would hydrate owner handles for
+// neighbors and emit /u/<handle>/<slug> links directly.
 function NeighborGrid({ images }: { images: ImageWithRelations[] }) {
   return (
     <div className="mx-auto grid w-full max-w-md grid-cols-2 gap-2">
@@ -102,7 +103,15 @@ function NeighborGrid({ images }: { images: ImageWithRelations[] }) {
   );
 }
 
-export async function ImageDetail({ img }: { img: ImageWithRelations }) {
+export async function ImageDetail({
+  img,
+  ownerHandle,
+  ownerName
+}: {
+  img: ImageWithRelations;
+  ownerHandle?: string | null;
+  ownerName?: string | null;
+}) {
   const session = await auth();
   const owner = canEdit(session, img.ownerId);
 
@@ -141,7 +150,13 @@ export async function ImageDetail({ img }: { img: ImageWithRelations }) {
 
   return (
     <article className="space-y-8 pt-6">
-      <JsonLd data={buildImageObjectLd(img, { comments: approvedComments })} />
+      <JsonLd
+        data={buildImageObjectLd(img, {
+          comments: approvedComments,
+          ownerHandle,
+          ownerName
+        })}
+      />
       <div className="relative mx-auto max-w-4xl">
         {img.width && img.height ? (
           <Image

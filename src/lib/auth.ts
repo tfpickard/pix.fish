@@ -68,18 +68,18 @@ export const {
         const t = token as Record<string, unknown>;
         t.id = id;
         t.githubId = id;
+        // Stamp role deterministically BEFORE the DB upsert so a transient
+        // DB failure during bootstrap-admin sign-in doesn't lock them out
+        // of admin-gated routes. The DB result (when available) always
+        // wins on the next sign-in.
+        const fallbackRole: 'user' | 'admin' =
+          id === process.env.OWNER_GITHUB_ID ? 'admin' : 'user';
+        t.role = fallbackRole;
         try {
           const existing = await getUserById(id);
           const handle = existing?.handle ?? (await resolveHandle(p.login || id, id));
-          // Bootstrap admin gets role='admin' from the seed; preserve it on
-          // re-login. Other users start as 'user' and only become admin via
-          // an explicit role flip in the DB.
           const role: 'user' | 'admin' =
-            existing?.role === 'admin'
-              ? 'admin'
-              : id === process.env.OWNER_GITHUB_ID
-                ? 'admin'
-                : 'user';
+            existing?.role === 'admin' ? 'admin' : fallbackRole;
           await upsertUser({
             id,
             handle,
@@ -92,9 +92,9 @@ export const {
           t.handle = handle;
           t.role = role;
         } catch (err) {
-          // Don't break sign-in if the upsert fails -- the session still has
-          // an id and isOwner can still gate. Phase F will tighten this.
-          console.error('auth: user upsert failed', err);
+          // Sign-in proceeds with the deterministic role + no handle. The
+          // next successful sign-in repairs the JWT once the DB recovers.
+          console.error('auth: user upsert failed; using fallback role', err);
         }
       }
       return token;

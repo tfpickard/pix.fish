@@ -15,9 +15,13 @@ type JsonLd = Record<string, unknown>;
 
 export function buildImageObjectLd(
   img: ImageWithRelations,
-  opts: { comments?: Comment[] } = {}
+  opts: { comments?: Comment[]; ownerHandle?: string | null; ownerName?: string | null } = {}
 ): JsonLd {
-  const pageUrl = absoluteUrl('/' + img.slug);
+  // Phase D canonical URL. Falls back to legacy /<slug> only when no
+  // owner handle is resolvable (pre-backfill rows) so structured data
+  // never points at a non-canonical path that the page itself canonicalizes
+  // away.
+  const pageUrl = absoluteUrl(opts.ownerHandle ? `/u/${opts.ownerHandle}/${img.slug}` : `/${img.slug}`);
   const name = buildImageTitle(img);
   const description = buildImageDescription(img);
   const keywords = buildImageKeywords(img);
@@ -26,6 +30,12 @@ export function buildImageObjectLd(
   // doesn't blow up the page render.
   const exifTakenAt = readStringField(img.exif, 'takenAt') ?? readStringField(img.exif, 'DateTimeOriginal');
   const datePublished = img.takenAt?.toISOString() ?? exifTakenAt ?? img.uploadedAt.toISOString();
+
+  // Per-image creator, derived from the owner row. Falls back to the
+  // site-admin display when nothing is available so the field stays
+  // populated for legacy rows.
+  const creatorName = opts.ownerName || opts.ownerHandle || 'pix.fish';
+  const creatorUrl = opts.ownerHandle ? absoluteUrl(`/u/${opts.ownerHandle}`) : SITE_URL;
 
   const base: JsonLd = {
     '@context': 'https://schema.org',
@@ -41,8 +51,8 @@ export function buildImageObjectLd(
     datePublished,
     creator: {
       '@type': 'Person',
-      name: 'Tom Pickard',
-      url: SITE_URL
+      name: creatorName,
+      url: creatorUrl
     },
     // Explicit license hook: the about page carries the human-readable version,
     // and the schema.org field points crawlers at it. Owner can swap in a real
@@ -72,8 +82,20 @@ export function buildImageObjectLd(
 // the actual element count, so the cap is applied before the count is derived.
 const COLLECTION_ITEM_CAP = 30;
 
-export function buildCollectionPageLd(images: ImageWithRelations[]): JsonLd {
+export function buildCollectionPageLd(
+  images: ImageWithRelations[],
+  // Optional handle map keyed on image id. When present, list items emit
+  // canonical /u/<handle>/<slug> URLs; otherwise they fall back to legacy
+  // /<slug>. Caller (homepage) builds the map by joining users on
+  // images.ownerId; smaller surfaces can pass an empty map and accept the
+  // legacy URL shape until they hydrate handles.
+  handlesByImageId: Map<number, string | null> = new Map()
+): JsonLd {
   const items = images.slice(0, COLLECTION_ITEM_CAP);
+  const canonicalForImage = (img: ImageWithRelations): string => {
+    const handle = handlesByImageId.get(img.id);
+    return absoluteUrl(handle ? `/u/${handle}/${img.slug}` : `/${img.slug}`);
+  };
   return {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
@@ -85,18 +107,21 @@ export function buildCollectionPageLd(images: ImageWithRelations[]): JsonLd {
     mainEntity: {
       '@type': 'ItemList',
       numberOfItems: items.length,
-      itemListElement: items.map((img, idx) => ({
-        '@type': 'ListItem',
-        position: idx + 1,
-        url: absoluteUrl('/' + img.slug),
-        item: {
-          '@type': 'ImageObject',
-          '@id': absoluteUrl('/' + img.slug) + '#image',
-          url: absoluteUrl('/' + img.slug),
-          contentUrl: img.blobUrl,
-          name: buildImageTitle(img)
-        }
-      }))
+      itemListElement: items.map((img, idx) => {
+        const url = canonicalForImage(img);
+        return {
+          '@type': 'ListItem',
+          position: idx + 1,
+          url,
+          item: {
+            '@type': 'ImageObject',
+            '@id': url + '#image',
+            url,
+            contentUrl: img.blobUrl,
+            name: buildImageTitle(img)
+          }
+        };
+      })
     }
   };
 }

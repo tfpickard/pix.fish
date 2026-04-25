@@ -67,14 +67,14 @@ export async function persistEnrichment(args: {
     cfg,
     userKeys
   } = args;
-  // NSFW resolution. Manual override always wins. Otherwise, if a tag
-  // provider produced any tags we trust its nsfw verdict (source='auto');
-  // if no provider ran (key-less user) we fall through to manualNsfw with
-  // source='manual', defaulting false.
-  const aiClassified = enrichment.tags.length > 0;
-  const isNsfw = manualNsfw === true ? true : aiClassified ? enrichment.nsfw : !!manualNsfw;
+  // NSFW resolution. Manual override always wins. Otherwise, if the AI
+  // tag pass actually executed (regardless of whether it produced any
+  // tags) we trust its nsfw verdict with source='auto'; if no provider
+  // ran (key-less user) we fall through to manualNsfw with source='manual',
+  // defaulting false.
+  const isNsfw = manualNsfw === true ? true : enrichment.tagsRan ? enrichment.nsfw : !!manualNsfw;
   const nsfwSource: 'auto' | 'manual' =
-    manualNsfw !== undefined || !aiClassified ? 'manual' : 'auto';
+    manualNsfw !== undefined || !enrichment.tagsRan ? 'manual' : 'auto';
 
   const slugSourceText = manualCaption ?? enrichment.captions[0]?.text ?? placeholderSlug;
   const slugBase = slugify(slugSourceText) || placeholderSlug;

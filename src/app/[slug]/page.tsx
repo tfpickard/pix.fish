@@ -16,9 +16,13 @@ async function resolveLegacy(slug: string) {
     console.error('[slug]: getImageBySlug failed', slug, err);
     return null;
   });
-  if (!img) return { img: null as null, ownerHandle: null as null };
+  if (!img) return { img: null as null, ownerHandle: null as null, ownerName: null as null };
   const owner = await getUserById(img.ownerId).catch(() => null);
-  return { img, ownerHandle: owner?.handle ?? null };
+  return {
+    img,
+    ownerHandle: owner?.handle ?? null,
+    ownerName: owner?.displayName ?? null
+  };
 }
 
 export async function generateMetadata({ params }: { params: { slug: string } }): Promise<Metadata> {
@@ -37,11 +41,11 @@ export async function generateMetadata({ params }: { params: { slug: string } })
 
 export default async function ImageDetailPage({ params }: { params: { slug: string } }) {
   const slug = decodeURIComponent(params.slug);
-  const { img } = await resolveLegacy(slug);
+  const { img, ownerHandle, ownerName } = await resolveLegacy(slug);
   if (!img) {
     const to = await lookupRedirect(slug);
     if (to) permanentRedirect(`/${to.slug}`);
     notFound();
   }
-  return <ImageDetail img={img} />;
+  return <ImageDetail img={img} ownerHandle={ownerHandle} ownerName={ownerName} />;
 }

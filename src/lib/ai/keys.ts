@@ -17,10 +17,17 @@ const KDF_ITERATIONS = 100_000;
 // decrypt anything regardless. The salt just keeps PBKDF2 honest.
 const SALT = 'pix.fish.providerKeys.v1';
 
+// PBKDF2 at 100k iterations is intentionally slow -- so we cache the
+// derived 32-byte key once per process. Keyed on AUTH_SECRET so a runtime
+// rotation (rare; new pod) re-derives without restarting.
+let cachedKey: { secret: string; key: Buffer } | null = null;
 function deriveKey(): Buffer {
   const secret = process.env.AUTH_SECRET;
   if (!secret) throw new Error('AUTH_SECRET is required to encrypt or decrypt provider keys');
-  return pbkdf2Sync(secret, SALT, KDF_ITERATIONS, 32, 'sha256');
+  if (cachedKey && cachedKey.secret === secret) return cachedKey.key;
+  const key = pbkdf2Sync(secret, SALT, KDF_ITERATIONS, 32, 'sha256');
+  cachedKey = { secret, key };
+  return key;
 }
 
 export function encryptProviderKey(plain: string): string {

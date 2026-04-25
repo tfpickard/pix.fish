@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { listImages } from '@/lib/db/queries/images';
+import { listImages, getOwnerHandlesForImages } from '@/lib/db/queries/images';
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
@@ -97,7 +97,22 @@ export default async function HomePage({ searchParams }: PageProps) {
       </div>
 
       <div className="grid-floor" aria-hidden="true" />
-      {images.length > 0 ? <JsonLd data={buildCollectionPageLd(images)} /> : null}
+      {images.length > 0 ? <CollectionLd images={images} /> : null}
     </div>
   );
+}
+
+// Server component that resolves owner handles for the visible image set
+// in one round-trip and feeds them into the CollectionPage JSON-LD so list
+// items emit canonical /u/<handle>/<slug> URLs. Pre-backfill rows fall
+// back to /<slug> automatically.
+async function CollectionLd({
+  images
+}: {
+  images: Awaited<ReturnType<typeof listImages>>;
+}) {
+  const handlesByImageId = await getOwnerHandlesForImages(images.map((i) => i.id)).catch(
+    () => new Map<number, string>()
+  );
+  return <JsonLd data={buildCollectionPageLd(images, handlesByImageId)} />;
 }

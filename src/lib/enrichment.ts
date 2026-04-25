@@ -10,6 +10,11 @@ export type EnrichmentResult = {
   // ran (key-less user) -- the upload form's manual_nsfw checkbox is the
   // override path in that case.
   nsfw: boolean;
+  // True iff a tag provider actually executed against this image. Used by
+  // the persist step to distinguish "AI ran and produced no tags" (which
+  // should still adopt the AI nsfw verdict, source='auto') from "no key,
+  // didn't run" (manual fallback).
+  tagsRan: boolean;
 };
 
 /**
@@ -86,6 +91,7 @@ export async function enrichImage(
       : [],
     // Default false when no tag provider ran -- the upload route applies
     // manual_nsfw on top before persisting.
-    nsfw: tagsProvider ? tagsResult.nsfw : false
+    nsfw: tagsProvider ? tagsResult.nsfw : false,
+    tagsRan: !!tagsProvider
   };
 }

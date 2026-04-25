@@ -552,6 +552,25 @@ async function getImageBySlugInner(img: Image): Promise<ImageWithRelations> {
   };
 }
 
+// Resolve owner handles for a list of image ids in one round-trip. Used
+// by the home page to feed canonical /u/<handle>/<slug> URLs into the
+// CollectionPage JSON-LD without having to hydrate full user rows.
+// Returns a Map keyed on image id; rows whose owner pre-dates the
+// users-table backfill come back undefined.
+export async function getOwnerHandlesForImages(
+  imageIds: number[]
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (imageIds.length === 0) return out;
+  const rows = await db
+    .select({ id: images.id, handle: users.handle })
+    .from(images)
+    .innerJoin(users, eq(users.id, images.ownerId))
+    .where(inArray(images.id, imageIds));
+  for (const row of rows) out.set(row.id, row.handle);
+  return out;
+}
+
 // Per-user gallery for /u/[handle]. Newest-first listing scoped to one
 // owner; no embedding-driven sort modes (visitor sees the public stream
 // for those). Hydrates captions/descriptions/tags so the grid can render.
@@ -596,12 +615,22 @@ export async function getImagesByIdsOrdered(ids: number[]): Promise<Image[]> {
 // Slim projection for sitemap/feed generation. We don't hydrate captions or
 // tags here: a gallery of several thousand rows would otherwise trigger
 // captions/descriptions/tags fan-outs that the sitemap has no use for.
+// Owner handle is joined in so the sitemap emits canonical
+// /u/<handle>/<slug> URLs (Phase D); rows whose owner predates the
+// users-table backfill come back with handle=null and the caller falls
+// back to legacy /<slug>.
 export async function listSitemapImages(): Promise<
-  { slug: string; uploadedAt: Date; takenAt: Date | null }[]
+  { slug: string; uploadedAt: Date; takenAt: Date | null; ownerHandle: string | null }[]
 > {
   const rows = await db
-    .select({ slug: images.slug, uploadedAt: images.uploadedAt, takenAt: images.takenAt })
+    .select({
+      slug: images.slug,
+      uploadedAt: images.uploadedAt,
+      takenAt: images.takenAt,
+      ownerHandle: users.handle
+    })
     .from(images)
+    .leftJoin(users, eq(users.id, images.ownerId))
     .orderBy(desc(images.uploadedAt));
   return rows;
 }

@@ -12,7 +12,7 @@ export async function generateMetadata({
 }: {
   params: { handle: string };
 }): Promise<Metadata> {
-  const handle = decodeURIComponent(params.handle);
+  const handle = decodeURIComponent(params.handle).toLowerCase();
   return {
     title: `${handle} -- ${SITE_NAME}`,
     description: `Photographs uploaded by ${handle} on ${SITE_NAME}.`,
@@ -30,7 +30,7 @@ export default async function HandleGalleryPage({
 }: {
   params: { handle: string };
 }) {
-  const handle = decodeURIComponent(params.handle);
+  const handle = decodeURIComponent(params.handle).toLowerCase();
   const includeNsfw = await readShowNsfwCookie();
   const { owner, images } = await listImagesByHandle(handle, { limit: 60, includeNsfw });
   if (!owner) notFound();

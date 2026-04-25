@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { getImageByHandleAndSlug } from '@/lib/db/queries/images';
+import { getUserById } from '@/lib/db/queries/users';
 import { ImageDetail, buildImageDetailMetadata } from '@/components/image-detail';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +15,11 @@ export async function generateMetadata({
 }: {
   params: { handle: string; slug: string };
 }): Promise<Metadata> {
-  const handle = decodeURIComponent(params.handle);
+  // Handles are stored lower-case (resolveHandle slugifies + lower-cases on
+  // sign-in); normalize the URL segment so /u/Foo resolves to the same row
+  // as /u/foo. URL slugs stay verbatim -- they're already lower-case at
+  // creation but a canonical URL might link with mixed-case via slug_history.
+  const handle = decodeURIComponent(params.handle).toLowerCase();
   const slug = decodeURIComponent(params.slug);
   const img = await getImageByHandleAndSlug(handle, slug).catch((err) => {
     console.error('/u/[handle]/[slug]: lookup failed', handle, slug, err);
@@ -29,9 +34,18 @@ export default async function HandleImageDetailPage({
 }: {
   params: { handle: string; slug: string };
 }) {
-  const handle = decodeURIComponent(params.handle);
+  const handle = decodeURIComponent(params.handle).toLowerCase();
   const slug = decodeURIComponent(params.slug);
   const img = await getImageByHandleAndSlug(handle, slug);
   if (!img) notFound();
-  return <ImageDetail img={img} />;
+  // displayName is best-effort -- a missing/legacy users row falls through
+  // to handle as the JSON-LD creator name.
+  const owner = await getUserById(img.ownerId).catch(() => null);
+  return (
+    <ImageDetail
+      img={img}
+      ownerHandle={handle}
+      ownerName={owner?.displayName ?? null}
+    />
+  );
 }

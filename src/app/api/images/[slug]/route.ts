@@ -1,15 +1,56 @@
 import { NextResponse } from 'next/server';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import type { Session } from 'next-auth';
+import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { del } from '@vercel/blob';
-import { auth, canEdit } from '@/lib/auth';
+import { auth, canEdit, isSiteAdmin } from '@/lib/auth';
 import { db } from '@/lib/db/client';
-import { captions, descriptions, images, tags } from '@/lib/db/schema';
+import { captions, descriptions, images, tags, type Image } from '@/lib/db/schema';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { lookupRedirect, pushSlugToHistory, uniquifySlug } from '@/lib/db/queries/slugs';
 import { slugify } from '@/lib/slug';
 import { emit } from '@/lib/webhooks/emit';
 
 export const runtime = 'nodejs';
+
+// Slugs are unique per (owner_id, slug), so a bare /api/images/<slug> is
+// ambiguous when two users share the same slug. Resolve by preferring the
+// requesting user's row -- they are almost always editing their own
+// image. Site admins may need to moderate any user's image with that
+// slug, so fall back to a global lookup with admin tiebreak (matches the
+// public legacy /<slug> page resolution).
+async function resolveSlugForMutation(
+  session: Session | null,
+  slug: string
+): Promise<Image | null> {
+  const userId = session?.user?.id ?? session?.user?.githubId;
+  if (userId) {
+    const [own] = await db
+      .select()
+      .from(images)
+      .where(and(eq(images.slug, slug), eq(images.ownerId, userId)))
+      .limit(1);
+    if (own) return own;
+  }
+  if (!isSiteAdmin(session)) return null;
+  // Admin moderation hatch: pick the site admin's row if it exists, else
+  // the oldest match across all users.
+  const adminId = process.env.OWNER_GITHUB_ID;
+  if (adminId) {
+    const [hit] = await db
+      .select()
+      .from(images)
+      .where(and(eq(images.slug, slug), eq(images.ownerId, adminId)))
+      .limit(1);
+    if (hit) return hit;
+  }
+  const [fallback] = await db
+    .select()
+    .from(images)
+    .where(eq(images.slug, slug))
+    .orderBy(asc(images.id))
+    .limit(1);
+  return fallback ?? null;
+}
 
 export async function GET(req: Request, ctx: { params: { slug: string } }) {
   const slug = ctx.params.slug;
@@ -36,10 +77,7 @@ type PatchBody = {
 
 export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
   const session = await auth();
-  // Look up the row first so we can authorize against its owner_id.
-  // Phase F: any signed-in user may PATCH their own image; site admins
-  // can patch any image (moderation hatch).
-  const [img] = await db.select().from(images).where(eq(images.slug, ctx.params.slug)).limit(1);
+  const img = await resolveSlugForMutation(session, ctx.params.slug);
   if (!img) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
@@ -171,7 +209,7 @@ export async function PATCH(req: Request, ctx: { params: { slug: string } }) {
 
 export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   const session = await auth();
-  const [img] = await db.select().from(images).where(eq(images.slug, ctx.params.slug)).limit(1);
+  const img = await resolveSlugForMutation(session, ctx.params.slug);
   if (!img) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }

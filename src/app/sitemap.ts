@@ -21,7 +21,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   try {
     const rows = await listSitemapImages();
     imageEntries = rows.map((row) => ({
-      url: absoluteUrl('/' + row.slug),
+      // Phase D canonical: /u/<handle>/<slug>. Pre-backfill rows without a
+      // resolvable owner handle fall back to legacy /<slug> so the sitemap
+      // never emits a path with `null` in it.
+      url: absoluteUrl(row.ownerHandle ? `/u/${row.ownerHandle}/${row.slug}` : `/${row.slug}`),
       lastModified: row.uploadedAt,
       changeFrequency: 'monthly' as const,
       priority: 0.8
