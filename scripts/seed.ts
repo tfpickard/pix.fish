@@ -88,7 +88,7 @@ Only use tags from the list above for source="taxonomy". Use lower-case exactly 
 
 Aim for 6 to 14 tags total with a roughly even mix of taxonomy and freeform. Include a taxonomy tag only if it actually applies. Do not invent new taxonomy tags.
 
-Also classify the image for adult content. Set "nsfw": true when the image contains nudity, sexual content, graphic violence or gore, or other content most viewers would consider unsafe for general audiences. Set false otherwise. Err on the side of false for ambiguous artistic nudity, suggestive-but-clothed, or merely intense imagery -- a separate manual override exists for edge cases.
+Also answer one question explicitly: does the image contain nudity? Set "nsfw": true if the image shows visible human nudity (exposed genitalia, bare breasts, bare buttocks, or otherwise unclothed human bodies), and false otherwise. For this gallery, nudity is the only criterion -- violence, gore, suggestive-but-clothed imagery, drug use, and merely intense subject matter do NOT count and should be tagged false. Err on the side of true when nudity is clearly identifiable; err on the side of false when you cannot tell.
 
 Return ONLY valid JSON in this shape, with no prose around it:
 {

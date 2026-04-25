@@ -33,7 +33,7 @@ export function TagCloud({ tags, activeTags }: Props) {
     // aspect-square + rounded-full gives the cloud a disc silhouette; the
     // inner container pads toward the center so corners stay visually empty.
     <div className="tag-cloud mx-auto aspect-square w-full max-w-[18rem] rounded-full border border-ink-800/80 bg-ink-950/40 p-6">
-      <div className="flex h-full w-full flex-wrap content-center items-center justify-center gap-x-2 gap-y-1 font-mono leading-none text-ink-500">
+      <div className="flex h-full w-full flex-wrap content-center items-center justify-center gap-x-2.5 gap-y-2 font-mono leading-none text-ink-500">
         {tags.map(({ tag, count }) => {
           const active = activeTags.includes(tag);
           const next = active ? activeTags.filter((t) => t !== tag) : [...activeTags, tag];
@@ -41,9 +41,13 @@ export function TagCloud({ tags, activeTags }: Props) {
           for (const t of next) params.append('tag', t);
           const href = next.length ? `/?${params.toString()}` : '/';
           const h = hash(tag);
-          // -6..+6 deg tilt and -5..+5 px vertical drift; deterministic per tag.
-          const rot = ((h % 13) - 6) * 0.8;
-          const dy = ((h >> 4) % 11) - 5;
+          // Halved rotation range (-2.4..+2.4 deg) and halved drift
+          // (-2..+2 px). The previous values plus close gap-y caused
+          // mid-importance tags to visually intersect their neighbors;
+          // this keeps the playful disc silhouette while letting every
+          // word stay individually readable.
+          const rot = ((h % 13) - 6) * 0.4;
+          const dy = ((h >> 4) % 5) - 2;
           return (
             <Link
               key={tag}

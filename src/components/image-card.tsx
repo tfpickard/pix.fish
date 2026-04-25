@@ -3,16 +3,32 @@ import Link from 'next/link';
 import { pickOne } from '@/lib/random';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 
-export function ImageCard({ image }: { image: ImageWithRelations }) {
+type Props = {
+  image: ImageWithRelations;
+  // Optional similarity badge ("87% match"). Used by /search to surface
+  // closeness ranking next to each result.
+  similarity?: number;
+};
+
+export function ImageCard({ image, similarity }: Props) {
   const caption = pickOne(image.captions)?.text ?? '';
   const tags = image.tags.slice(0, 5);
   const aspect = image.width && image.height ? image.width / image.height : 1;
+  const similarityLabel =
+    typeof similarity === 'number' && Number.isFinite(similarity)
+      ? `${Math.round(Math.max(0, Math.min(1, similarity)) * 100)}%`
+      : null;
 
   return (
     <Link
       href={`/${image.slug}`}
       className="neon-card group relative block overflow-hidden rounded-md border border-ink-800/80 bg-ink-900/30"
     >
+      {similarityLabel ? (
+        <span className="absolute right-2 top-2 z-10 rounded-sm border border-primary/40 bg-ink-950/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-primary">
+          {similarityLabel}
+        </span>
+      ) : null}
       <div className="relative w-full" style={{ aspectRatio: aspect }}>
         {image.width && image.height ? (
           <Image

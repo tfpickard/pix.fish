@@ -3,6 +3,7 @@ import { Analytics } from '@vercel/analytics/next';
 import { fontDisplay, fontMono, fontSans, fontWordmark } from '@/lib/fonts';
 import { NavBar } from '@/components/nav-bar';
 import { Providers } from '@/components/providers';
+import { SiteFooter } from '@/components/site-footer';
 import { JsonLd } from '@/components/json-ld';
 import { SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION } from '@/lib/site';
 import { buildWebSiteLd } from '@/lib/seo/jsonld';
@@ -90,7 +91,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen font-sans antialiased">
         <Providers>
           <NavBar />
-          <main className="mx-auto w-full max-w-6xl px-4 pb-24">{children}</main>
+          <main className="mx-auto w-full max-w-6xl px-4 pb-12">{children}</main>
+          <SiteFooter />
         </Providers>
         <JsonLd data={buildWebSiteLd()} />
         <Analytics />

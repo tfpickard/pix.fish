@@ -111,7 +111,7 @@ export function ReactionBar({ slug, initialCounts }: { slug: string; initialCoun
         ].join(' ')}
       >
         <ThumbsUp size={13} strokeWidth={active === 'up' ? 2.5 : 1.5} />
-        <span>{counts.up}</span>
+        {counts.up > 0 ? <span>{counts.up}</span> : null}
       </button>
 
       <button
@@ -127,7 +127,7 @@ export function ReactionBar({ slug, initialCounts }: { slug: string; initialCoun
         ].join(' ')}
       >
         <ThumbsDown size={13} strokeWidth={active === 'down' ? 2.5 : 1.5} />
-        <span>{counts.down}</span>
+        {counts.down > 0 ? <span>{counts.down}</span> : null}
       </button>
     </div>
   );

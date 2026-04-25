@@ -1,4 +1,4 @@
-import { Fraunces, JetBrains_Mono, Inter, Monoton } from 'next/font/google';
+import { Fraunces, JetBrains_Mono, DM_Sans, Monoton } from 'next/font/google';
 
 export const fontDisplay = Fraunces({
   subsets: ['latin'],
@@ -23,7 +23,11 @@ export const fontMono = JetBrains_Mono({
   display: 'swap'
 });
 
-export const fontSans = Inter({
+// DM Sans over Inter: warmer, punchier, slightly more humanist at body
+// sizes while staying neutral enough for ui chrome. The CSS variable
+// name (`--font-sans`) is unchanged so all consumers update
+// transparently.
+export const fontSans = DM_Sans({
   subsets: ['latin'],
   variable: '--font-sans',
   display: 'swap'

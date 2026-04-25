@@ -1,5 +1,6 @@
 'use client';
 
+import { Eye, EyeOff } from 'lucide-react';
 import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -25,6 +26,9 @@ export function NsfwToggle() {
     setShowing(readCookie());
   }, []);
 
+  const label = showing ? 'hide nsfw' : 'show nsfw';
+  const Icon = showing ? Eye : EyeOff;
+
   return (
     <button
       type="button"
@@ -37,11 +41,13 @@ export function NsfwToggle() {
           router.refresh();
         });
       }}
-      className="font-mono text-xs text-ink-500 hover:text-ink-300 disabled:opacity-50"
+      className="text-ink-500 transition-colors hover:text-ink-100 disabled:opacity-50"
       disabled={pending}
       aria-pressed={showing}
+      aria-label={label}
+      title={label}
     >
-      {showing ? 'hide nsfw' : 'show nsfw'}
+      <Icon size={14} strokeWidth={1.75} />
     </button>
   );
 }
