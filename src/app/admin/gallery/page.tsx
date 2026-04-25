@@ -11,8 +11,7 @@ import {
   type ShufflePeriod,
   type SortMode
 } from '@/lib/sort/types';
-
-const DEFAULT_SEARCH_SIM_THRESHOLD = 0.30;
+import { DEFAULT_SEARCH_SIM_THRESHOLD } from '@/lib/search/defaults';
 
 type Defaults = {
   defaultSort: SortMode;
@@ -136,10 +135,21 @@ export default function AdminGalleryPage() {
                   const v = Number(e.target.value);
                   setDefaults((prev) => ({ ...prev, searchSimilarityThreshold: v }));
                 }}
-                onMouseUp={(e) =>
-                  save({ searchSimilarityThreshold: Number((e.target as HTMLInputElement).value) })
+                // onPointerUp covers both mouse and touch in one handler;
+                // onKeyUp covers keyboard arrow-key adjustments; onBlur
+                // catches focus-out (e.g. tab away mid-drag) so no input
+                // method drops a save.
+                onPointerUp={(e) =>
+                  save({
+                    searchSimilarityThreshold: Number((e.target as HTMLInputElement).value)
+                  })
                 }
-                onTouchEnd={(e) =>
+                onKeyUp={(e) =>
+                  save({
+                    searchSimilarityThreshold: Number((e.target as HTMLInputElement).value)
+                  })
+                }
+                onBlur={(e) =>
                   save({
                     searchSimilarityThreshold: Number((e.target as HTMLInputElement).value)
                   })

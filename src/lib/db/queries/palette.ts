@@ -3,10 +3,11 @@ import { db } from '../client';
 import { hydrateImages, type ImageWithRelations } from './images';
 import { images } from '../schema';
 
-// Hex similarity in CIELAB-ish ΔE is overkill for our 5-color palettes
-// where dominant colors already cluster into bands; instead this helper
-// returns rows whose palette array contains a color "close enough" to
-// the requested hex by RGB Euclidean distance under a small threshold.
+// "Close enough" similarity for our 5-color palettes uses RGB Euclidean
+// distance, not CIELAB ΔE: dominant palette swatches already cluster
+// into broad bands and ΔE adds Lab conversion overhead in pure SQL for
+// no perceived benefit at this resolution. The squared distance is
+// computed component-wise in Postgres and compared against THRESHOLD^2.
 //
 // THRESHOLD chosen by eye: a 30/255 component delta means a deep navy
 // matches another deep navy, but not slate; and a hot pink matches
@@ -27,11 +28,13 @@ export function normalizeHex(input: string): string | null {
 }
 
 // Returns hydrated images whose palette array contains at least one hex
-// within the RGB_THRESHOLD of the target color. Skips the embeddings
-// import entirely; this is a string-array lookup, not a vector search.
+// within the RGB_THRESHOLD of the target color. Honors the visitor's
+// NSFW preference -- without this, NSFW rows would slip past the
+// site-wide hide gate (they're filtered everywhere else by query, not
+// by CSS, so the URL never reaches a default-hide visitor).
 export async function listImagesByPaletteHex(
   hex: string,
-  opts: { limit?: number; offset?: number } = {}
+  opts: { limit?: number; offset?: number; includeNsfw?: boolean } = {}
 ): Promise<ImageWithRelations[]> {
   const target = hexToRgb(hex);
   if (!target) return [];
@@ -39,11 +42,13 @@ export async function listImagesByPaletteHex(
   const offset = Math.max(0, opts.offset ?? 0);
   const [tr, tg, tb] = target;
   const t2 = RGB_THRESHOLD * RGB_THRESHOLD;
+  const includeNsfw = opts.includeNsfw === true;
 
   // Postgres-side filter: unnest the palette array and compare the parsed
   // RGB to the target. Returns at most one row per image (best match) and
   // ranks by squared RGB distance. `^` would be XOR in Postgres, so each
-  // squared term uses an explicit multiply.
+  // squared term uses an explicit multiply. The NSFW predicate is
+  // pre-aggregation so an NSFW row never reaches the candidate set.
   const rows = await db.execute<{ id: number }>(sql`
     WITH candidates AS (
       SELECT
@@ -59,7 +64,9 @@ export async function listImagesByPaletteHex(
           )
         ) AS dist2
       FROM images i, unnest(i.palette) AS c
-      WHERE i.palette IS NOT NULL AND c ~ '^#[0-9a-fA-F]{6}$'
+      WHERE i.palette IS NOT NULL
+        AND c ~ '^#[0-9a-fA-F]{6}$'
+        ${includeNsfw ? sql`` : sql`AND i.is_nsfw = false`}
       GROUP BY i.id
     )
     SELECT id FROM candidates

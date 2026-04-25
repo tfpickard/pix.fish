@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { ImageGrid } from '@/components/image-grid';
 import { listImagesByPaletteHex, normalizeHex } from '@/lib/db/queries/palette';
+import { readShowNsfwCookie } from '@/lib/nsfw';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -17,11 +18,20 @@ export const metadata: Metadata = {
 type Params = { hex: string };
 
 export default async function ColorPage({ params }: { params: Params }) {
-  // URL is /color/3a1f0a (no leading hash; URL-encoded `#` is annoying).
-  const raw = decodeURIComponent(params.hex);
+  // Next already URL-decodes route params, so a malformed segment like
+  // `/color/%` would throw at the framework boundary, not here. We only
+  // need to coerce a six-hex string into a normalized #aabbcc.
+  const raw = params.hex;
   const normalized = normalizeHex(raw.startsWith('#') ? raw : `#${raw}`);
   if (!normalized) notFound();
-  const matches = await listImagesByPaletteHex(normalized, { limit: 60 }).catch(() => []);
+  // Respect the visitor's site-wide NSFW preference (cookie). Without
+  // this, the palette filter would surface NSFW rows even to a default-
+  // hide visitor and bypass the same gating used everywhere else.
+  const includeNsfw = await readShowNsfwCookie();
+  const matches = await listImagesByPaletteHex(normalized, {
+    limit: 60,
+    includeNsfw
+  }).catch(() => []);
 
   return (
     <div className="space-y-6 pt-8">

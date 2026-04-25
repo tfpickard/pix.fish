@@ -45,7 +45,7 @@ export async function GET() {
         title: caption,
         content_html: `<p>${escapeHtml(caption)}</p>${
           description ? `<p>${escapeHtml(description)}</p>` : ''
-        }<p><img src="${img.blobUrl}" alt="${escapeAttr(caption)}" /></p>`,
+        }<p><img src="${escapeAttr(img.blobUrl)}" alt="${escapeAttr(caption)}" /></p>`,
         date_published: (img.takenAt ?? img.uploadedAt).toISOString(),
         date_modified: img.uploadedAt.toISOString(),
         tags: img.tags.map((t) => t.tag),

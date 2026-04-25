@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type Point = { imageId: number; x: number; y: number };
 type ImageMeta = {
@@ -34,10 +34,14 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(
     null
   );
+  // Tracks whether the most recent mouseup ended a drag. Captured before
+  // dragRef is cleared so the click handler that fires next can decide
+  // whether to suppress navigation.
+  const wasDraggingRef = useRef(false);
 
-  // Index by id once so render + hit-test stay O(1) per lookup.
-  const metaById = useRef(new Map<number, ImageMeta>());
-  metaById.current = new Map(images.map((i) => [i.id, i]));
+  // Index by id; rebuilt only when `images` changes so render + hit-test
+  // stay O(1) per lookup without thrashing the map on unrelated renders.
+  const metaById = useMemo(() => new Map(images.map((i) => [i.id, i])), [images]);
 
   useEffect(() => {
     const el = wrapperRef.current;
@@ -106,7 +110,7 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
     for (const p of points) {
       const { x, y } = projectPoint(p);
       if (x < -10 || x > size.w + 10 || y < -10 || y > size.h + 10) continue;
-      const meta = metaById.current.get(p.imageId);
+      const meta = metaById.get(p.imageId);
       const palette = meta?.palette;
       const fill =
         palette && palette[0] ? withAlpha(palette[0], 0.75) : 'rgba(99, 179, 237, 0.55)';
@@ -153,21 +157,22 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
   }
 
   function onClick(e: React.MouseEvent) {
-    // Suppress click after a drag of more than a few px.
-    if (
-      dragRef.current &&
-      (Math.abs(e.clientX - dragRef.current.startX) > 4 ||
-        Math.abs(e.clientY - dragRef.current.startY) > 4)
-    ) {
+    // Suppress navigation if the mouseup that just preceded this click
+    // ended a drag-pan. mouseup clears dragRef before the click fires,
+    // so we mirror the "did we drag?" answer into wasDraggingRef during
+    // mouseup and consume it here.
+    if (wasDraggingRef.current) {
+      wasDraggingRef.current = false;
       return;
     }
     const p = hitTest(e.clientX, e.clientY);
     if (!p) return;
-    const meta = metaById.current.get(p.imageId);
+    const meta = metaById.get(p.imageId);
     if (meta) window.location.href = `/${meta.slug}`;
   }
 
   function onMouseDown(e: React.MouseEvent) {
+    wasDraggingRef.current = false;
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
@@ -176,7 +181,14 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
     };
   }
 
-  function onMouseUp() {
+  function onMouseUp(e: React.MouseEvent) {
+    if (
+      dragRef.current &&
+      (Math.abs(e.clientX - dragRef.current.startX) > 4 ||
+        Math.abs(e.clientY - dragRef.current.startY) > 4)
+    ) {
+      wasDraggingRef.current = true;
+    }
     dragRef.current = null;
   }
 
@@ -191,7 +203,7 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
     setTranslate({ x: 0, y: 0 });
   }
 
-  const hoverMeta = hover ? metaById.current.get(hover.imageId) : null;
+  const hoverMeta = hover ? metaById.get(hover.imageId) : null;
 
   return (
     <div ref={wrapperRef} className="relative w-full select-none">

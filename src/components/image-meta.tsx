@@ -15,6 +15,7 @@ export function PaletteStrip({ colors }: { colors: string[] | null }) {
         <Link
           key={hex}
           href={colorHref(hex)}
+          aria-label={`find images near ${hex}`}
           title={`find images near ${hex}`}
           className="block h-4 w-8 rounded-sm ring-1 ring-inset ring-ink-900/60 transition-transform hover:scale-110"
           style={{ backgroundColor: hex }}
@@ -39,6 +40,7 @@ export function PaletteEdgeBand({ colors }: { colors: string[] | null }) {
         <Link
           key={hex}
           href={colorHref(hex)}
+          aria-label={`find images near ${hex}`}
           title={`find images near ${hex}`}
           className="block h-full flex-1 transition-[height] hover:h-3"
           style={{ backgroundColor: hex }}

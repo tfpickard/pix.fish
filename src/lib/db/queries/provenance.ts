@@ -11,8 +11,11 @@ export type ProvenanceEntry = {
 
 // Per-image provider/model summary. Used by the prompt-provenance panel
 // on the image detail page so visitors can see which model wrote each
-// field. Fields with manual rows show provider="manual" so reprocess
-// passes can tell at a glance which captions were owner-edited.
+// field. Owner-edited rows (locked=true, provider/model=null in the
+// captions/descriptions tables) come back from this query as
+// {provider: null, model: null}; the panel renders that combination as
+// the literal string "manual" via formatProvider() in
+// provenance-panel.tsx. The DB column is never set to "manual".
 export async function getImageProvenance(imageId: number): Promise<ProvenanceEntry[]> {
   const [capRows, descRows, tagRows] = await Promise.all([
     db

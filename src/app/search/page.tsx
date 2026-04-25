@@ -51,6 +51,7 @@ export default async function SearchPage({ searchParams }: PageProps) {
   let hydrated: Awaited<ReturnType<typeof hydrateImages>> = [];
   let similarities = new Map<number, number>();
   let totalScored = 0;
+  let rankedCount = 0;
   let failed = false;
   try {
     const cfg = await loadAiConfig();
@@ -60,13 +61,17 @@ export default async function SearchPage({ searchParams }: PageProps) {
     const vec = await embedder.embed(q);
     const matches = await searchByVector(vec, { limit: 60, kind: 'caption' });
     totalScored = matches.length;
-    // Cosine distance -> similarity in [0..1] (clamped). The threshold
-    // trims results we'd be embarrassed to call "matches"; a query like
-    // "melancholy water" still sees its top hits but stops at the first
-    // bottom-of-the-barrel image instead of returning the entire gallery.
+    // Cosine distance is in [0, 2] (0 = identical, 2 = opposite), so the
+    // similarity = 1 - distance is in [-1, 1]. Clamp to [0, 1] for both
+    // the threshold compare and the per-card percentage badge so neither
+    // can show negative or above-100% values.
     const ranked = matches
-      .map((m) => ({ imageId: m.imageId, similarity: 1 - m.distance }))
+      .map((m) => ({
+        imageId: m.imageId,
+        similarity: Math.max(0, Math.min(1, 1 - m.distance))
+      }))
       .filter((m) => m.similarity >= simThreshold);
+    rankedCount = ranked.length;
     const rows = await getImagesByIdsOrdered(ranked.map((m) => m.imageId));
     hydrated = await hydrateImages(rows);
     similarities = new Map(ranked.map((m) => [m.imageId, m.similarity]));
@@ -75,7 +80,9 @@ export default async function SearchPage({ searchParams }: PageProps) {
     failed = true;
   }
 
-  const trimmed = totalScored - hydrated.length;
+  // "too far to bother" counts only matches dropped by the threshold,
+  // not rows that were missing during hydration (deletes, etc).
+  const trimmed = totalScored - rankedCount;
 
   return (
     <div className="space-y-6 pt-8">

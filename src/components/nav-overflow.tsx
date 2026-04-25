@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { Menu, X } from 'lucide-react';
+import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { ShareButton } from '@/components/share-button';
@@ -23,9 +24,22 @@ type Props = {
 // inline row can stay light and the popover can adopt a different layout.
 export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
 
-  // Close on Escape and on route-string changes via popstate. Skipped if
-  // SSR; window check guards build-time render.
+  // Auto-close when the route changes (Next router push or browser
+  // back/forward), and when Escape is pressed. The link onClick handlers
+  // also call setOpen(false) for the common case where the user clicks
+  // a link in the open menu; the pathname-effect catches everything
+  // else (programmatic navigation, popstate, etc).
+  useEffect(() => {
+    if (!open) return;
+    setOpen(false);
+    // We only want to react to pathname *changes*, so the eslint
+    // exhaustive-deps rule would push us to depend on `open` too --
+    // which would loop. Limit deps to pathname.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {

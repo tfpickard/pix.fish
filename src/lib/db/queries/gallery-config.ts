@@ -9,6 +9,12 @@ import {
   type ShufflePeriod,
   type SortMode
 } from '../../sort/types';
+import { DEFAULT_SEARCH_SIM_THRESHOLD } from '../../search/defaults';
+
+// Re-export so existing callers (e.g. /search) can keep importing it
+// from gallery-config; the constant itself lives in src/lib/search to
+// stay client-safe.
+export { DEFAULT_SEARCH_SIM_THRESHOLD };
 
 export type GalleryDefaults = {
   defaultSort: SortMode;
@@ -23,7 +29,6 @@ export type GalleryDefaults = {
 const KEY_DEFAULT_SORT = 'default_sort';
 const KEY_DEFAULT_SHUFFLE = 'default_shuffle_period';
 const KEY_SEARCH_SIM_THRESHOLD = 'search_similarity_threshold';
-export const DEFAULT_SEARCH_SIM_THRESHOLD = 0.30;
 
 function parseThreshold(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SEARCH_SIM_THRESHOLD;
