@@ -96,63 +96,105 @@ async function fetchInSortOrder(params: {
       break;
   }
 
-  // Remaining modes either need deterministic seeded shuffling or an
-  // in-memory reorder over a candidate window.
+  // Remaining modes reorder only the top CANDIDATE_CAP rows in memory. For
+  // offsets past the window we stitch on the raw base-order tail so
+  // /api/images stays paginable across the whole table.
+  const newestBase = sql`${images.uploadedAt} DESC, ${images.id} DESC`;
+  const oldestBase = sql`${images.uploadedAt} ASC, ${images.id} ASC`;
+
   if (sort === 'random') {
-    const baseRows = await selectImagesOrdered(
-      tagFilter,
-      sql`${images.uploadedAt} DESC, ${images.id} DESC`,
-      CANDIDATE_CAP,
-      0
-    );
+    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0);
     const shuffled = seededShuffle(baseRows, seed || 'unseeded');
-    // If the caller paged past the candidate window, fall back to the
-    // unshuffled recency tail so pagination still terminates.
-    if (offset >= shuffled.length) {
-      return selectImagesOrdered(
-        tagFilter,
-        sql`${images.uploadedAt} DESC, ${images.id} DESC`,
-        limit,
-        offset
-      );
-    }
-    return shuffled.slice(offset, offset + limit);
+    return sliceCandidateWindowWithBaseTail({
+      reordered: shuffled,
+      tagFilter,
+      baseOrder: newestBase,
+      limit,
+      offset
+    });
   }
 
   if (sort === 'rainbow') {
-    const baseRows = await selectImagesOrdered(
-      tagFilter,
-      sql`${images.uploadedAt} DESC, ${images.id} DESC`,
-      CANDIDATE_CAP,
-      0
-    );
+    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0);
     const ordered = baseRows
       .map((row) => ({ row, hue: dominantHue(row.palette) }))
       .sort((a, b) => a.hue - b.hue || a.row.id - b.row.id)
       .map((p) => p.row);
-    if (offset >= ordered.length) return [];
-    return ordered.slice(offset, offset + limit);
+    return sliceCandidateWindowWithBaseTail({
+      reordered: ordered,
+      tagFilter,
+      baseOrder: newestBase,
+      limit,
+      offset
+    });
   }
 
   if (sort === 'tidal') {
-    const baseRows = await selectImagesOrdered(
-      tagFilter,
-      sql`${images.uploadedAt} DESC, ${images.id} DESC`,
-      CANDIDATE_CAP,
-      0
-    );
+    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0);
     const interleaved = tidal(baseRows);
-    if (offset >= interleaved.length) return [];
-    return interleaved.slice(offset, offset + limit);
+    return sliceCandidateWindowWithBaseTail({
+      reordered: interleaved,
+      tagFilter,
+      baseOrder: newestBase,
+      limit,
+      offset
+    });
   }
 
-  // Embedding-driven reorder modes. Fetch the candidate window joined to
-  // caption vectors, run the algorithm, slice.
+  // Embedding-driven reorder modes.
   const direction = sort === 'ancient-drift' ? 'asc' : 'desc';
+  const baseOrder = direction === 'asc' ? oldestBase : newestBase;
   const candidates = await fetchCandidates(tagFilter, direction, CANDIDATE_CAP);
   const reordered = applyReorder(sort, candidates, seed);
-  if (offset >= reordered.length) return [];
-  return reordered.slice(offset, offset + limit);
+  return sliceCandidateWindowWithBaseTail({
+    reordered,
+    tagFilter,
+    baseOrder,
+    limit,
+    offset
+  });
+}
+
+// Returns a page out of an in-memory reordered candidate window, stitching
+// on older rows from the raw base order when the request straddles or
+// exceeds CANDIDATE_CAP. Without this, every reorder sort artificially
+// caps at 300 rows.
+async function sliceCandidateWindowWithBaseTail(params: {
+  reordered: Image[];
+  tagFilter: string[] | null;
+  baseOrder: ReturnType<typeof sql>;
+  limit: number;
+  offset: number;
+}): Promise<Image[]> {
+  const { reordered, tagFilter, baseOrder, limit, offset } = params;
+  if (limit <= 0) return [];
+
+  // A reordered window shorter than CANDIDATE_CAP means the total table
+  // (under the tag filter) has fewer rows than the cap, so there's no tail
+  // to fetch -- the window is the full result set.
+  const hasTail = reordered.length >= CANDIDATE_CAP;
+
+  if (offset >= reordered.length) {
+    if (!hasTail) return [];
+    return selectImagesOrdered(tagFilter, baseOrder, limit, offset);
+  }
+
+  const windowEnd = Math.min(offset + limit, reordered.length);
+  const windowRows = reordered.slice(offset, windowEnd);
+
+  // Page fits entirely within the reordered window.
+  if (windowEnd === offset + limit) return windowRows;
+
+  // Page straddles the cap; append rows from base order beyond the window.
+  if (!hasTail) return windowRows;
+  const remaining = limit - windowRows.length;
+  const tailRows = await selectImagesOrdered(
+    tagFilter,
+    baseOrder,
+    remaining,
+    reordered.length
+  );
+  return windowRows.concat(tailRows);
 }
 
 function applyReorder(sort: SortMode, candidates: Candidate[], seed: string): Image[] {

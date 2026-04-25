@@ -6,6 +6,8 @@ import {
   DEFAULT_SORT,
   SHUFFLE_PERIODS,
   SORT_MODES,
+  isShufflePeriod,
+  isSortMode,
   type ShufflePeriod,
   type SortMode
 } from '@/lib/sort/types';
@@ -23,10 +25,22 @@ export default function AdminGalleryPage() {
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
+    // Validate shape before applying: a malformed payload would make the
+    // controlled <select>s drop to their uncontrolled fallback and break
+    // subsequent onChange handlers.
     fetch('/api/gallery-config')
-      .then((r) => r.json())
-      .then((d) => {
-        setDefaults(d);
+      .then(async (r) => (r.ok ? await r.json() : null))
+      .then((d: unknown) => {
+        if (
+          d &&
+          typeof d === 'object' &&
+          isSortMode((d as Record<string, unknown>).defaultSort as string | null | undefined) &&
+          isShufflePeriod(
+            (d as Record<string, unknown>).defaultShufflePeriod as string | null | undefined
+          )
+        ) {
+          setDefaults(d as Defaults);
+        }
         setLoading(false);
       })
       .catch(() => setLoading(false));

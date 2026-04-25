@@ -151,7 +151,9 @@ export const SORT_META: Record<SortMode, SortMeta> = {
 export const SORT_MODES: SortMeta[] = Object.values(SORT_META);
 
 export function isSortMode(value: string | null | undefined): value is SortMode {
-  return typeof value === 'string' && value in SORT_META;
+  // Own-key check so prototype keys (toString, constructor, __proto__) don't
+  // pass validation and leak into handlers that index SORT_META.
+  return typeof value === 'string' && Object.hasOwn(SORT_META, value);
 }
 
 // Auto-shuffle cadence selector. `off` disables the interval; the other
