@@ -239,9 +239,12 @@ export const reactions = pgTable(
   })
 );
 
-// Anonymous comments. status flows: pending -> approved | rejected.
+// Comments. status flows: pending -> approved | rejected.
 // Approved comments are publicly visible; pending ones are hidden until
-// the owner approves from the moderation queue.
+// the owner approves from the moderation queue. Signed-in users skip
+// moderation (status defaults to 'approved' at the route layer for them);
+// guests still default to 'pending' and may supply an optional author_name
+// plus auto-captured city/region/country from Vercel edge headers.
 export const comments = pgTable(
   'comments',
   {
@@ -249,15 +252,26 @@ export const comments = pgTable(
     imageId: integer('image_id')
       .notNull()
       .references(() => images.id, { onDelete: 'cascade' }),
+    // Optional signed-in user link. set null on user delete so a removed
+    // account doesn't cascade-delete their comment history; the row just
+    // re-falls-back to the guest rendering branch.
+    userId: text('user_id').references(() => users.id, { onDelete: 'set null' }),
     authorName: text('author_name'),
     body: text('body').notNull(),
     status: text('status').notNull().default('pending'), // 'pending' | 'approved' | 'rejected'
     ipHash: text('ip_hash').notNull(),
+    // Guest geo (Vercel edge headers). Nullable: signed-in users skip
+    // capture, and dev / non-Vercel hosts won't have the headers. Country
+    // is ISO-3166 alpha-2.
+    geoCity: text('geo_city'),
+    geoRegion: text('geo_region'),
+    geoCountry: text('geo_country'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => ({
     imageIdx: index('comments_image_id_idx').on(t.imageId),
-    statusIdx: index('comments_status_idx').on(t.status)
+    statusIdx: index('comments_status_idx').on(t.status),
+    userIdx: index('comments_user_id_idx').on(t.userId)
   })
 );
 
@@ -520,7 +534,8 @@ export const reactionsRelations = relations(reactions, ({ one }) => ({
 }));
 
 export const commentsRelations = relations(comments, ({ one }) => ({
-  image: one(images, { fields: [comments.imageId], references: [images.id] })
+  image: one(images, { fields: [comments.imageId], references: [images.id] }),
+  user: one(users, { fields: [comments.userId], references: [users.id] })
 }));
 
 export const collectionsRelations = relations(collections, ({ many }) => ({

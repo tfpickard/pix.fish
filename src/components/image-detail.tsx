@@ -247,7 +247,13 @@ export async function ImageDetail({
       ) : null}
 
       <div className="mx-auto max-w-2xl pb-8">
-        <CommentList slug={img.slug} comments={approvedComments} />
+        <CommentList
+          slug={img.slug}
+          comments={approvedComments}
+          signedInAs={
+            session?.user?.handle ? { handle: session.user.handle } : undefined
+          }
+        />
       </div>
 
       <ProvenancePanel entries={provenance} />

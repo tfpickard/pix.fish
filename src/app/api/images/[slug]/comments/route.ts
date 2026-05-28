@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { addComment, listApprovedComments } from '@/lib/db/queries/comments';
-import { hashIp, getRequestIp } from '@/lib/hash';
+import { hashIp, getRequestIp, getRequestGeo } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
 import { emit } from '@/lib/webhooks/emit';
 
@@ -16,7 +17,10 @@ export async function POST(req: Request, ctx: { params: { slug: string } }) {
   const ip = getRequestIp(req);
   const ipHash = hashIp(ip);
 
-  // 3 comments per IP per 10 minutes
+  // 3 comments per IP per 10 minutes. Signed-in users share the IP bucket;
+  // one account on a shared IP still shouldn't be able to flood. The bucket
+  // is keyed on the hash, not the user id, so this is correct without
+  // change.
   if (!rateLimit(`comment:${ipHash}`, 3, 10 * 60_000)) {
     return NextResponse.json({ error: 'rate limited' }, { status: 429 });
   }
@@ -48,15 +52,54 @@ export async function POST(req: Request, ctx: { params: { slug: string } }) {
     return NextResponse.json({ error: 'body too long' }, { status: 400 });
   }
 
-  const comment = await addComment(img.id, body, authorName || null, ipHash);
+  // Signed-in users get their identity from the session and skip moderation.
+  // Their handle is the canonical display name -- the form's authorName is
+  // ignored. Guests keep the optional name plus auto-captured geo from
+  // Vercel's edge headers (nulls in dev / non-Vercel hosts).
+  const session = await auth();
+  const userId = session?.user?.id ?? null;
+  const isUser = !!userId;
+  const status = isUser ? 'approved' : 'pending';
+  const persistedAuthorName = isUser ? null : authorName || null;
+  const geo = isUser
+    ? { city: null, region: null, country: null }
+    : getRequestGeo(req);
+
+  const comment = await addComment({
+    imageId: img.id,
+    userId,
+    authorName: persistedAuthorName,
+    body,
+    ipHash,
+    status,
+    geoCity: geo.city,
+    geoRegion: geo.region,
+    geoCountry: geo.country
+  });
+
   await emit('comment.created', {
     comment: {
       id: comment.id,
       imageSlug: img.slug,
       body: comment.body,
       status: comment.status as 'pending' | 'approved' | 'rejected',
-      createdAt: comment.createdAt.toISOString()
+      createdAt: comment.createdAt.toISOString(),
+      // Additive: existing consumers ignore unknown fields. Signed-in
+      // comments carry a userId + handle; guests carry name + geo.
+      author: isUser
+        ? {
+            kind: 'user' as const,
+            userId,
+            handle: session?.user?.handle ?? null
+          }
+        : {
+            kind: 'guest' as const,
+            name: persistedAuthorName,
+            city: geo.city,
+            region: geo.region,
+            country: geo.country
+          }
     }
   });
-  return NextResponse.json({ status: 'pending', id: comment.id }, { status: 201 });
+  return NextResponse.json({ status, id: comment.id }, { status: 201 });
 }

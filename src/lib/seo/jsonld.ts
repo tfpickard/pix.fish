@@ -1,5 +1,5 @@
 import type { ImageWithRelations } from '@/lib/db/queries/images';
-import type { Comment } from '@/lib/db/schema';
+import type { PublicComment } from '@/lib/db/queries/comments';
 import { absoluteUrl, SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION } from '@/lib/site';
 import {
   buildImageTitle,
@@ -15,7 +15,7 @@ type JsonLd = Record<string, unknown>;
 
 export function buildImageObjectLd(
   img: ImageWithRelations,
-  opts: { comments?: Comment[]; ownerHandle?: string | null; ownerName?: string | null } = {}
+  opts: { comments?: PublicComment[]; ownerHandle?: string | null; ownerName?: string | null } = {}
 ): JsonLd {
   // Phase D canonical URL. Falls back to legacy /<slug> only when no
   // owner handle is resolvable (pre-backfill rows) so structured data
@@ -64,13 +64,21 @@ export function buildImageObjectLd(
   if (img.width) base.width = img.width;
   if (img.height) base.height = img.height;
 
-  const approved = (opts.comments ?? []).filter((c) => c.status === 'approved');
+  // listApprovedComments already filters to approved rows, so no extra
+  // status filter is needed. Author name resolves from the discriminated
+  // author shape: signed-in users contribute their handle, guests fall
+  // back to their optional display name or "anonymous".
+  const approved = opts.comments ?? [];
   if (approved.length > 0) {
     base.commentCount = approved.length;
     base.comment = approved.map((c) => ({
       '@type': 'Comment',
       text: c.body,
-      author: { '@type': 'Person', name: c.authorName || 'anonymous' },
+      author: {
+        '@type': 'Person',
+        name:
+          c.author.kind === 'user' ? c.author.handle : c.author.name || 'anonymous'
+      },
       dateCreated: c.createdAt.toISOString()
     }));
   }
