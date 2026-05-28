@@ -2,13 +2,22 @@
 
 import { useState, useTransition } from 'react';
 
-export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () => void }) {
+type Props = {
+  slug: string;
+  signedInAs?: { handle: string };
+  onPosted?: () => void;
+};
+
+export function CommentForm({ slug, signedInAs, onPosted }: Props) {
   const [body, setBody] = useState('');
   const [authorName, setAuthorName] = useState('');
   const [website, setWebsite] = useState(''); // honeypot -- bots fill this via onChange
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [responseStatus, setResponseStatus] = useState<'pending' | 'approved' | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [isPending, startTransition] = useTransition();
+
+  const isUser = !!signedInAs;
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -21,7 +30,9 @@ export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () =>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             body: body.trim(),
-            authorName: authorName.trim() || null,
+            // Signed-in users: the server ignores authorName and uses
+            // their handle. We still send null so the field is explicit.
+            authorName: isUser ? null : authorName.trim() || null,
             website
           })
         });
@@ -36,9 +47,11 @@ export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () =>
           setErrorMsg(data.error ?? 'something went wrong');
           return;
         }
+        const data = await res.json().catch(() => ({}));
         setBody('');
         setAuthorName('');
         setStatus('success');
+        setResponseStatus(data?.status === 'approved' ? 'approved' : 'pending');
         onPosted?.();
       } catch {
         setStatus('error');
@@ -61,14 +74,25 @@ export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () =>
         style={{ position: 'absolute', left: '-9999px', width: '1px', height: '1px' }}
       />
 
-      <input
-        type="text"
-        placeholder="name (optional)"
-        value={authorName}
-        onChange={(e) => setAuthorName(e.target.value)}
-        maxLength={80}
-        className="w-full rounded border border-ink-800 bg-ink-900/40 px-3 py-2 font-mono text-xs text-ink-100 placeholder:text-ink-500 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
-      />
+      {isUser ? (
+        <p className="font-mono text-xs text-ink-500">
+          posting as <span className="text-ink-100">@{signedInAs!.handle}</span>
+        </p>
+      ) : (
+        <>
+          <input
+            type="text"
+            placeholder="name (optional)"
+            value={authorName}
+            onChange={(e) => setAuthorName(e.target.value)}
+            maxLength={80}
+            className="w-full rounded border border-ink-800 bg-ink-900/40 px-3 py-2 font-mono text-xs text-ink-100 placeholder:text-ink-500 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
+          />
+          <p className="font-mono text-[10px] text-ink-500">
+            posting as guest -- your approximate location (city only) will be shown next to your comment.
+          </p>
+        </>
+      )}
 
       <textarea
         placeholder="leave a comment..."
@@ -93,7 +117,7 @@ export function CommentForm({ slug, onPosted }: { slug: string; onPosted?: () =>
 
       {status === 'success' && (
         <p className="font-mono text-xs text-secondary">
-          posted -- awaiting moderation
+          {responseStatus === 'approved' ? 'posted' : 'posted -- awaiting moderation'}
         </p>
       )}
       {status === 'error' && (

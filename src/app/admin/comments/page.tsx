@@ -4,15 +4,35 @@ import { useState, useEffect, useTransition } from 'react';
 import Link from 'next/link';
 import { CheckCircle, XCircle, Trash2 } from 'lucide-react';
 
+// Shape mirrors ModerationComment from src/lib/db/queries/comments.ts,
+// but with dates serialised to strings as they cross the JSON boundary.
+type CommentAuthor =
+  | { kind: 'user'; handle: string; displayName: string | null }
+  | {
+      kind: 'guest';
+      name: string | null;
+      city: string | null;
+      region: string | null;
+      country: string | null;
+    };
+
 type CommentRow = {
   id: number;
-  imageId: number;
   imageSlug: string;
-  authorName: string | null;
   body: string;
   status: string;
   createdAt: string;
+  author: CommentAuthor;
 };
+
+function formatGeo(
+  city: string | null,
+  region: string | null,
+  country: string | null
+): string | null {
+  if (city && region) return `${city}, ${region}`;
+  return city ?? region ?? country ?? null;
+}
 
 function formatDate(d: string): string {
   return new Date(d).toLocaleString('en-US', {
@@ -88,8 +108,32 @@ export default function AdminCommentsPage() {
           {comments.map((c) => (
             <div key={c.id} className="flex items-start justify-between gap-4 px-4 py-4">
               <div className="min-w-0 space-y-1.5">
-                <div className="flex items-baseline gap-2 font-mono text-xs">
-                  <span className="text-ink-100">{c.authorName || 'anonymous'}</span>
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-xs">
+                  {c.author.kind === 'user' ? (
+                    <span className="text-ink-100">
+                      <span className="rounded bg-primary/15 px-1 py-0.5 text-[10px] uppercase tracking-wide text-primary">
+                        user
+                      </span>{' '}
+                      @{c.author.handle}
+                    </span>
+                  ) : (
+                    <span className="text-ink-100">
+                      <span className="rounded bg-ink-800 px-1 py-0.5 text-[10px] uppercase tracking-wide text-ink-400">
+                        guest
+                      </span>{' '}
+                      {c.author.name || 'anonymous'}
+                      {(() => {
+                        const geo = formatGeo(
+                          c.author.city,
+                          c.author.region,
+                          c.author.country
+                        );
+                        return geo ? (
+                          <span className="text-ink-500"> · {geo}</span>
+                        ) : null;
+                      })()}
+                    </span>
+                  )}
                   <span className="text-ink-500">{formatDate(c.createdAt)}</span>
                   <Link
                     href={`/${c.imageSlug}`}

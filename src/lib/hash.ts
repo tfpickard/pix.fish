@@ -21,3 +21,35 @@ export function getRequestIp(req: Request): string {
     'unknown'
   );
 }
+
+// Coarse geolocation from Vercel's edge headers. Returns nulls in dev /
+// non-Vercel hosts since the headers are absent there. Vercel URL-encodes
+// city names with non-ascii characters (e.g. "S%C3%A3o%20Paulo"), so we
+// always decode. We deliberately stop at city granularity; that's already
+// ~10-100 mile resolution from the underlying IP→geo DB and satisfies the
+// "no precise lat/lon stored" privacy posture.
+export type RequestGeo = {
+  city: string | null;
+  region: string | null;
+  country: string | null;
+};
+
+export function getRequestGeo(req: Request): RequestGeo {
+  const get = (h: string): string | null => {
+    const raw = req.headers.get(h);
+    if (!raw) return null;
+    try {
+      const decoded = decodeURIComponent(raw).trim();
+      return decoded || null;
+    } catch {
+      // Malformed % escape -- fall back to the raw value rather than
+      // dropping it entirely, since most of the data is still useful.
+      return raw.trim() || null;
+    }
+  };
+  return {
+    city: get('x-vercel-ip-city'),
+    region: get('x-vercel-ip-country-region'),
+    country: get('x-vercel-ip-country')
+  };
+}
