@@ -30,9 +30,14 @@ export function TagCloud({ tags, activeTags }: Props) {
   };
 
   return (
-    // aspect-square + rounded-full gives the cloud a disc silhouette; the
-    // inner container pads toward the center so corners stay visually empty.
-    <div className="tag-cloud mx-auto aspect-square w-full max-w-[18rem] rounded-full border border-ink-800/80 bg-ink-950/40 p-6">
+    // Disc silhouette only at lg+ where the right-hand column gives it room.
+    // Below lg the cloud renders as an ordinary centred flex-wrap block --
+    // the disc can't fit ~70 tags in a 288px square, and iOS Safari's lack
+    // of overflow clipping spills them across the SortBar (see
+    // https://github.com/tfpickard/pix.fish iPad screenshot bug). The
+    // lg:overflow-hidden guards against future tag-count growth even on
+    // desktop.
+    <div className="tag-cloud mx-auto w-full max-w-[18rem] rounded-md border border-ink-800/80 bg-ink-950/40 p-6 lg:aspect-square lg:overflow-hidden lg:rounded-full">
       <div className="flex h-full w-full flex-wrap content-center items-center justify-center gap-x-2.5 gap-y-2 font-mono leading-none text-ink-500">
         {tags.map(({ tag, count }) => {
           const active = activeTags.includes(tag);
