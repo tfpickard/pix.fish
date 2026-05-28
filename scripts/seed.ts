@@ -75,6 +75,153 @@ Return ONLY valid JSON in this exact shape, with no prose around it:
   "variant3": "<witty description>"
 }`;
 
+const BREED_TEMPLATE = `You are inventing a new image for a personal gallery by "breeding" {{n_sources}} existing ones.
+
+SOURCES -- the images the owner selected to breed from (their captions, descriptions, tags):
+{{source_captions}}
+
+REFERENCE NEIGHBORHOOD -- existing images that already sit closest to the average of the sources, by caption embedding. This territory is well-covered; the new image must NOT duplicate any of these:
+{{neighbor_captions}}
+
+Your job: invent ONE new image that is a spiritual successor to the sources. Share their aesthetic DNA -- mood, palette, subject family, atmosphere -- but reach for empty space within that neighborhood. The result should feel like it belongs in the same collection as the sources without being a literal combination of their subjects.
+
+Constraints:
+  - Do NOT name or reference the source images directly.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Avoid generic stock-photo language. Be specific the way the sources are specific.
+
+Produce three voices plus a tag set:
+  - variant1: LITERAL caption. Plain-language naming of the imagined image's subject and composition. Under 12 words.
+  - variant2: POETIC caption. Evocative, image-forward, metaphor allowed. Under 12 words.
+  - variant3: A 2 to 3 sentence description painting the imagined scene -- subject, light, mood, palette.
+
+Tags: 6 to 12 total, mixing taxonomy entries (from the list below, exact lower-case match) and freeform descriptors (lower-case, kebab-case if multi-word).
+
+Taxonomy:
+{{tag_taxonomy}}
+
+Return ONLY valid JSON in this exact shape, with no prose around it:
+{
+  "variant1": "<literal caption>",
+  "variant2": "<poetic caption>",
+  "variant3": "<2-3 sentence description>",
+  "tags": [
+    { "tag": "photograph", "source": "taxonomy" },
+    { "tag": "rain-on-asphalt", "source": "freeform" }
+  ]
+}`;
+
+const DEPART_TEMPLATE = `You are inventing a new image that is a DELIBERATE DEPARTURE from {{n_sources}} existing ones.
+
+SOURCES -- the images the owner has selected to depart from:
+{{source_captions}}
+
+REFERENCE NEIGHBORHOOD -- existing gallery images already close to the sources' centroid. The new image should also avoid living in this territory:
+{{neighbor_captions}}
+
+Your job: invent ONE new image that is, in spirit, the opposite of the sources. Flip the mood (if they're calm, be tense; if they're dark, be luminous). Flip the subject family (if they're urban, go pastoral; if they're human, go inhuman). Flip the palette. The result must be internally coherent -- not a chaotic anti-everything -- but a sincere "what if I wanted nothing this collection currently has?"
+
+Constraints:
+  - Do NOT name or reference the sources directly.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Avoid generic stock-photo language. Be specific.
+
+Produce three voices plus a tag set:
+  - variant1: LITERAL caption. Under 12 words.
+  - variant2: POETIC caption. Under 12 words.
+  - variant3: A 2 to 3 sentence description painting the imagined scene.
+
+Tags: 6 to 12 total, mixing taxonomy entries (exact lower-case match from the list) and freeform descriptors (lower-case, kebab-case).
+
+Taxonomy:
+{{tag_taxonomy}}
+
+Return ONLY valid JSON in this exact shape:
+{
+  "variant1": "<literal caption>",
+  "variant2": "<poetic caption>",
+  "variant3": "<2-3 sentence description>",
+  "tags": [
+    { "tag": "photograph", "source": "taxonomy" },
+    { "tag": "rain-on-asphalt", "source": "freeform" }
+  ]
+}`;
+
+const ANTIBREED_TEMPLATE = `You are inventing a new image that lives in the FAR TERRITORY of {{n_sources}} existing ones, by caption embedding.
+
+SOURCES -- images the owner selected. Their centroid is the point you should sit FAR from:
+{{source_captions}}
+
+FAR TERRITORY REFERENCES -- existing gallery images sitting farthest from the sources' centroid in embedding space. These are your nearest cousins in this anti-territory; the new image should belong to roughly this family without copying any specific one:
+{{far_neighbor_captions}}
+
+Your job: invent ONE new image that feels native to the far-territory references. It does not need to oppose the sources point-for-point; it needs to belong somewhere the sources are not. Take cues from what the far references have in common and synthesise an image in that same family.
+
+Constraints:
+  - Do NOT name or reference the sources directly.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Avoid generic stock-photo language. Be specific.
+
+Produce three voices plus a tag set:
+  - variant1: LITERAL caption. Under 12 words.
+  - variant2: POETIC caption. Under 12 words.
+  - variant3: A 2 to 3 sentence description.
+
+Tags: 6 to 12 total, mixing taxonomy entries (from the list) and freeform descriptors.
+
+Taxonomy:
+{{tag_taxonomy}}
+
+Return ONLY valid JSON in this exact shape:
+{
+  "variant1": "<literal caption>",
+  "variant2": "<poetic caption>",
+  "variant3": "<2-3 sentence description>",
+  "tags": [
+    { "tag": "photograph", "source": "taxonomy" },
+    { "tag": "rain-on-asphalt", "source": "freeform" }
+  ]
+}`;
+
+const SUBTRACT_TEMPLATE = `You are inventing a new image by ANALOGY: take an anchor image and remove the qualities of one or more subtract images.
+
+ANCHOR -- the image whose essence you should preserve:
+{{anchor_caption}}
+
+SUBTRACT -- the image(s) whose qualities should be REMOVED from the anchor's essence:
+{{subtract_captions}}
+
+NEIGHBOURHOOD -- existing gallery images sitting nearest to the (anchor minus subtracts) vector in embedding space. They suggest the territory you're heading toward; treat them as cousins, not models to copy:
+{{neighbor_captions}}
+
+Your job: imagine the anchor with the subtracted qualities cleanly extracted. Preserve what makes the anchor itself; remove what makes the subtract(s) themselves. If the anchor is "a portrait of a woman in a garden" and the subtract is "any portrait of a person," you might land on the garden alone. If the subtract is "any garden," you might land on the woman in a plain studio. The math is "anchor - subtract"; the result should feel like a clean residue, not a collage.
+
+Constraints:
+  - Do NOT name or reference the anchor or subtract images directly.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Avoid generic stock-photo language. Be specific.
+
+Produce three voices plus a tag set:
+  - variant1: LITERAL caption. Under 12 words.
+  - variant2: POETIC caption. Under 12 words.
+  - variant3: A 2 to 3 sentence description.
+
+Tags: 6 to 12 total, mixing taxonomy entries and freeform descriptors.
+
+Taxonomy:
+{{tag_taxonomy}}
+
+Return ONLY valid JSON in this exact shape:
+{
+  "variant1": "<literal caption>",
+  "variant2": "<poetic caption>",
+  "variant3": "<2-3 sentence description>",
+  "tags": [
+    { "tag": "photograph", "source": "taxonomy" },
+    { "tag": "rain-on-asphalt", "source": "freeform" }
+  ]
+}`;
+
 const TAGS_TEMPLATE = `You are tagging an image for a personal gallery so it can be filtered and found later.
 
 Produce a mix of two kinds of tags:
@@ -161,7 +308,11 @@ async function main() {
   for (const [key, template] of [
     ['caption', CAPTION_TEMPLATE],
     ['description', DESCRIPTION_TEMPLATE],
-    ['tags', TAGS_TEMPLATE]
+    ['tags', TAGS_TEMPLATE],
+    ['breed', BREED_TEMPLATE],
+    ['depart', DEPART_TEMPLATE],
+    ['antibreed', ANTIBREED_TEMPLATE],
+    ['subtract', SUBTRACT_TEMPLATE]
   ] as const) {
     await db
       .insert(prompts)
