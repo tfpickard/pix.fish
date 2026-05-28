@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { listImagesByHandle } from '@/lib/db/queries/images';
+import { listImagesByHandle, countImagesByOwner } from '@/lib/db/queries/images';
 import { tagCloudByOwner } from '@/lib/db/queries/tags';
 import { InfiniteImageGrid } from '@/components/infinite-image-grid';
 import { TagCloud } from '@/components/tag-cloud';
@@ -36,7 +36,13 @@ export default async function HandleGalleryPage({
   const includeNsfw = await readShowNsfwCookie();
   const { owner, images } = await listImagesByHandle(handle, { limit: 16, includeNsfw });
   if (!owner) notFound();
-  const cloud = await tagCloudByOwner(owner.id, 48).catch(() => []);
+  // Header total is the real per-owner count, not the SSR window size.
+  // Without this, a prolific user's header would shrink from "60
+  // pictures" (pre-PR cap) to "16 pictures" (current SSR window).
+  const [cloud, totalCount] = await Promise.all([
+    tagCloudByOwner(owner.id, 48).catch(() => []),
+    countImagesByOwner(owner.id, { includeNsfw }).catch(() => images.length)
+  ]);
   return (
     <div className="pt-8">
       <header className="mx-auto max-w-2xl space-y-2">
@@ -44,7 +50,7 @@ export default async function HandleGalleryPage({
           {owner.displayName ?? owner.handle}
         </h1>
         <p className="font-mono text-xs text-ink-500">
-          /u/{owner.handle} -- {images.length} {images.length === 1 ? 'picture' : 'pictures'}
+          /u/{owner.handle} -- {totalCount} {totalCount === 1 ? 'picture' : 'pictures'}
         </p>
       </header>
       <div className="mt-8 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_18rem]">

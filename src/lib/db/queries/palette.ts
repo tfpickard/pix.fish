@@ -90,3 +90,41 @@ export async function listImagesByPaletteHex(
   );
   return hydrateImages(fetched);
 }
+
+// Cheap count of palette matches for the header total. Runs the same
+// candidate CTE as listImagesByPaletteHex but without the LIMIT/OFFSET
+// or the id-preserving re-fetch -- a plain COUNT over candidates that
+// pass the squared-distance threshold.
+export async function countImagesByPaletteHex(
+  hex: string,
+  opts: { includeNsfw?: boolean } = {}
+): Promise<number> {
+  const target = hexToRgb(hex);
+  if (!target) return 0;
+  const [tr, tg, tb] = target;
+  const t2 = RGB_THRESHOLD * RGB_THRESHOLD;
+  const includeNsfw = opts.includeNsfw === true;
+  const result = await db.execute<{ count: number }>(sql`
+    WITH candidates AS (
+      SELECT
+        i.id,
+        MIN(
+          (
+            (('x' || lpad(substr(c, 2, 2), 2, '0'))::bit(8)::int - ${tr}) *
+            (('x' || lpad(substr(c, 2, 2), 2, '0'))::bit(8)::int - ${tr}) +
+            (('x' || lpad(substr(c, 4, 2), 2, '0'))::bit(8)::int - ${tg}) *
+            (('x' || lpad(substr(c, 4, 2), 2, '0'))::bit(8)::int - ${tg}) +
+            (('x' || lpad(substr(c, 6, 2), 2, '0'))::bit(8)::int - ${tb}) *
+            (('x' || lpad(substr(c, 6, 2), 2, '0'))::bit(8)::int - ${tb})
+          )
+        ) AS dist2
+      FROM images i, unnest(i.palette) AS c
+      WHERE i.palette IS NOT NULL
+        AND c ~ '^#[0-9a-fA-F]{6}$'
+        ${includeNsfw ? sql`` : sql`AND i.is_nsfw = false`}
+      GROUP BY i.id
+    )
+    SELECT count(*)::int AS count FROM candidates WHERE dist2 <= ${t2}
+  `);
+  return Number(result.rows[0]?.count ?? 0);
+}

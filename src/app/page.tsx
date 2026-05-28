@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { listImages, getOwnerHandlesForImages } from '@/lib/db/queries/images';
+import { listImages, getOwnerHandlesForImages, countImages } from '@/lib/db/queries/images';
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
@@ -52,7 +52,14 @@ export default async function HomePage({ searchParams }: PageProps) {
   // Fail soft: if Postgres isn't reachable, still render the shell with empty
   // data rather than crashing the whole page. Makes local dev less painful
   // and avoids a full-page error if the DB hiccups in prod.
-  const [imagesRes, cloudRes] = await Promise.allSettled([
+  //
+  // Pagination split: `images` (16 rows) is what we paint into the DOM up
+  // front for infinite scroll; `seoImages` (30 rows, COLLECTION_ITEM_CAP)
+  // feeds CollectionPage JSON-LD so cutting the visible window doesn't
+  // shrink the structured-data signal. `totalCount` powers the human-
+  // readable header total -- previously this was just `images.length`,
+  // which was already capped at the visible window and silently lied.
+  const [imagesRes, seoImagesRes, totalRes, cloudRes] = await Promise.allSettled([
     listImages({
       limit: 16,
       tags: activeTags,
@@ -60,9 +67,20 @@ export default async function HomePage({ searchParams }: PageProps) {
       seed: searchParams.seed,
       includeNsfw
     }),
+    listImages({
+      limit: 30,
+      tags: activeTags,
+      sort: effectiveSort,
+      seed: searchParams.seed,
+      includeNsfw
+    }),
+    countImages(activeTags, { includeNsfw }),
     tagCloud(64)
   ]);
   const images = imagesRes.status === 'fulfilled' ? imagesRes.value : [];
+  const seoImages = seoImagesRes.status === 'fulfilled' ? seoImagesRes.value : images;
+  const totalCount =
+    totalRes.status === 'fulfilled' ? totalRes.value : images.length;
   const cloud = cloudRes.status === 'fulfilled' ? cloudRes.value : [];
   const dbDown = imagesRes.status === 'rejected' || cloudRes.status === 'rejected';
 
@@ -86,7 +104,7 @@ export default async function HomePage({ searchParams }: PageProps) {
         <p className="font-mono text-xs text-ink-500">
           {dbDown
             ? 'database not configured -- showing shell only'
-            : `${images.length} ${images.length === 1 ? 'picture' : 'pictures'}${activeTags.length > 0 ? ` filtered by: ${activeTags.join(', ')}` : ''}`}
+            : `${totalCount} ${totalCount === 1 ? 'picture' : 'pictures'}${activeTags.length > 0 ? ` filtered by: ${activeTags.join(', ')}` : ''}`}
         </p>
       </section>
 
@@ -112,7 +130,7 @@ export default async function HomePage({ searchParams }: PageProps) {
       </div>
 
       <div className="grid-floor" aria-hidden="true" />
-      {images.length > 0 ? <CollectionLd images={images} /> : null}
+      {seoImages.length > 0 ? <CollectionLd images={seoImages} /> : null}
     </div>
   );
 }
