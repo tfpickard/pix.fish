@@ -219,9 +219,16 @@ async function prepareCentroidMode(
 
   const excludeSet = new Set<number>([...sourceSet, ...contextNeighborIds]);
 
+  // n_sources reflects every image listed in source_captions, not just
+  // those that contributed to the centroid. Earlier this was set to
+  // sourceVectors.length, which produced prompts like "breeding 2
+  // existing ones" while the SOURCES block listed 3 -- confusing the
+  // model whenever an unembedded image was selected. The avoid-list /
+  // far-set still derive from the centroid of embedded sources only;
+  // that distinction is opaque to the LLM and intentionally so.
   const promptContext: SeedPrep['promptContext'] = {
     source_captions: sourceCaptions,
-    n_sources: sourceVectors.length
+    n_sources: sourceIds.length
   };
   if (mode === 'antibreed') {
     promptContext.far_neighbor_captions = neighborCaptions;

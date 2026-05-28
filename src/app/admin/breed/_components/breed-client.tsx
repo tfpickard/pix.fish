@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState, useTransition } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 
@@ -72,7 +72,14 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [result, setResult] = useState<BreedResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  // Explicit submitting flag. useTransition was tempting here but its
+  // isPending flips to false after the first await inside the transition
+  // callback, so a double-click on a button (or clicking reroll mid-flight)
+  // could fire concurrent /api/admin/breed calls -- each one paid for a
+  // separate LLM + embedding round-trip on the same selection. Plain state
+  // flagged before the request and cleared in finally is both simpler and
+  // actually correct for awaited work.
+  const [submitting, setSubmitting] = useState(false);
   const [lastMode, setLastMode] = useState<Mode | null>(null);
   const [hoverMode, setHoverMode] = useState<Mode | null>(null);
 
@@ -81,7 +88,7 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
     () => selected.filter((id) => sources.find((s) => s.id === id)?.hasEmbedding).length,
     [selected, sources]
   );
-  const canRun = selectedWithEmbeddings >= 2 && !isPending;
+  const canRun = selectedWithEmbeddings >= 2 && !submitting;
 
   const toggle = useCallback((id: number) => {
     setSelected((prev) => {
@@ -94,29 +101,34 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
   const clear = useCallback(() => setSelected([]), []);
 
   const run = useCallback(
-    (mode: Mode) => {
-      if (selected.length < 2) return;
+    async (mode: Mode) => {
+      // Guard against a double-click that wins the disabled-check race:
+      // canRun is checked when the button renders, but a tap that lands
+      // between the click and the React commit cycle can still fire. The
+      // submitting flag is the canonical gate.
+      if (selected.length < 2 || submitting) return;
       setError(null);
       setLastMode(mode);
-      startTransition(async () => {
-        try {
-          const res = await fetch('/api/admin/breed', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode, imageIds: selected })
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            setError(typeof data?.error === 'string' ? data.error : `${mode} failed`);
-            return;
-          }
-          setResult(data as BreedResponse);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'network error');
+      setSubmitting(true);
+      try {
+        const res = await fetch('/api/admin/breed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, imageIds: selected })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(typeof data?.error === 'string' ? data.error : `${mode} failed`);
+          return;
         }
-      });
+        setResult(data as BreedResponse);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'network error');
+      } finally {
+        setSubmitting(false);
+      }
     },
-    [selected]
+    [selected, submitting]
   );
 
   const reroll = useCallback(() => {
@@ -217,7 +229,7 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
                   : 'border-primary/50 bg-primary/10 text-primary hover:bg-primary/20'
               ].join(' ')}
             >
-              {isPending && lastMode === mode
+              {submitting && lastMode === mode
                 ? `${MODE_META[mode].label}...`
                 : `${MODE_META[mode].label} (${selectedWithEmbeddings})`}
             </button>
