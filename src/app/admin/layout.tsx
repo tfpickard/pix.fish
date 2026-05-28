@@ -28,6 +28,7 @@ const ADMIN_NAV = [
   { href: '/admin/saved-prompts', label: 'saved-prompts' },
   { href: '/admin/taxonomy', label: 'taxonomy' },
   { href: '/admin/ai', label: 'ai' },
+  { href: '/admin/breed', label: 'breed' },
   { href: '/admin/reprocess', label: 'reprocess' },
   { href: '/admin/webhooks', label: 'webhooks' },
   { href: '/admin/jobs', label: 'jobs' },

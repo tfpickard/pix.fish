@@ -75,6 +75,42 @@ Return ONLY valid JSON in this exact shape, with no prose around it:
   "variant3": "<witty description>"
 }`;
 
+const BREED_TEMPLATE = `You are inventing a new image for a personal gallery by "breeding" {{n_sources}} existing ones.
+
+SOURCES -- the images the owner selected to breed from (their captions, descriptions, tags):
+{{source_captions}}
+
+REFERENCE NEIGHBORHOOD -- existing images that already sit closest to the average of the sources, by caption embedding. This territory is well-covered; the new image must NOT duplicate any of these:
+{{neighbor_captions}}
+
+Your job: invent ONE new image that is a spiritual successor to the sources. Share their aesthetic DNA -- mood, palette, subject family, atmosphere -- but reach for empty space within that neighborhood. The result should feel like it belongs in the same collection as the sources without being a literal combination of their subjects.
+
+Constraints:
+  - Do NOT name or reference the source images directly.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Avoid generic stock-photo language. Be specific the way the sources are specific.
+
+Produce three voices plus a tag set:
+  - variant1: LITERAL caption. Plain-language naming of the imagined image's subject and composition. Under 12 words.
+  - variant2: POETIC caption. Evocative, image-forward, metaphor allowed. Under 12 words.
+  - variant3: A 2 to 3 sentence description painting the imagined scene -- subject, light, mood, palette.
+
+Tags: 6 to 12 total, mixing taxonomy entries (from the list below, exact lower-case match) and freeform descriptors (lower-case, kebab-case if multi-word).
+
+Taxonomy:
+{{tag_taxonomy}}
+
+Return ONLY valid JSON in this exact shape, with no prose around it:
+{
+  "variant1": "<literal caption>",
+  "variant2": "<poetic caption>",
+  "variant3": "<2-3 sentence description>",
+  "tags": [
+    { "tag": "photograph", "source": "taxonomy" },
+    { "tag": "rain-on-asphalt", "source": "freeform" }
+  ]
+}`;
+
 const TAGS_TEMPLATE = `You are tagging an image for a personal gallery so it can be filtered and found later.
 
 Produce a mix of two kinds of tags:
@@ -161,7 +197,8 @@ async function main() {
   for (const [key, template] of [
     ['caption', CAPTION_TEMPLATE],
     ['description', DESCRIPTION_TEMPLATE],
-    ['tags', TAGS_TEMPLATE]
+    ['tags', TAGS_TEMPLATE],
+    ['breed', BREED_TEMPLATE]
   ] as const) {
     await db
       .insert(prompts)
