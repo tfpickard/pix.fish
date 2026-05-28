@@ -9,7 +9,7 @@ import { hydrateImages, listImages } from '@/lib/db/queries/images';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
-import { readShowNsfwCookie } from '@/lib/nsfw';
+import { parseIntParam, resolveIncludeNsfw } from '@/lib/http-params';
 import { isSortMode, type SortMode } from '@/lib/sort/types';
 
 export const runtime = 'nodejs';
@@ -55,20 +55,10 @@ export async function GET(req: Request) {
   const seed = url.searchParams.get('seed') ?? undefined;
   // The query param overrides the cookie -- lets clients force include
   // (e.g. signed-in admin tooling) without flipping the visitor cookie.
-  const queryIncludeNsfw = url.searchParams.get('include_nsfw');
-  const includeNsfw =
-    queryIncludeNsfw === '1' || queryIncludeNsfw === 'true'
-      ? true
-      : await readShowNsfwCookie();
+  const includeNsfw = await resolveIncludeNsfw(url.searchParams.get('include_nsfw'));
 
   const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed, includeNsfw });
   return NextResponse.json({ images: rows });
-}
-
-function parseIntParam(raw: string | null, fallback: number): number {
-  if (raw === null) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
 export async function POST(req: Request) {

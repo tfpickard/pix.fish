@@ -1,7 +1,11 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { ImageGrid } from '@/components/image-grid';
-import { listImagesByPaletteHex, normalizeHex } from '@/lib/db/queries/palette';
+import { InfiniteImageGrid } from '@/components/infinite-image-grid';
+import {
+  listImagesByPaletteHex,
+  countImagesByPaletteHex,
+  normalizeHex
+} from '@/lib/db/queries/palette';
 import { readShowNsfwCookie } from '@/lib/nsfw';
 
 export const dynamic = 'force-dynamic';
@@ -28,10 +32,13 @@ export default async function ColorPage({ params }: { params: Params }) {
   // this, the palette filter would surface NSFW rows even to a default-
   // hide visitor and bypass the same gating used everywhere else.
   const includeNsfw = await readShowNsfwCookie();
-  const matches = await listImagesByPaletteHex(normalized, {
-    limit: 60,
-    includeNsfw
-  }).catch(() => []);
+  // Real palette-match total powers the header. The list call is capped
+  // at the SSR window (16) for the DOM-eager-decode fix; the count is a
+  // separate cheap aggregate that doesn't shrink with the visible page.
+  const [matches, totalCount] = await Promise.all([
+    listImagesByPaletteHex(normalized, { limit: 16, includeNsfw }).catch(() => []),
+    countImagesByPaletteHex(normalized, { includeNsfw }).catch(() => 0)
+  ]);
 
   return (
     <div className="space-y-6 pt-8">
@@ -44,11 +51,14 @@ export default async function ColorPage({ params }: { params: Params }) {
             aria-hidden
           />
           <p className="font-mono text-xs text-ink-500">
-            {normalized} &middot; {matches.length} {matches.length === 1 ? 'image' : 'images'}
+            {normalized} &middot; {totalCount} {totalCount === 1 ? 'image' : 'images'}
           </p>
         </div>
       </section>
-      <ImageGrid images={matches} />
+      <InfiniteImageGrid
+        initial={matches}
+        endpoint={`/api/color/${encodeURIComponent(normalized.replace(/^#/, ''))}/images`}
+      />
     </div>
   );
 }

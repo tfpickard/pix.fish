@@ -19,6 +19,16 @@ type Props = {
 
 const LS_SORT = 'pix_sort';
 const LS_PERIOD = 'pix_shuffle_period';
+// Visitor preference for the infinite-scroll grid. 'on' (default) means
+// the IntersectionObserver auto-loads as the user nears the bottom; 'off'
+// swaps the sentinel for a `Load more` button. Read by
+// src/components/infinite-image-grid.tsx via a same-tab synthetic
+// StorageEvent we dispatch in changeAutoload.
+const LS_AUTOLOAD = 'pix_autoload';
+type AutoloadMode = 'on' | 'off';
+function isAutoloadMode(value: string | null): value is AutoloadMode {
+  return value === 'on' || value === 'off';
+}
 
 function readLocalStorage(key: string): string | null {
   if (typeof window === 'undefined') return null;
@@ -62,6 +72,7 @@ export function SortBar({ ownerDefaults }: Props) {
     ownerDefaults.defaultShufflePeriod
   );
   const [countdownMs, setCountdownMs] = useState<number | null>(null);
+  const [autoload, setAutoload] = useState<AutoloadMode>('on');
 
   function buildQuery(sort: SortMode, seed: string | null): string {
     const next = new URLSearchParams();
@@ -85,7 +96,9 @@ export function SortBar({ ownerDefaults }: Props) {
   useEffect(() => {
     const storedSort = readLocalStorage(LS_SORT);
     const storedPeriod = readLocalStorage(LS_PERIOD);
+    const storedAutoload = readLocalStorage(LS_AUTOLOAD);
     if (isShufflePeriod(storedPeriod)) setEffectivePeriod(storedPeriod);
+    if (isAutoloadMode(storedAutoload)) setAutoload(storedAutoload);
 
     if (!urlSort && isSortMode(storedSort) && storedSort !== ownerDefaults.defaultSort) {
       setEffectiveSort(storedSort);
@@ -156,6 +169,27 @@ export function SortBar({ ownerDefaults }: Props) {
     );
   }
 
+  function changeAutoload(next: AutoloadMode) {
+    setAutoload(next);
+    // 'on' is the default, so only persist explicit 'off'. Cleaner than
+    // littering localStorage with default values and matches the LS_SORT
+    // / LS_PERIOD pattern above.
+    const prev = readLocalStorage(LS_AUTOLOAD);
+    writeLocalStorage(LS_AUTOLOAD, next === 'off' ? 'off' : null);
+    // StorageEvent only fires in OTHER tabs by default. Dispatch a
+    // synthetic one so InfiniteImageGrid in this tab updates live.
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: LS_AUTOLOAD,
+          oldValue: prev,
+          newValue: next === 'off' ? 'off' : null,
+          storageArea: window.localStorage
+        })
+      );
+    }
+  }
+
   const sortIsOverride = effectiveSort !== ownerDefaults.defaultSort;
   const periodIsOverride = effectivePeriod !== ownerDefaults.defaultShufflePeriod;
 
@@ -219,6 +253,21 @@ export function SortBar({ ownerDefaults }: Props) {
             </button>
           )}
         </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <label className="uppercase tracking-wider text-ink-500" htmlFor="autoload-select">
+          auto-load
+        </label>
+        <select
+          id="autoload-select"
+          value={autoload}
+          onChange={(e) => changeAutoload(e.target.value as AutoloadMode)}
+          className="rounded border border-ink-800 bg-ink-950/60 px-2 py-1 text-ink-100 focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
+        >
+          <option value="on">on scroll</option>
+          <option value="off">load more button</option>
+        </select>
       </div>
 
       <div className="flex-1 basis-full text-right md:basis-auto">

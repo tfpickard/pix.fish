@@ -638,7 +638,27 @@ export async function listSitemapImages(): Promise<
   return rows;
 }
 
-export async function countImages(tagsFilter?: string[]): Promise<number> {
+// Cheap counter scoped to one owner. Returned total includes/excludes
+// NSFW the same way the corresponding list query does, so the header
+// pictures count matches what the visitor can actually scroll through.
+export async function countImagesByOwner(
+  ownerId: string,
+  opts: { includeNsfw?: boolean } = {}
+): Promise<number> {
+  const nsfw = nsfwPredicate(opts.includeNsfw === true);
+  const where = nsfw ? and(eq(images.ownerId, ownerId), nsfw) : eq(images.ownerId, ownerId);
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(images)
+    .where(where);
+  return row?.count ?? 0;
+}
+
+export async function countImages(
+  tagsFilter?: string[],
+  opts: { includeNsfw?: boolean } = {}
+): Promise<number> {
+  const nsfw = nsfwPredicate(opts.includeNsfw === true);
   if (tagsFilter && tagsFilter.length > 0) {
     const matchingIdsSubquery = db
       .select({ id: tags.imageId })
@@ -646,13 +666,17 @@ export async function countImages(tagsFilter?: string[]): Promise<number> {
       .where(inArray(tags.tag, tagsFilter))
       .groupBy(tags.imageId)
       .having(sql`count(distinct ${tags.tag}) = ${tagsFilter.length}`);
+    const where = nsfw
+      ? and(inArray(images.id, matchingIdsSubquery), nsfw)
+      : inArray(images.id, matchingIdsSubquery);
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(images)
-      .where(inArray(images.id, matchingIdsSubquery));
+      .where(where);
     return row?.count ?? 0;
   }
-  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(images);
+  const base = db.select({ count: sql<number>`count(*)::int` }).from(images);
+  const [row] = await (nsfw ? base.where(nsfw) : base);
   return row?.count ?? 0;
 }
 

@@ -1,6 +1,8 @@
+'use client';
+
+import { useMemo } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { pickOne } from '@/lib/random';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 
 type Props = {
@@ -11,7 +13,18 @@ type Props = {
 };
 
 export function ImageCard({ image, similarity }: Props) {
-  const caption = pickOne(image.captions)?.text ?? '';
+  // Deterministic per-image caption pick. The previous Math.random() pick
+  // ran at every render in client contexts (e.g. the InfiniteImageGrid
+  // re-rendering as `isLoading` toggles), which caused hydration
+  // mismatches and visible caption flicker. Keying the choice off
+  // image.id keeps the same caption stable across server -> client
+  // hydration AND across re-renders, while still surfacing different
+  // variants on neighboring cards so the grid doesn't feel monotonous.
+  const caption = useMemo(() => {
+    if (image.captions.length === 0) return '';
+    const idx = ((image.id % image.captions.length) + image.captions.length) % image.captions.length;
+    return image.captions[idx]?.text ?? '';
+  }, [image.id, image.captions]);
   const tags = image.tags.slice(0, 5);
   const aspect = image.width && image.height ? image.width / image.height : 1;
   const similarityLabel =
