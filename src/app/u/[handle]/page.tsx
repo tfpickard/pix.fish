@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { listImagesByHandle } from '@/lib/db/queries/images';
 import { tagCloudByOwner } from '@/lib/db/queries/tags';
-import { ImageGrid } from '@/components/image-grid';
+import { InfiniteImageGrid } from '@/components/infinite-image-grid';
 import { TagCloud } from '@/components/tag-cloud';
 import { SITE_NAME } from '@/lib/site';
 import { readShowNsfwCookie } from '@/lib/nsfw';
@@ -34,7 +34,7 @@ export default async function HandleGalleryPage({
 }) {
   const handle = decodeURIComponent(params.handle).toLowerCase();
   const includeNsfw = await readShowNsfwCookie();
-  const { owner, images } = await listImagesByHandle(handle, { limit: 60, includeNsfw });
+  const { owner, images } = await listImagesByHandle(handle, { limit: 16, includeNsfw });
   if (!owner) notFound();
   const cloud = await tagCloudByOwner(owner.id, 48).catch(() => []);
   return (
@@ -48,7 +48,10 @@ export default async function HandleGalleryPage({
         </p>
       </header>
       <div className="mt-8 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_18rem]">
-        <ImageGrid images={images} />
+        <InfiniteImageGrid
+          initial={images}
+          endpoint={`/api/u/${encodeURIComponent(owner.handle)}/images`}
+        />
         {cloud.length > 0 ? (
           <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
             <TagCloud tags={cloud} activeTags={[]} />

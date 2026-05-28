@@ -6,7 +6,7 @@ import { getSiteAdminId } from '@/lib/db/queries/users';
 import { readShowNsfwCookie } from '@/lib/nsfw';
 import { HAIKUS } from '@/lib/haikus';
 import { pickOne } from '@/lib/random';
-import { ImageGrid } from '@/components/image-grid';
+import { InfiniteImageGrid } from '@/components/infinite-image-grid';
 import { TagCloud } from '@/components/tag-cloud';
 import { SortBar } from '@/components/sort-bar';
 import { isSortMode } from '@/lib/sort/types';
@@ -54,7 +54,7 @@ export default async function HomePage({ searchParams }: PageProps) {
   // and avoids a full-page error if the DB hiccups in prod.
   const [imagesRes, cloudRes] = await Promise.allSettled([
     listImages({
-      limit: 60,
+      limit: 16,
       tags: activeTags,
       sort: effectiveSort,
       seed: searchParams.seed,
@@ -97,7 +97,15 @@ export default async function HomePage({ searchParams }: PageProps) {
       {/* Images centered in their own column; the tag cloud floats on the
           right at lg+ and stacks below the header at smaller widths. */}
       <div className="mt-6 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_18rem]">
-        <ImageGrid images={images} />
+        <InfiniteImageGrid
+          initial={images}
+          endpoint="/api/images"
+          query={{
+            sort: effectiveSort,
+            seed: searchParams.seed ?? '',
+            tag: activeTags
+          }}
+        />
         <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
           <TagCloud tags={cloud} activeTags={activeTags} />
         </aside>

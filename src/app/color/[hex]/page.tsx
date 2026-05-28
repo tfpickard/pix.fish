@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { ImageGrid } from '@/components/image-grid';
+import { InfiniteImageGrid } from '@/components/infinite-image-grid';
 import { listImagesByPaletteHex, normalizeHex } from '@/lib/db/queries/palette';
 import { readShowNsfwCookie } from '@/lib/nsfw';
 
@@ -29,7 +29,7 @@ export default async function ColorPage({ params }: { params: Params }) {
   // hide visitor and bypass the same gating used everywhere else.
   const includeNsfw = await readShowNsfwCookie();
   const matches = await listImagesByPaletteHex(normalized, {
-    limit: 60,
+    limit: 16,
     includeNsfw
   }).catch(() => []);
 
@@ -48,7 +48,10 @@ export default async function ColorPage({ params }: { params: Params }) {
           </p>
         </div>
       </section>
-      <ImageGrid images={matches} />
+      <InfiniteImageGrid
+        initial={matches}
+        endpoint={`/api/color/${encodeURIComponent(normalized.replace(/^#/, ''))}/images`}
+      />
     </div>
   );
 }
