@@ -12,14 +12,17 @@ export type SourceImage = {
   hasEmbedding: boolean;
 };
 
+type Mode = 'breed' | 'depart' | 'antibreed' | 'subtract';
+
 type BreedVariants = { variant1: string; variant2: string; variant3: string };
 type BreedTag = { tag: string; source: 'taxonomy' | 'freeform'; confidence?: number };
 
 type BreedResponse = {
+  mode: Mode;
   variants: BreedVariants;
   tags: BreedTag[];
   neighbors: ImageWithRelations[];
-  centroidNeighbors: ImageWithRelations[];
+  contextNeighbors: ImageWithRelations[];
   provenance: {
     textProvider: string;
     textModel: string;
@@ -30,18 +33,55 @@ type BreedResponse = {
 
 const MAX_SOURCES = 8;
 
+// Per-mode metadata: display label, button styling, what to call the
+// context-neighbor strip in the result, and a one-line hint shown next to
+// the button bar when the mode would be the next action.
+const MODE_META: Record<Mode, {
+  label: string;
+  hint: string;
+  contextTitle: string;
+  contextSubtitle: string;
+}> = {
+  breed: {
+    label: 'breed',
+    hint: 'centroid + nearest as avoid-list. spiritual successor to all selected.',
+    contextTitle: 'centroid avoid-list',
+    contextSubtitle: 'we told the model not to look like these'
+  },
+  depart: {
+    label: 'depart',
+    hint: 'centroid + nearest as anti-prompt. deliberate departure from the selection.',
+    contextTitle: 'departure references',
+    contextSubtitle: "what the model was told to NOT be"
+  },
+  antibreed: {
+    label: 'anti-breed',
+    hint: 'centroid + FARTHEST existing as positive references. live in the far territory.',
+    contextTitle: 'far-territory references',
+    contextSubtitle: "existing images farthest from the selection's centroid"
+  },
+  subtract: {
+    label: 'subtract',
+    hint: 'first selected is the anchor; remaining are subtracted. anchor - mean(subtracts).',
+    contextTitle: 'analogy neighborhood',
+    contextSubtitle: 'existing images nearest to (anchor - subtracts) in embedding space'
+  }
+};
+
 export function BreedClient({ sources }: { sources: SourceImage[] }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [result, setResult] = useState<BreedResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [lastMode, setLastMode] = useState<Mode | null>(null);
+  const [hoverMode, setHoverMode] = useState<Mode | null>(null);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const selectedWithEmbeddings = useMemo(
     () => selected.filter((id) => sources.find((s) => s.id === id)?.hasEmbedding).length,
     [selected, sources]
   );
-  const canBreed = selectedWithEmbeddings >= 2 && !isPending;
+  const canRun = selectedWithEmbeddings >= 2 && !isPending;
 
   const toggle = useCallback((id: number) => {
     setSelected((prev) => {
@@ -53,27 +93,37 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
 
   const clear = useCallback(() => setSelected([]), []);
 
-  const run = useCallback(() => {
-    if (selected.length < 2) return;
-    setError(null);
-    startTransition(async () => {
-      try {
-        const res = await fetch('/api/admin/breed', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ imageIds: selected })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setError(typeof data?.error === 'string' ? data.error : 'breed failed');
-          return;
+  const run = useCallback(
+    (mode: Mode) => {
+      if (selected.length < 2) return;
+      setError(null);
+      setLastMode(mode);
+      startTransition(async () => {
+        try {
+          const res = await fetch('/api/admin/breed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode, imageIds: selected })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setError(typeof data?.error === 'string' ? data.error : `${mode} failed`);
+            return;
+          }
+          setResult(data as BreedResponse);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'network error');
         }
-        setResult(data as BreedResponse);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'network error');
-      }
-    });
-  }, [selected]);
+      });
+    },
+    [selected]
+  );
+
+  const reroll = useCallback(() => {
+    if (lastMode) run(lastMode);
+  }, [lastMode, run]);
+
+  const activeHint = hoverMode ?? lastMode;
 
   return (
     <div className="space-y-8">
@@ -102,6 +152,19 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
           {sources.map((img) => {
             const isSelected = selectedSet.has(img.id);
+            const order = isSelected ? selected.indexOf(img.id) : -1;
+            // In subtract mode, the first selection is the anchor (label
+            // "A") and the rest are subtracts (label "-1", "-2", ...). Other
+            // modes just show the selection order number.
+            const isSubtractContext = hoverMode === 'subtract' || lastMode === 'subtract';
+            const badge =
+              isSelected && isSubtractContext
+                ? order === 0
+                  ? 'A'
+                  : `-${order}`
+                : isSelected
+                  ? String(order + 1)
+                  : null;
             return (
               <button
                 key={img.id}
@@ -123,9 +186,9 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
                   loading="lazy"
                   className="h-full w-full object-cover"
                 />
-                {isSelected ? (
+                {badge ? (
                   <span className="absolute right-1 top-1 rounded bg-primary/90 px-1.5 py-0.5 font-mono text-[10px] text-bg">
-                    {selected.indexOf(img.id) + 1}
+                    {badge}
                   </span>
                 ) : null}
               </button>
@@ -134,33 +197,53 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
         </div>
       </section>
 
-      <div className="sticky bottom-4 z-10 flex flex-wrap items-center gap-2 rounded border border-ink-800 bg-bg/95 p-3 backdrop-blur">
-        <button
-          type="button"
-          onClick={run}
-          disabled={!canBreed}
-          className="rounded border border-primary/50 bg-primary/10 px-3 py-1.5 font-mono text-xs text-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isPending ? 'breeding...' : `breed (${selectedWithEmbeddings})`}
-        </button>
-        {result ? (
-          <button
-            type="button"
-            onClick={run}
-            disabled={!canBreed}
-            className="rounded border border-ink-700 px-3 py-1.5 font-mono text-xs text-ink-300 hover:border-ink-500 disabled:opacity-40"
-          >
-            reroll
-          </button>
-        ) : null}
-        {error ? <span className="font-mono text-xs text-destructive">{error}</span> : null}
-        {result ? (
-          <span className="ml-auto font-mono text-[10px] text-ink-500">
-            {result.provenance.textProvider}/{result.provenance.textModel}
-            {result.provenance.embedModel
-              ? ` · ${result.provenance.embedProvider}/${result.provenance.embedModel}`
-              : ' · no embedding'}
-          </span>
+      <div className="sticky bottom-4 z-10 space-y-2 rounded border border-ink-800 bg-bg/95 p-3 backdrop-blur">
+        <div className="flex flex-wrap items-center gap-2">
+          {(Object.keys(MODE_META) as Mode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => run(mode)}
+              onMouseEnter={() => setHoverMode(mode)}
+              onMouseLeave={() => setHoverMode(null)}
+              onFocus={() => setHoverMode(mode)}
+              onBlur={() => setHoverMode(null)}
+              disabled={!canRun}
+              title={MODE_META[mode].hint}
+              className={[
+                'rounded border px-3 py-1.5 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-40',
+                lastMode === mode && result
+                  ? 'border-primary/70 bg-primary/15 text-primary'
+                  : 'border-primary/50 bg-primary/10 text-primary hover:bg-primary/20'
+              ].join(' ')}
+            >
+              {isPending && lastMode === mode
+                ? `${MODE_META[mode].label}...`
+                : `${MODE_META[mode].label} (${selectedWithEmbeddings})`}
+            </button>
+          ))}
+          {result ? (
+            <button
+              type="button"
+              onClick={reroll}
+              disabled={!canRun}
+              className="rounded border border-ink-700 px-3 py-1.5 font-mono text-xs text-ink-300 hover:border-ink-500 disabled:opacity-40"
+            >
+              reroll
+            </button>
+          ) : null}
+          {error ? <span className="font-mono text-xs text-destructive">{error}</span> : null}
+          {result ? (
+            <span className="ml-auto font-mono text-[10px] text-ink-500">
+              {result.provenance.textProvider}/{result.provenance.textModel}
+              {result.provenance.embedModel
+                ? ` · ${result.provenance.embedProvider}/${result.provenance.embedModel}`
+                : ' · no embedding'}
+            </span>
+          ) : null}
+        </div>
+        {activeHint ? (
+          <p className="font-mono text-[10px] text-ink-500/80">{MODE_META[activeHint].hint}</p>
         ) : null}
       </div>
 
@@ -170,8 +253,14 @@ export function BreedClient({ sources }: { sources: SourceImage[] }) {
 }
 
 function ResultPanel({ result }: { result: BreedResponse }) {
+  const meta = MODE_META[result.mode];
   return (
     <section className="space-y-6 rounded border border-ink-800 p-5">
+      <div className="space-y-1">
+        <p className="font-mono text-[10px] uppercase tracking-wider text-primary">
+          {meta.label}
+        </p>
+      </div>
       <div className="space-y-4">
         <Variant label="literal" tone="text-ink-100" text={result.variants.variant1} />
         <Variant label="poetic" tone="font-display text-ink-100" text={result.variants.variant2} />
@@ -202,9 +291,9 @@ function ResultPanel({ result }: { result: BreedResponse }) {
         images={result.neighbors}
       />
       <NeighborStrip
-        title="centroid avoid-list"
-        subtitle="we told the model not to look like these"
-        images={result.centroidNeighbors}
+        title={meta.contextTitle}
+        subtitle={meta.contextSubtitle}
+        images={result.contextNeighbors}
       />
     </section>
   );

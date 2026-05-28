@@ -61,19 +61,27 @@ export async function countCaptionEmbeddings(): Promise<number> {
 // pgvector's <=> operator returns cosine distance (lower is closer; 0 means
 // identical direction). We cast the driver param via `::vector` because
 // @vercel/postgres can't infer the parameter type on its own.
+//
+// `order: 'farthest'` walks the same index in reverse and returns the most
+// dissimilar rows -- used by antibreed to find the "far territory" of a
+// centroid. Caveat: in high-dimensional embedding space many vectors sit at
+// near-orthogonal distance (~1.0), so the farthest set can be incoherent.
+// Callers that care about coherence should ignore distance and use the
+// farthest set only as LLM context, not as a final answer.
 export async function searchByVector(
   vec: number[],
-  opts: { limit?: number; kind?: EmbeddingKind } = {}
+  opts: { limit?: number; kind?: EmbeddingKind; order?: 'nearest' | 'farthest' } = {}
 ): Promise<VectorMatch[]> {
   assertVector(vec);
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 24), 1), 100);
   const kind = opts.kind ?? 'caption';
   const vecLiteral = `[${vec.join(',')}]`;
+  const direction = opts.order === 'farthest' ? sql`DESC` : sql`ASC`;
   const res = await db.execute<{ image_id: number; distance: number }>(sql`
     SELECT image_id, vec <=> ${vecLiteral}::vector AS distance
     FROM embeddings
     WHERE kind = ${kind}
-    ORDER BY distance ASC
+    ORDER BY distance ${direction}
     LIMIT ${limit}
   `);
   return res.rows.map((r) => ({ imageId: Number(r.image_id), distance: Number(r.distance) }));

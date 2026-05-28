@@ -10,6 +10,12 @@ export type ResolveContext = {
   source_captions?: string;
   neighbor_captions?: string;
   n_sources?: number;
+  // subtract-mode: A vs B's. Both are pre-formatted prompt-friendly text.
+  anchor_caption?: string;
+  subtract_captions?: string;
+  // Optional centroid-anchor neighbor text used by antibreed: the existing
+  // images that sit FARTHEST from the centroid, used as positive references.
+  far_neighbor_captions?: string;
 };
 
 /**
@@ -47,6 +53,9 @@ export async function resolvePrompt(
   );
   out = out.replaceAll('{{source_captions}}', ctx.source_captions ?? '');
   out = out.replaceAll('{{neighbor_captions}}', ctx.neighbor_captions ?? '');
+  out = out.replaceAll('{{far_neighbor_captions}}', ctx.far_neighbor_captions ?? '');
+  out = out.replaceAll('{{anchor_caption}}', ctx.anchor_caption ?? '');
+  out = out.replaceAll('{{subtract_captions}}', ctx.subtract_captions ?? '');
   out = out.replaceAll(
     '{{n_sources}}',
     ctx.n_sources !== undefined ? String(ctx.n_sources) : ''

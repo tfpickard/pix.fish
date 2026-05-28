@@ -5,12 +5,15 @@ import { getCaptionVector, searchByVector } from '@/lib/db/queries/embeddings';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { resolvePrompt } from '@/lib/prompts';
+import type { PromptKey } from '@/lib/db/queries/prompts';
 
 const EMBED_DIMENSIONS = 1536;
 const AVOID_LIST_SIZE = 6;
-const CENTROID_SEARCH_OVERSHOOT = 10;
+const SEARCH_OVERSHOOT = 10;
 const OUTPUT_NEIGHBORS = 12;
 const OUTPUT_NEIGHBORS_OVERSHOOT = 24;
+
+export type BreedMode = 'breed' | 'depart' | 'antibreed' | 'subtract';
 
 export type BreedVariants = {
   variant1: string;
@@ -19,19 +22,16 @@ export type BreedVariants = {
 };
 
 export type BreedResult = {
+  mode: BreedMode;
   variants: BreedVariants;
   tags: AITag[];
   newEmbedding: number[] | null;
-  // Ids of the new description's nearest existing images. Includes neither
-  // the source images nor the centroid avoid-list (they were the prompt
-  // inputs; surfacing them again as "where the phantom lives" is misleading).
   neighborImageIds: number[];
-  // The avoid-list we showed the LLM. Returned so the API/UI can surface
-  // "we told the model not to look like these" for transparency.
-  centroidNeighborImageIds: number[];
-  // Provenance: what model/provider authored the text + the embedding. Lets
-  // the future phantom_images table record the same per-row stamps every
-  // other AI-touched row in this schema carries.
+  // Mode-specific: for breed/depart/subtract these are the existing images
+  // the LLM was told about (centroid neighbors / subtract neighborhood).
+  // For antibreed these are the FAR-territory references the LLM was seeded
+  // with.
+  contextNeighborImageIds: number[];
   textProvider: string;
   textModel: string;
   embedProvider: string | null;
@@ -39,7 +39,12 @@ export type BreedResult = {
 };
 
 export class BreedError extends Error {
-  readonly code: 'no_source_embeddings' | 'no_text_provider' | 'llm_failed';
+  readonly code:
+    | 'no_source_embeddings'
+    | 'no_anchor_embedding'
+    | 'no_subtract_embeddings'
+    | 'no_text_provider'
+    | 'llm_failed';
   constructor(code: BreedError['code'], message: string) {
     super(message);
     this.code = code;
@@ -47,66 +52,40 @@ export class BreedError extends Error {
 }
 
 /**
- * Generate a "spiritual successor" description by blending the caption
- * embeddings of N selected images and prompting the LLM with both the
- * sources and the existing images closest to their centroid (as an
- * anti-prompt). Returns plain data; persistence is the caller's choice.
+ * Generate a synthetic image description using one of four embedding-driven
+ * strategies. For breed/depart/antibreed `imageIds` is the unordered set of
+ * sources. For subtract the FIRST id is the anchor and the rest are the
+ * images to subtract.
+ *
+ * Returns plain data. Persistence is the caller's choice.
  */
 export async function breedFromImageIds(opts: {
-  sourceImageIds: number[];
+  mode: BreedMode;
+  imageIds: number[];
   userId: string;
 }): Promise<BreedResult> {
-  const sourceIds = [...new Set(opts.sourceImageIds)];
-
+  const { mode } = opts;
   const cfg = await loadAiConfig();
   const keys = await loadUserProviderKeys(opts.userId);
 
-  // Hydrate sources first so we can format prompt context even for images
-  // that have no embedding yet (still useful for the LLM, just won't
-  // contribute to the centroid).
-  const sourceRows = await getImagesByIdsOrdered(sourceIds);
-  const sourceHydrated = await hydrateImages(sourceRows);
+  // Build the seed vector and the prompt context. Each mode owns this step;
+  // everything from "call the LLM" downward is shared.
+  const seed =
+    mode === 'subtract'
+      ? await prepareSubtract(opts.imageIds)
+      : await prepareCentroidMode(mode, opts.imageIds);
 
-  // Pull every source vector in parallel. Skip null returns; the centroid
-  // is computed only over images that actually contributed.
-  const vecResults = await Promise.all(sourceIds.map((id) => getCaptionVector(id)));
-  const sourceVectors = vecResults.filter((v): v is number[] => Array.isArray(v));
-  if (sourceVectors.length < 2) {
-    throw new BreedError(
-      'no_source_embeddings',
-      `need >=2 source images with caption embeddings; got ${sourceVectors.length}.`
-    );
-  }
+  const promptKey: PromptKey =
+    mode === 'breed'
+      ? 'breed'
+      : mode === 'depart'
+        ? 'depart'
+        : mode === 'antibreed'
+          ? 'antibreed'
+          : 'subtract';
 
-  const centroid = meanVector(sourceVectors);
+  const prompt = await resolvePrompt(promptKey, seed.promptContext);
 
-  // Overshoot so we still have N after filtering out the source ids. The
-  // search uses pgvector; cheap to ask for a few extra.
-  const rawCentroidMatches = await searchByVector(centroid, {
-    limit: AVOID_LIST_SIZE + CENTROID_SEARCH_OVERSHOOT,
-    kind: 'caption'
-  });
-  const sourceSet = new Set(sourceIds);
-  const centroidNeighborIds = rawCentroidMatches
-    .map((m) => m.imageId)
-    .filter((id) => !sourceSet.has(id))
-    .slice(0, AVOID_LIST_SIZE);
-  const centroidNeighborRows = await getImagesByIdsOrdered(centroidNeighborIds);
-  const centroidNeighborsHydrated = await hydrateImages(centroidNeighborRows);
-
-  const sourceCaptions = formatImagesForPrompt(sourceHydrated);
-  const neighborCaptions = formatImagesForPrompt(centroidNeighborsHydrated);
-
-  const prompt = await resolvePrompt('breed', {
-    source_captions: sourceCaptions,
-    neighbor_captions: neighborCaptions,
-    n_sources: sourceVectors.length
-  });
-
-  // The text-completion path lives behind the descriptions field's provider
-  // routing. That field's model already writes long-form variant text;
-  // reusing the routing avoids a third ai_config column for what is, in
-  // Phase 1, a one-off generator.
   const provider = getProvider('descriptions', cfg, keys);
   if (!provider || !provider.text) {
     throw new BreedError(
@@ -131,10 +110,9 @@ export async function breedFromImageIds(opts: {
   };
   const tagParse = parseTagsJson(raw);
 
-  // Embed the new description (literal caption + paragraph) so we can show
-  // the user where this idea lives in their library. Best-effort: a failed
-  // embedding does not fail the breed call, mirroring how upload's
-  // embedding step is best-effort in src/app/api/images/route.ts.
+  // Embed the new description and find its nearest existing images. Best
+  // effort: a failed embed returns null + empty neighbors but doesn't fail
+  // the call.
   let newEmbedding: number[] | null = null;
   let embedProvider: string | null = null;
   let embedModel: string | null = null;
@@ -167,20 +145,159 @@ export async function breedFromImageIds(opts: {
     });
     neighborImageIds = rawNeighbors
       .map((m) => m.imageId)
-      .filter((id) => !sourceSet.has(id))
+      .filter((id) => !seed.excludeSet.has(id))
       .slice(0, OUTPUT_NEIGHBORS);
   }
 
   return {
+    mode,
     variants,
     tags: tagParse.tags,
     newEmbedding,
     neighborImageIds,
-    centroidNeighborImageIds: centroidNeighborIds,
+    contextNeighborImageIds: seed.contextNeighborIds,
     textProvider: provider.name,
     textModel: provider.model,
     embedProvider,
     embedModel
+  };
+}
+
+type SeedPrep = {
+  // Ids to exclude from the output neighbor lookup (sources + any context
+  // images we already showed the LLM and don't want to show again).
+  excludeSet: Set<number>;
+  // The ids of the existing images we showed the LLM as context, in order.
+  contextNeighborIds: number[];
+  // The placeholder map fed to resolvePrompt.
+  promptContext: {
+    source_captions?: string;
+    neighbor_captions?: string;
+    far_neighbor_captions?: string;
+    anchor_caption?: string;
+    subtract_captions?: string;
+    n_sources?: number;
+  };
+};
+
+// Shared prep for breed / depart / antibreed. All three centre on the
+// centroid of the selected sources; only the *context-image lookup* and the
+// prompt-key differ.
+async function prepareCentroidMode(
+  mode: Exclude<BreedMode, 'subtract'>,
+  imageIds: number[]
+): Promise<SeedPrep> {
+  const sourceIds = [...new Set(imageIds)];
+  const sourceRows = await getImagesByIdsOrdered(sourceIds);
+  const sourceHydrated = await hydrateImages(sourceRows);
+
+  const vecResults = await Promise.all(sourceIds.map((id) => getCaptionVector(id)));
+  const sourceVectors = vecResults.filter((v): v is number[] => Array.isArray(v));
+  if (sourceVectors.length < 2) {
+    throw new BreedError(
+      'no_source_embeddings',
+      `need >=2 source images with caption embeddings; got ${sourceVectors.length}.`
+    );
+  }
+  const centroid = meanVector(sourceVectors);
+
+  const sourceSet = new Set(sourceIds);
+  const rawMatches = await searchByVector(centroid, {
+    limit: AVOID_LIST_SIZE + SEARCH_OVERSHOOT,
+    kind: 'caption',
+    order: mode === 'antibreed' ? 'farthest' : 'nearest'
+  });
+  const contextNeighborIds = rawMatches
+    .map((m) => m.imageId)
+    .filter((id) => !sourceSet.has(id))
+    .slice(0, AVOID_LIST_SIZE);
+  const contextNeighborRows = await getImagesByIdsOrdered(contextNeighborIds);
+  const contextNeighborsHydrated = await hydrateImages(contextNeighborRows);
+
+  const sourceCaptions = formatImagesForPrompt(sourceHydrated);
+  const neighborCaptions = formatImagesForPrompt(contextNeighborsHydrated);
+
+  const excludeSet = new Set<number>([...sourceSet, ...contextNeighborIds]);
+
+  const promptContext: SeedPrep['promptContext'] = {
+    source_captions: sourceCaptions,
+    n_sources: sourceVectors.length
+  };
+  if (mode === 'antibreed') {
+    promptContext.far_neighbor_captions = neighborCaptions;
+  } else {
+    promptContext.neighbor_captions = neighborCaptions;
+  }
+
+  return { excludeSet, contextNeighborIds, promptContext };
+}
+
+// Subtract: first id is the anchor, rest are the images whose embeddings get
+// averaged and subtracted from the anchor. Need a single anchor embedding
+// and >=1 subtract embedding. The seed vector is anchor - mean(subtracts).
+async function prepareSubtract(imageIds: number[]): Promise<SeedPrep> {
+  const ids = imageIds.filter((id, i) => imageIds.indexOf(id) === i);
+  const anchorId = ids[0];
+  const subtractIds = ids.slice(1);
+  if (anchorId == null || subtractIds.length === 0) {
+    throw new BreedError(
+      'no_source_embeddings',
+      'subtract needs an anchor image and at least one subtract image.'
+    );
+  }
+
+  const [anchorVec, subtractVecsRaw] = await Promise.all([
+    getCaptionVector(anchorId),
+    Promise.all(subtractIds.map((id) => getCaptionVector(id)))
+  ]);
+  if (!anchorVec) {
+    throw new BreedError('no_anchor_embedding', 'anchor image has no caption embedding.');
+  }
+  const subtractVectors = subtractVecsRaw.filter((v): v is number[] => Array.isArray(v));
+  if (subtractVectors.length === 0) {
+    throw new BreedError(
+      'no_subtract_embeddings',
+      'none of the subtract images have caption embeddings.'
+    );
+  }
+  const meanSub = meanVector(subtractVectors);
+  const seedVec = subtractVector(anchorVec, meanSub);
+
+  // Find nearest existing images to the resulting point. This is what we
+  // show the LLM as "what the math points at," plus what we use to exclude
+  // from the output-neighbor strip.
+  const sourceSet = new Set<number>([anchorId, ...subtractIds]);
+  const rawMatches = await searchByVector(seedVec, {
+    limit: AVOID_LIST_SIZE + SEARCH_OVERSHOOT,
+    kind: 'caption'
+  });
+  const contextNeighborIds = rawMatches
+    .map((m) => m.imageId)
+    .filter((id) => !sourceSet.has(id))
+    .slice(0, AVOID_LIST_SIZE);
+
+  const [anchorRows, subtractRows, contextRows] = await Promise.all([
+    getImagesByIdsOrdered([anchorId]),
+    getImagesByIdsOrdered(subtractIds),
+    getImagesByIdsOrdered(contextNeighborIds)
+  ]);
+  const [anchorHydrated, subtractHydrated, contextHydrated] = await Promise.all([
+    hydrateImages(anchorRows),
+    hydrateImages(subtractRows),
+    hydrateImages(contextRows)
+  ]);
+
+  const excludeSet = new Set<number>([...sourceSet, ...contextNeighborIds]);
+
+  return {
+    excludeSet,
+    contextNeighborIds,
+    promptContext: {
+      anchor_caption: formatImagesForPrompt(anchorHydrated),
+      subtract_captions: formatImagesForPrompt(subtractHydrated),
+      neighbor_captions: formatImagesForPrompt(contextHydrated),
+      n_sources: subtractIds.length + 1
+    }
   };
 }
 
@@ -198,9 +315,15 @@ function meanVector(vectors: number[][]): number[] {
   return sum;
 }
 
-// Serialise a hydrated image into a compact line the LLM can reason over.
-// We deliberately drop ids, slugs, and provenance: the model only needs the
-// semantic content, and trimming this keeps the prompt small.
+function subtractVector(a: number[], b: number[]): number[] {
+  if (a.length !== b.length) {
+    throw new Error(`embedding length mismatch: ${a.length} vs ${b.length}.`);
+  }
+  const out = new Array<number>(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i]! - b[i]!;
+  return out;
+}
+
 function formatImagesForPrompt(images: ImageWithRelations[]): string {
   if (images.length === 0) return '(none)';
   return images

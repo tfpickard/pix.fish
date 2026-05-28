@@ -65,9 +65,12 @@ export default async function AdminBreedPage() {
       <header className="space-y-2">
         <h1 className="font-display text-3xl text-ink-100">breed</h1>
         <p className="font-mono text-xs text-ink-500">
-          select two or more images. their caption embeddings are averaged into a centroid;
-          the model is shown the sources and told to imagine a spiritual successor that lives
-          near that centroid without duplicating its nearest existing neighbors.
+          four embedding-driven ways to generate a phantom image description from a selection.
+          breed = spiritual successor (near the centroid). depart = deliberate departure
+          (rejection of the centroid&apos;s neighborhood). anti-breed = live in the far
+          territory (centroid&apos;s most distant existing images become the positive
+          reference). subtract = anchor minus mean(subtracts); first selected image is the
+          anchor.
         </p>
         <p className="font-mono text-xs text-ink-500">
           images without a caption embedding are dimmed -- they can still be passed to the
