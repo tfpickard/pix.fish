@@ -493,6 +493,76 @@ export const galleryConfig = pgTable(
   })
 );
 
+// ----------------------------------------------------------------------------
+// Phase 5 tables -- inspiration playground
+// ----------------------------------------------------------------------------
+
+// Caption grammar mined from the corpus. One row per (owner, template); the
+// derive-grammar script upserts so re-runs refresh frequencies without
+// duplicating templates. `version` is metadata for tracing which run wrote a
+// row; reads currently take everything for an owner regardless of version.
+export const grammarSlots = pgTable(
+  'grammar_slots',
+  {
+    id: serial('id').primaryKey(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    template: text('template').notNull(),
+    frequency: integer('frequency').notNull().default(1),
+    version: integer('version').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    ownerTemplateUniq: uniqueIndex('grammar_slots_owner_template_uniq').on(t.ownerId, t.template),
+    ownerIdx: index('grammar_slots_owner_idx').on(t.ownerId)
+  })
+);
+
+// Per-slot fillers with weights. Slot names ("mundane_noun" etc.) come from
+// the LLM pass in derive-grammar; the same slot name appears in
+// grammar_slots.template as [slot_name].
+export const grammarFillers = pgTable(
+  'grammar_fillers',
+  {
+    id: serial('id').primaryKey(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    slotName: text('slot_name').notNull(),
+    filler: text('filler').notNull(),
+    weight: doublePrecision('weight').notNull().default(1),
+    version: integer('version').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    ownerSlotFillerUniq: uniqueIndex('grammar_fillers_owner_slot_filler_uniq').on(
+      t.ownerId,
+      t.slotName,
+      t.filler
+    ),
+    ownerSlotIdx: index('grammar_fillers_owner_slot_idx').on(t.ownerId, t.slotName)
+  })
+);
+
+// Constraint cards for the dice mechanic. Global (no owner_id) the same way
+// tag_taxonomy is global -- shared vocabulary, edited via the seed script
+// for now. `active` lets the owner toggle a card off without deleting it.
+export const constraintCards = pgTable(
+  'constraint_cards',
+  {
+    id: serial('id').primaryKey(),
+    category: text('category').notNull(),
+    text: text('text').notNull(),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    categoryTextUniq: uniqueIndex('constraint_cards_category_text_uniq').on(t.category, t.text),
+    categoryIdx: index('constraint_cards_category_idx').on(t.category)
+  })
+);
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   images: many(images),
@@ -588,3 +658,9 @@ export type Collection = typeof collections.$inferSelect;
 export type NewCollection = typeof collections.$inferInsert;
 export type CollectionItem = typeof collectionItems.$inferSelect;
 export type NewCollectionItem = typeof collectionItems.$inferInsert;
+export type GrammarSlot = typeof grammarSlots.$inferSelect;
+export type NewGrammarSlot = typeof grammarSlots.$inferInsert;
+export type GrammarFiller = typeof grammarFillers.$inferSelect;
+export type NewGrammarFiller = typeof grammarFillers.$inferInsert;
+export type ConstraintCard = typeof constraintCards.$inferSelect;
+export type NewConstraintCard = typeof constraintCards.$inferInsert;

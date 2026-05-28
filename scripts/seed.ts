@@ -8,6 +8,7 @@ import { db } from '../src/lib/db/client';
 import {
   aboutFields,
   aiConfig,
+  constraintCards,
   galleryConfig,
   prompts,
   tagTaxonomy,
@@ -298,6 +299,111 @@ function withCategory(category: string, tags: string[]): Taxon[] {
   return tags.map((tag) => ({ tag, category }));
 }
 
+// Phase 5: constraint cards for the playground dice mechanic. 6 categories,
+// 80+ cards. The text is the constraint itself, not a sentence about the
+// constraint -- the playground UI surfaces these one at a time so each
+// card has to read well on its own.
+type Card = { category: string; text: string };
+const CONSTRAINT_CARDS: Card[] = [
+  ...withCardCategory('medium', [
+    'render as Soviet socialist realism',
+    'shot on a damaged Polaroid',
+    'etched copperplate, 18th century',
+    'paint on cardboard, gestural',
+    'cyanotype on cotton paper',
+    'cel-shaded animation still',
+    '1980s Xerox flyer',
+    'oil pastel on newsprint',
+    'painted matte for a B-movie',
+    'isometric pixel art, 16 colors',
+    'Polaroid SX-70 with double exposure',
+    'risograph, two-color overprint',
+    'low-poly PlayStation 1 render'
+  ]),
+  ...withCardCategory('subject_archetype', [
+    'a tradesman caught mid-explanation',
+    'a saint disguised as a janitor',
+    'a child who has just been told a secret',
+    'the same dog rendered as four ages of itself',
+    'a stranger you almost recognized',
+    'a courier delivering something soft',
+    'a teacher in their off-hours',
+    'a tourist who has lost their group',
+    'a fortune teller waiting for the bus',
+    'two siblings who do not look alike',
+    'a small animal making a decision',
+    'a librarian shelving by smell',
+    'a usher between screenings'
+  ]),
+  ...withCardCategory('modifier', [
+    'subject is the wrong scale',
+    'everyone is wearing the same shoes',
+    'lit from below',
+    'all colors are wrong by one step',
+    'something is on fire in the background, nobody notices',
+    'one element is too sharp; the rest is soft',
+    'the floor reflects more than it should',
+    'mirrors do not show what they should',
+    'a hand enters frame from off-camera',
+    'someone has just left the room',
+    'all faces are turned three quarters away',
+    'a small shadow is in the wrong place',
+    'the weather inside disagrees with outside',
+    'two light sources cast contradictory shadows'
+  ]),
+  ...withCardCategory('mood', [
+    'tender menace',
+    'weekday sublime',
+    'post-disaster calm',
+    'late-afternoon dread',
+    'the moment before laughter',
+    'after a small kindness',
+    'minor key birthday',
+    'civic loneliness',
+    'rural intimacy',
+    'pre-storm holiness',
+    'dignified embarrassment',
+    'borrowed nostalgia',
+    'patient grief'
+  ]),
+  ...withCardCategory('idiom', [
+    'National Geographic, late 1970s',
+    'Wes Anderson centered still',
+    'Soviet propaganda poster',
+    '1990s SNES box art',
+    'Le Guin paperback cover',
+    'Diane Arbus, contact sheet',
+    'Tarkovsky long take',
+    'Bernd and Hilla Becher inventory',
+    'late-period Vermeer interior',
+    'Saul Leiter color slide',
+    'Edward Hopper, late afternoon',
+    'David Lynch motel still',
+    'Studio Ghibli matte painting',
+    'Italian neorealism, 1948'
+  ]),
+  ...withCardCategory('composition', [
+    'extreme low angle',
+    'subject pushed off-frame to the right',
+    'horizon line halves the image',
+    'foreground is in soft focus',
+    'central symmetry, exact',
+    'one third sky, two thirds floor',
+    'rule of thirds violated deliberately',
+    'subject obscured by something incidental',
+    'shot through a window or doorway',
+    'reflection takes up more than the subject',
+    'staircase or diagonal anchors the frame',
+    'negative space dominates',
+    'cropped at the eyes',
+    'subject is small in a vast field'
+  ])
+];
+
+function withCardCategory(category: string, items: string[]): Card[] {
+  return items.map((text) => ({ category, text }));
+}
+
 async function main() {
   if (!process.env.POSTGRES_URL) {
     console.error('POSTGRES_URL not set. Aborting.');
@@ -399,6 +505,22 @@ async function main() {
       .onConflictDoNothing({ target: [galleryConfig.ownerId, galleryConfig.key] });
     console.log(`  - ensured gallery_config["${key}"] (default ${value})`);
   }
+
+  console.log(`Seeding constraint_cards (${CONSTRAINT_CARDS.length} cards)...`);
+  for (const card of CONSTRAINT_CARDS) {
+    await db
+      .insert(constraintCards)
+      .values({ category: card.category, text: card.text, active: true })
+      .onConflictDoUpdate({
+        target: [constraintCards.category, constraintCards.text],
+        // Re-activate on reseed in case an owner toggled active=false and
+        // we re-introduced the same card text; if you want to drop a card
+        // permanently, remove it from CONSTRAINT_CARDS and run a manual
+        // DELETE -- reseeding won't ressurect a deleted row.
+        set: { active: true }
+      });
+  }
+  console.log(`  - upserted ${CONSTRAINT_CARDS.length} constraint cards`);
 
   console.log('Done.');
 }
