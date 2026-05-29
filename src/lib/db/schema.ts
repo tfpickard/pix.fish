@@ -563,6 +563,77 @@ export const constraintCards = pgTable(
   })
 );
 
+// Interpretable axes of the gallery for the vibe equalizer. The derivation
+// approach (tag-cluster vs PCA vs k-means+LLM) is chosen by the owner after
+// running scripts/vibe-axes.ts; whichever they pick is written here. Global
+// (no owner_id) like constraint_cards -- the equalizer steers the site
+// admin's corpus. `negativePole`/`positivePole` are the human-readable ends a
+// slider runs between; the LLM is told the target value per axis.
+export const vibeAxes = pgTable(
+  'vibe_axes',
+  {
+    id: serial('id').primaryKey(),
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    description: text('description'),
+    negativePole: text('negative_pole').notNull(),
+    positivePole: text('positive_pole').notNull(),
+    ordering: integer('ordering').notNull().default(0),
+    version: integer('version').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    keyUniq: uniqueIndex('vibe_axes_key_uniq').on(t.key)
+  })
+);
+
+// Visual idioms the remix engine can recast a concept into ("Wes Anderson
+// still", "Soviet propaganda poster"). Global + seedable like constraint
+// cards; `active` toggles one off without deleting it.
+export const remixIdioms = pgTable(
+  'remix_idioms',
+  {
+    id: serial('id').primaryKey(),
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    description: text('description').notNull(),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    keyUniq: uniqueIndex('remix_idioms_key_uniq').on(t.key)
+  })
+);
+
+// Parent -> child provenance. An image can have multiple parents (the remix
+// engine can fuse concepts), so this is a join table rather than a column on
+// images. `promptUsed`/`dialectUsed` record what produced the child, surfaced
+// on hovering an edge in the lineage graph. Both FKs cascade so deleting an
+// image cleans up its edges.
+export const imageLineage = pgTable(
+  'image_lineage',
+  {
+    id: serial('id').primaryKey(),
+    childImageId: integer('child_image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    parentImageId: integer('parent_image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    promptUsed: text('prompt_used'),
+    dialectUsed: text('dialect_used'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    childParentUniq: uniqueIndex('image_lineage_child_parent_uniq').on(
+      t.childImageId,
+      t.parentImageId
+    ),
+    childIdx: index('image_lineage_child_idx').on(t.childImageId),
+    parentIdx: index('image_lineage_parent_idx').on(t.parentImageId)
+  })
+);
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   images: many(images),
@@ -664,3 +735,9 @@ export type GrammarFiller = typeof grammarFillers.$inferSelect;
 export type NewGrammarFiller = typeof grammarFillers.$inferInsert;
 export type ConstraintCard = typeof constraintCards.$inferSelect;
 export type NewConstraintCard = typeof constraintCards.$inferInsert;
+export type VibeAxis = typeof vibeAxes.$inferSelect;
+export type NewVibeAxis = typeof vibeAxes.$inferInsert;
+export type RemixIdiom = typeof remixIdioms.$inferSelect;
+export type NewRemixIdiom = typeof remixIdioms.$inferInsert;
+export type ImageLineageEdge = typeof imageLineage.$inferSelect;
+export type NewImageLineageEdge = typeof imageLineage.$inferInsert;

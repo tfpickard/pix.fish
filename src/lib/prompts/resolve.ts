@@ -16,6 +16,18 @@ export type ResolveContext = {
   // Optional centroid-anchor neighbor text used by antibreed: the existing
   // images that sit FARTHEST from the centroid, used as positive references.
   far_neighbor_captions?: string;
+  // Playground (Phase 5) context. All pre-formatted strings; the resolver
+  // stays a dumb find/replace.
+  axis_targets?: string; // equalizer: "absurdity: high (0.8), dread: low (0.2)"
+  grammar_style?: string; // equalizer: compact rendering of the mined grammar
+  motif_sample?: string; // surprise: a sample of common gallery captions
+  previous_prompt?: string; // walk_step: the prior step's output
+  seed_caption?: string; // walk_step: caption of the seed image
+  temperature_hint?: string; // walk_step: "stay close" .. "wander hard"
+  haiku?: string; // reverse_haiku: the input haiku
+  source_caption?: string; // remix: the image's canonical caption
+  idiom_label?: string; // remix: target visual idiom label
+  idiom_description?: string; // remix: target visual idiom description
 };
 
 /**
@@ -60,6 +72,16 @@ export async function resolvePrompt(
     '{{n_sources}}',
     ctx.n_sources !== undefined ? String(ctx.n_sources) : ''
   );
+  out = out.replaceAll('{{axis_targets}}', ctx.axis_targets ?? '');
+  out = out.replaceAll('{{grammar_style}}', ctx.grammar_style ?? '');
+  out = out.replaceAll('{{motif_sample}}', ctx.motif_sample ?? '');
+  out = out.replaceAll('{{previous_prompt}}', ctx.previous_prompt ?? '');
+  out = out.replaceAll('{{seed_caption}}', ctx.seed_caption ?? '');
+  out = out.replaceAll('{{temperature_hint}}', ctx.temperature_hint ?? '');
+  out = out.replaceAll('{{haiku}}', ctx.haiku ?? '');
+  out = out.replaceAll('{{source_caption}}', ctx.source_caption ?? '');
+  out = out.replaceAll('{{idiom_label}}', ctx.idiom_label ?? '');
+  out = out.replaceAll('{{idiom_description}}', ctx.idiom_description ?? '');
 
   return out;
 }

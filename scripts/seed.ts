@@ -11,6 +11,7 @@ import {
   constraintCards,
   galleryConfig,
   prompts,
+  remixIdioms,
   tagTaxonomy,
   users
 } from '../src/lib/db/schema';
@@ -247,6 +248,117 @@ Return ONLY valid JSON in this shape, with no prose around it:
   "nsfw": false
 }`;
 
+// Phase 5 -- inspiration playground prompts. All return the same three-voice
+// JSON shape as breed so the API can reuse parseVariantsJson and the
+// playground can offer the owner three prompt options to copy.
+
+const EQUALIZER_TEMPLATE = `You are generating image-generation PROMPTS steered toward a set of stylistic coordinates for a personal gallery.
+
+The owner has set these axes (each runs from one pole to the other; the target tells you how far along that axis to aim):
+{{axis_targets}}
+
+HOUSE STYLE -- the gallery's mined caption grammar. Stay inside this voice; it is what makes the collection feel like one person made it:
+{{grammar_style}}
+
+Your job: invent THREE distinct image-generation prompts that a human would feed to an image model. Each must honour the axis targets above and read like it belongs in this gallery. Do not mention the axes or their numbers in the output; express them through subject, mood, palette, and composition.
+
+Constraints:
+  - Each prompt describes ONE concrete imagined image.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Be specific. Avoid generic stock-photo language.
+
+Return ONLY valid JSON in this exact shape, no prose around it:
+{
+  "variant1": "<image prompt>",
+  "variant2": "<image prompt>",
+  "variant3": "<image prompt>"
+}`;
+
+const SURPRISE_TEMPLATE = `You are an anti-prompt engine for a personal image gallery. Your goal is to push AWAY from everything the gallery already is.
+
+RECURRING MATERIAL -- a sample of the gallery's existing captions. Read it to learn the gallery's recurring motifs (its habitual subjects, moods, palettes, framings):
+{{motif_sample}}
+
+FAR TERRITORY -- existing images that already sit farthest from the gallery's centre in embedding space. They hint at where the empty space is, but the gallery has barely been there:
+{{far_neighbor_captions}}
+
+Your job: first, privately identify the gallery's 4 to 6 most recurring motifs. Then invent THREE image-generation prompts that deliberately AVOID every one of those motifs and instead reach into the far territory. The results should feel like a sincere "this gallery has never imagined anything like this," not random noise -- each prompt must still be a coherent, makeable image.
+
+Constraints:
+  - Do NOT restate the motifs you identified; just avoid them.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Be specific and concrete.
+
+Return ONLY valid JSON in this exact shape, no prose around it:
+{
+  "variant1": "<image prompt>",
+  "variant2": "<image prompt>",
+  "variant3": "<image prompt>"
+}`;
+
+const WALK_STEP_TEMPLATE = `You are narrating a slow drift through image-prompt space, one step at a time.
+
+SEED -- the image this walk started from:
+{{seed_caption}}
+
+PREVIOUS STEP -- the prompt from the step just before this one (may be blank on the first step, in which case drift gently from the seed):
+{{previous_prompt}}
+
+DRIFT INSTRUCTION: {{temperature_hint}}
+
+Your job: produce the NEXT single image-generation prompt in the walk. It should feel like a natural neighbour of the previous step -- recognisably one move away, not a jump cut -- while obeying the drift instruction. Keep a thread of continuity (a recurring colour, object, or mood) so the whole walk reads as a journey rather than a shuffle.
+
+Constraints:
+  - ONE concrete imagined image.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Do NOT reference "the walk", "the previous step", or "the seed" in the output.
+
+Return ONLY valid JSON in this exact shape, no prose around it:
+{
+  "prompt": "<the next image prompt>"
+}`;
+
+const REVERSE_HAIKU_TEMPLATE = `You are inverting the usual relationship between image and haiku. Normally a haiku is written about an image; here you are given a haiku and must imagine the image it could caption.
+
+HAIKU:
+{{haiku}}
+
+Your job: invent THREE image-generation prompts for images that this haiku could plausibly be the caption of. Honour the haiku's season, mood, and concrete images, but do not simply transcribe its words -- imagine the photograph or painting that lives behind it.
+
+Constraints:
+  - Each prompt describes ONE concrete imagined image.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+  - Be specific.
+
+Return ONLY valid JSON in this exact shape, no prose around it:
+{
+  "variant1": "<image prompt>",
+  "variant2": "<image prompt>",
+  "variant3": "<image prompt>"
+}`;
+
+const REMIX_TEMPLATE = `You are recasting an existing image's CONCEPT into a different visual idiom, keeping what the image is ABOUT while changing how it would LOOK.
+
+ORIGINAL CONCEPT -- the canonical caption of the image being remixed:
+{{source_caption}}
+
+TARGET IDIOM: {{idiom_label}}
+IDIOM NOTES: {{idiom_description}}
+
+Your job: invent THREE image-generation prompts that preserve the original concept (its subject, its situation, what it is about) but render it fully in the target idiom -- its palette, framing, materials, era, and sensibility. The concept stays; the visual language changes completely.
+
+Constraints:
+  - Keep the original subject recognisable; do not drift to a new subject.
+  - Commit fully to the idiom; do not hedge.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
+
+Return ONLY valid JSON in this exact shape, no prose around it:
+{
+  "variant1": "<image prompt>",
+  "variant2": "<image prompt>",
+  "variant3": "<image prompt>"
+}`;
+
 type Taxon = { tag: string; category: string };
 
 // ~120 tags across 6 categories. Sort order is category-major, insertion order within.
@@ -404,6 +516,85 @@ function withCardCategory(category: string, items: string[]): Card[] {
   return items.map((text) => ({ category, text }));
 }
 
+// Phase 5: visual idioms the remix engine recasts a concept into. `key` is the
+// stable identifier the API takes; `label` is what the menu shows; the
+// `description` is fed to the model as idiom notes so it commits hard.
+type Idiom = { key: string; label: string; description: string };
+const REMIX_IDIOMS: Idiom[] = [
+  {
+    key: 'national-geographic',
+    label: 'National Geographic, late 1970s',
+    description:
+      'Saturated Kodachrome documentary photography, available light, a human or animal subject met at eye level, faint caption-worthy dignity, slight grain.'
+  },
+  {
+    key: 'wes-anderson',
+    label: 'Wes Anderson still',
+    description:
+      'Dead-center symmetry, flat frontal framing, pastel palette, deadpan styling, meticulous props, a faint melancholy under the whimsy.'
+  },
+  {
+    key: 'soviet-propaganda',
+    label: 'Soviet propaganda poster',
+    description:
+      'Bold red and ochre, heroic low angle, geometric constructivist composition, sans-serif Cyrillic-style energy, idealised labour and light.'
+  },
+  {
+    key: 'snes-box-art',
+    label: '1990s SNES box art',
+    description:
+      'Airbrushed illustration, dramatic action pose, glossy highlights, lurid gradients, a sky full of impossible color, early-90s console packaging energy.'
+  },
+  {
+    key: 'le-guin-cover',
+    label: 'Le Guin paperback cover',
+    description:
+      'Hand-painted 1970s science-fiction paperback art, muted earth tones, a small figure against a vast strange landscape, quiet wonder over spectacle.'
+  },
+  {
+    key: 'diane-arbus',
+    label: 'Diane Arbus',
+    description:
+      'Square black-and-white, flash-lit frontal portrait, an ordinary subject made uncanny, unflinching eye contact, tender discomfort.'
+  },
+  {
+    key: 'hopper',
+    label: 'Edward Hopper, late afternoon',
+    description:
+      'Flat raking light, large quiet color planes, urban solitude, a single still figure, the held silence of an empty afternoon.'
+  },
+  {
+    key: 'saul-leiter',
+    label: 'Saul Leiter color slide',
+    description:
+      'Misted city color, shooting through glass and steam, layered reflections, muted reds and greens, fragments of figures half-hidden.'
+  },
+  {
+    key: 'ghibli-matte',
+    label: 'Studio Ghibli matte painting',
+    description:
+      'Hand-painted background art, lush skies, soft cumulus, tender naturalism, a small human presence inside a generous world.'
+  },
+  {
+    key: 'lynch-motel',
+    label: 'David Lynch motel still',
+    description:
+      'Tungsten-lit interior, deep shadow, ominous calm, heavy red curtains and worn surfaces, dread folded into the mundane.'
+  },
+  {
+    key: 'becher-inventory',
+    label: 'Bernd and Hilla Becher inventory',
+    description:
+      'Deadpan black-and-white, flat overcast light, the subject centred and isolated like a typological specimen, no drama, total clarity.'
+  },
+  {
+    key: 'neorealism-1948',
+    label: 'Italian neorealism, 1948',
+    description:
+      'Grainy black-and-white, street-level natural light, non-actors, post-war ordinariness, documentary tenderness toward everyday hardship.'
+  }
+];
+
 async function main() {
   if (!process.env.POSTGRES_URL) {
     console.error('POSTGRES_URL not set. Aborting.');
@@ -418,7 +609,12 @@ async function main() {
     ['breed', BREED_TEMPLATE],
     ['depart', DEPART_TEMPLATE],
     ['antibreed', ANTIBREED_TEMPLATE],
-    ['subtract', SUBTRACT_TEMPLATE]
+    ['subtract', SUBTRACT_TEMPLATE],
+    ['equalizer', EQUALIZER_TEMPLATE],
+    ['surprise', SURPRISE_TEMPLATE],
+    ['walk_step', WALK_STEP_TEMPLATE],
+    ['reverse_haiku', REVERSE_HAIKU_TEMPLATE],
+    ['remix', REMIX_TEMPLATE]
   ] as const) {
     await db
       .insert(prompts)
@@ -521,6 +717,20 @@ async function main() {
       });
   }
   console.log(`  - upserted ${CONSTRAINT_CARDS.length} constraint cards`);
+
+  console.log(`Seeding remix_idioms (${REMIX_IDIOMS.length} idioms)...`);
+  for (const idiom of REMIX_IDIOMS) {
+    await db
+      .insert(remixIdioms)
+      .values({ key: idiom.key, label: idiom.label, description: idiom.description, active: true })
+      .onConflictDoUpdate({
+        target: remixIdioms.key,
+        // Refresh label/description on reseed but leave `active` alone so an
+        // owner who toggled an idiom off stays off.
+        set: { label: idiom.label, description: idiom.description }
+      });
+  }
+  console.log(`  - upserted ${REMIX_IDIOMS.length} remix idioms`);
 
   console.log('Done.');
 }

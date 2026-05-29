@@ -6,6 +6,7 @@ import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { resolvePrompt } from '@/lib/prompts';
 import type { PromptKey } from '@/lib/db/queries/prompts';
+import { meanVector, subtractVector } from '@/lib/ai/vector';
 
 const EMBED_DIMENSIONS = 1536;
 const AVOID_LIST_SIZE = 6;
@@ -306,29 +307,6 @@ async function prepareSubtract(imageIds: number[]): Promise<SeedPrep> {
       n_sources: subtractIds.length + 1
     }
   };
-}
-
-function meanVector(vectors: number[][]): number[] {
-  const dim = vectors[0]!.length;
-  const sum = new Array<number>(dim).fill(0);
-  for (const v of vectors) {
-    if (v.length !== dim) {
-      throw new Error(`embedding length mismatch: ${v.length} vs ${dim}.`);
-    }
-    for (let i = 0; i < dim; i++) sum[i] += v[i]!;
-  }
-  const n = vectors.length;
-  for (let i = 0; i < dim; i++) sum[i] = sum[i]! / n;
-  return sum;
-}
-
-function subtractVector(a: number[], b: number[]): number[] {
-  if (a.length !== b.length) {
-    throw new Error(`embedding length mismatch: ${a.length} vs ${b.length}.`);
-  }
-  const out = new Array<number>(a.length);
-  for (let i = 0; i < a.length; i++) out[i] = a[i]! - b[i]!;
-  return out;
 }
 
 function formatImagesForPrompt(images: ImageWithRelations[]): string {
