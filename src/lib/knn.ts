@@ -116,16 +116,29 @@ export async function buildKnnGraph(opts?: {
     }
   }
 
-  // Deduplicate: when A is already a neighbor of B, both directions produce
-  // a B->A edge. The upsert in insertKnnEdges handles this via the unique
-  // constraint (keeping the first distance seen, which is the correct one).
-  // No need to deduplicate in memory; the DB round-trip is the bottleneck.
+  // Deduplicate: when A is in B's k-nearest AND B is in A's k-nearest, both
+  // forward passes emit the same (A->B) edge (once from i=A and once from
+  // i=B in the symmetric B->A push). The INSERT ... ON CONFLICT DO UPDATE
+  // statement would then see the same (srcId, dstId) pair twice inside a
+  // single chunk and throw "ON CONFLICT DO UPDATE command cannot affect row
+  // a second time". Deduplicate globally before chunking so each (srcId,
+  // dstId) pair appears at most once. kNN is directional, so (a,b) and (b,a)
+  // are distinct and both preserved.
+  const seen = new Set<string>();
+  const dedupedEdges: { srcId: number; dstId: number; dist: number }[] = [];
+  for (const e of edges) {
+    const key = `${e.srcId},${e.dstId}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      dedupedEdges.push(e);
+    }
+  }
 
   // Clear stale edges first so images removed since the last run don't linger.
   await clearAllKnnEdges();
-  await insertKnnEdges(edges);
+  await insertKnnEdges(dedupedEdges);
 
-  return { nodeCount: n, edgeCount: edges.length };
+  return { nodeCount: n, edgeCount: dedupedEdges.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -226,8 +239,13 @@ export async function findPath(
   dist.set(srcId, 0);
   heapPush(heap, { id: srcId, dist: 0 });
 
-  // Track nodes whose edges haven't been loaded yet; batch-load them before
-  // the next expansion wave to keep round-trips low.
+  // edgeCache[node] = outgoing neighbors, loaded lazily from the DB.
+  // We batch-load edges for multiple frontier nodes per round-trip: when we
+  // pop a node whose edges aren't cached, we scan the heap for all other
+  // uncached nodes (up to PREFETCH_BATCH) and load them together. Each Neon
+  // round-trip carries ~5ms overhead; on a disconnected or distant pair this
+  // would otherwise be thousands of serial round-trips.
+  const PREFETCH_BATCH = 50;
   const edgeCache = new Map<number, KnnNeighbor[]>();
 
   while (heap.length > 0) {
@@ -238,14 +256,26 @@ export async function findPath(
     if (du > (dist.get(u) ?? Infinity)) continue;
     if (u === dstId) break; // Found the shortest path to the target.
 
-    // Load edges for u if not yet cached. We load in a batch of the current
-    // node only; a look-ahead (prefetching neighbors-of-neighbors) would
-    // require more memory and complexity for marginal latency gain given
-    // that paths are typically short (6 hops or fewer in a well-connected graph).
+    // If edges for u are not cached, batch-fetch them along with other
+    // uncached nodes currently visible in the heap (up to PREFETCH_BATCH).
+    // Dijkstra correctness is unaffected: we only pre-populate the cache;
+    // the expansion order (heap priority) is unchanged.
     if (!edgeCache.has(u)) {
-      const loaded = await loadEdges([u]);
+      const toFetch: number[] = [u];
+      for (const entry of heap) {
+        if (toFetch.length >= PREFETCH_BATCH) break;
+        if (!edgeCache.has(entry.id) && !toFetch.includes(entry.id)) {
+          toFetch.push(entry.id);
+        }
+      }
+      const loaded = await loadEdges(toFetch);
       for (const [nodeId, neighbors] of loaded) {
         edgeCache.set(nodeId, neighbors);
+      }
+      // Nodes with no edges in the DB produce no map entry; cache them as
+      // empty so we don't re-fetch them on subsequent pops.
+      for (const id of toFetch) {
+        if (!edgeCache.has(id)) edgeCache.set(id, []);
       }
     }
 

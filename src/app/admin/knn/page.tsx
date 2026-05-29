@@ -15,8 +15,15 @@ export default function AdminKnnPage() {
 
   async function load() {
     setLoading(true);
-    const res = await fetch('/api/admin/knn').then((r) => r.json());
-    setStats(res);
+    const res = await fetch('/api/admin/knn');
+    // A non-admin visitor gets a 403; leave stats null so the error state
+    // renders instead of calling .toLocaleString() on undefined.
+    if (res.ok) {
+      const data = await res.json();
+      setStats(data);
+    } else {
+      setStats(null);
+    }
     setLoading(false);
   }
 

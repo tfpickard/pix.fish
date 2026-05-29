@@ -1,6 +1,6 @@
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
-import { knnEdges } from '../schema';
+import { images, knnEdges } from '../schema';
 
 // k-nearest-neighbor graph query helpers. The graph is built by the
 // knn.rebuild job (src/lib/jobs/handlers/knnRebuild.ts) and optionally
@@ -22,6 +22,31 @@ export async function getEdgesForNodes(
   const rows = await db
     .select({ srcId: knnEdges.srcId, dstId: knnEdges.dstId, dist: knnEdges.dist })
     .from(knnEdges)
+    .where(inArray(knnEdges.srcId, nodeIds));
+
+  for (const r of rows) {
+    const neighbors = out.get(r.srcId) ?? [];
+    neighbors.push({ dstId: r.dstId, dist: r.dist });
+    out.set(r.srcId, neighbors);
+  }
+  return out;
+}
+
+// Like getEdgesForNodes but filters out neighbors whose destination image is
+// marked NSFW. Used by /api/path and /connect when the visitor has not opted
+// in to NSFW content, so Dijkstra never routes through hidden images.
+export async function getEdgesForNodesExcludingNsfw(
+  nodeIds: number[]
+): Promise<Map<number, KnnNeighbor[]>> {
+  const out = new Map<number, KnnNeighbor[]>();
+  if (nodeIds.length === 0) return out;
+
+  // Join knn_edges to images so we can filter dstId rows where is_nsfw=true
+  // in one round-trip rather than loading then filtering in JS.
+  const rows = await db
+    .select({ srcId: knnEdges.srcId, dstId: knnEdges.dstId, dist: knnEdges.dist })
+    .from(knnEdges)
+    .innerJoin(images, and(eq(images.id, knnEdges.dstId), eq(images.isNsfw, false)))
     .where(inArray(knnEdges.srcId, nodeIds));
 
   for (const r of rows) {

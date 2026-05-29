@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import { inArray, asc } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, captions, users } from '@/lib/db/schema';
-import { getEdgesForNodes } from '@/lib/db/queries/knn';
+import { getEdgesForNodes, getEdgesForNodesExcludingNsfw } from '@/lib/db/queries/knn';
+import { getCaptionVector } from '@/lib/db/queries/embeddings';
 import { findPath } from '@/lib/knn';
+import { resolveIncludeNsfw } from '@/lib/http-params';
 import type { PathNode, PathResponse } from '@/lib/knn-path-types';
 
 export const runtime = 'nodejs';
@@ -54,8 +56,25 @@ export async function GET(req: Request): Promise<NextResponse<PathResponse | { e
     return NextResponse.json({ error: 'one or both image ids not found' }, { status: 400 });
   }
 
+  // Check both endpoints have a caption embedding before running Dijkstra.
+  // Without an embedding the image was never added to the kNN graph, so the
+  // true reason for no path is a missing embedding, not graph disconnection.
+  // Checking here lets us surface the precise error instead of a generic no-path.
+  const [vecA, vecB] = await Promise.all([getCaptionVector(a), getCaptionVector(b)]);
+  if (!vecA || !vecB) {
+    return NextResponse.json({ found: false, reason: 'missing-embedding' });
+  }
+
+  // Apply the visitor's NSFW preference. Default-hide visitors must not see
+  // NSFW blob URLs in path nodes and must not have paths routed through hidden
+  // images. Passing a filtered edge loader to Dijkstra achieves both: NSFW
+  // nodes have no outgoing edges in the filtered view, so they are never
+  // expanded during search and never appear in the reconstructed path.
+  const includeNsfw = await resolveIncludeNsfw(searchParams.get('include_nsfw'));
+  const edgeLoader = includeNsfw ? getEdgesForNodes : getEdgesForNodesExcludingNsfw;
+
   // Run Dijkstra with lazy edge loading from the DB.
-  const result = await findPath(a, b, getEdgesForNodes);
+  const result = await findPath(a, b, edgeLoader);
 
   if (!result.found) {
     return NextResponse.json({ found: false, reason: result.reason });

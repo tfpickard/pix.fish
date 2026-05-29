@@ -3,8 +3,10 @@ import Link from 'next/link';
 import { inArray, asc } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, captions, users } from '@/lib/db/schema';
-import { countKnnEdges, getEdgesForNodes } from '@/lib/db/queries/knn';
+import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw } from '@/lib/db/queries/knn';
+import { getCaptionVector } from '@/lib/db/queries/embeddings';
 import { findPath } from '@/lib/knn';
+import { readShowNsfwCookie } from '@/lib/nsfw';
 import { PathFilmstrip } from '@/components/path-filmstrip';
 import type { PathNode } from '@/lib/knn-path-types';
 
@@ -82,7 +84,7 @@ type PathOutcome =
   | { status: 'missing-embedding' }
   | { status: 'bad-ids' };
 
-async function resolvePath(a: number, b: number): Promise<PathOutcome> {
+async function resolvePath(a: number, b: number, includeNsfw: boolean): Promise<PathOutcome> {
   if (a === b) return { status: 'same-node' };
 
   // Verify both images exist before running Dijkstra.
@@ -93,7 +95,19 @@ async function resolvePath(a: number, b: number): Promise<PathOutcome> {
   const existIds = new Set(existCheck.map((r) => r.id));
   if (!existIds.has(a) || !existIds.has(b)) return { status: 'bad-ids' };
 
-  const result = await findPath(a, b, getEdgesForNodes);
+  // Check both endpoints have a caption embedding. An image with no embedding
+  // was never added to the kNN graph, so the real reason for no path is a
+  // missing embedding, not graph disconnection. Surface the precise status
+  // so users get the right remediation message.
+  const [vecA, vecB] = await Promise.all([getCaptionVector(a), getCaptionVector(b)]);
+  if (!vecA || !vecB) return { status: 'missing-embedding' };
+
+  // Route Dijkstra through a filtered edge loader when the visitor has not
+  // opted in to NSFW content. This excludes NSFW nodes from both the search
+  // and the reconstructed path rather than just hiding them post-hoc.
+  const edgeLoader = includeNsfw ? getEdgesForNodes : getEdgesForNodesExcludingNsfw;
+
+  const result = await findPath(a, b, edgeLoader);
   if (!result.found) {
     return { status: result.reason };
   }
@@ -115,9 +129,13 @@ export default async function ConnectPage({ searchParams }: PageProps) {
   const edgeCount = await countKnnEdges().catch(() => 0);
   const graphReady = edgeCount > 0;
 
+  // Read the visitor's NSFW opt-in cookie once and pass it into resolvePath
+  // so paths are filtered consistently with the rest of the gallery.
+  const includeNsfw = await readShowNsfwCookie();
+
   let outcome: PathOutcome | null = null;
   if (hasValidParams && graphReady) {
-    outcome = await resolvePath(a, b).catch((err) => {
+    outcome = await resolvePath(a, b, includeNsfw).catch((err) => {
       console.error('/connect: resolvePath error', err);
       return null;
     });

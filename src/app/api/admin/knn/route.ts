@@ -27,8 +27,17 @@ export async function POST(req: Request) {
   let k: number | undefined;
   try {
     const body = await req.json();
-    if (typeof body?.k === 'number' && body.k > 0) {
-      k = Math.trunc(body.k);
+    if (body?.k !== undefined) {
+      // Reject fractional or sub-1 values -- Math.trunc(0.5) = 0 would clear
+      // the graph with no edges, leaving /connect unusable.
+      const raw = body.k;
+      if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+        return NextResponse.json(
+          { error: 'k must be a positive integer >= 1' },
+          { status: 400 }
+        );
+      }
+      k = raw;
     }
   } catch {
     // No body or non-JSON body is fine; use the default k.

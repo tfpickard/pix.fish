@@ -4,13 +4,9 @@ import { reprocessImageHandler } from './reprocessImage';
 import { enrichImageHandler } from './enrichImage';
 import { umapRecomputeHandler } from './umapRecompute';
 import { backupExportHandler } from './backupExport';
-<<<<<<< HEAD
-import { nsfwScanHandler } from './nsfwScan';
 import { entropyRecomputeHandler } from './entropyRecompute';
-||||||| parent of f9ad7d0 (feat(geodesics): kNN graph build, Dijkstra pathfinding, /api/path, /connect filmstrip)
-=======
+import { nsfwScanHandler } from './nsfwScan';
 import { knnRebuildHandler } from './knnRebuild';
->>>>>>> f9ad7d0 (feat(geodesics): kNN graph build, Dijkstra pathfinding, /api/path, /connect filmstrip)
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -35,15 +31,9 @@ export const handlers: Record<string, JobHandler> = {
   'reprocess.image': reprocessImageHandler,
   'enrich.image': enrichImageHandler,
   'umap.recompute': umapRecomputeHandler,
-<<<<<<< HEAD
   'backup.export': backupExportHandler,
+  'entropy.recompute': entropyRecomputeHandler,
   'nsfw.scan': nsfwScanHandler,
-  'entropy.recompute': entropyRecomputeHandler
-||||||| parent of f9ad7d0 (feat(geodesics): kNN graph build, Dijkstra pathfinding, /api/path, /connect filmstrip)
-  'backup.export': backupExportHandler
-=======
-  'backup.export': backupExportHandler,
   // feat/geodesics: build kNN graph over caption embeddings -> knn_edges
   'knn.rebuild': knnRebuildHandler
->>>>>>> f9ad7d0 (feat(geodesics): kNN graph build, Dijkstra pathfinding, /api/path, /connect filmstrip)
 };
