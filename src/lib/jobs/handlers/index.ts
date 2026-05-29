@@ -4,6 +4,8 @@ import { reprocessImageHandler } from './reprocessImage';
 import { enrichImageHandler } from './enrichImage';
 import { umapRecomputeHandler } from './umapRecompute';
 import { backupExportHandler } from './backupExport';
+import { nsfwScanHandler } from './nsfwScan';
+import { entropyRecomputeHandler } from './entropyRecompute';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -28,5 +30,7 @@ export const handlers: Record<string, JobHandler> = {
   'reprocess.image': reprocessImageHandler,
   'enrich.image': enrichImageHandler,
   'umap.recompute': umapRecomputeHandler,
-  'backup.export': backupExportHandler
+  'backup.export': backupExportHandler,
+  'nsfw.scan': nsfwScanHandler,
+  'entropy.recompute': entropyRecomputeHandler
 };

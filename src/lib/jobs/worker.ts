@@ -21,6 +21,8 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'enrich.image': 50_000, // same shape as reprocess.image -- 3 parallel vision calls
   'umap.recompute': 55_000, // single heavy job; fills the tick
   'backup.export': 55_000, // large zip upload; fills the tick
+  'nsfw.scan': 25_000, // single Haiku vision call; same shape as a webhook fetch
+  'entropy.recompute': 55_000, // read-then-write over the whole corpus; fills the tick
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;

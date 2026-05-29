@@ -13,10 +13,19 @@ export const dynamic = 'force-dynamic';
 // src/lib/jobs/handlers/nsfwScan.ts. We accept either scope:'all' or an
 // explicit imageIds list so a future gallery multi-select can drive it without
 // an API change. Never scope-caps silently.
-const bodySchema = z.union([
-  z.object({ scope: z.literal('all') }),
-  z.object({ imageIds: z.array(z.number().int().positive()).min(1) })
-]);
+//
+// One object shape (not a union) so a caller that sends BOTH scope:'all' and
+// imageIds doesn't silently match the scope branch and get imageIds stripped --
+// which would scan the whole gallery instead of the requested rows. Explicit
+// imageIds always win; scope:'all' is only honored when no imageIds are given.
+const bodySchema = z
+  .object({
+    scope: z.literal('all').optional(),
+    imageIds: z.array(z.number().int().positive()).min(1).optional()
+  })
+  .refine((d) => d.scope === 'all' || (d.imageIds && d.imageIds.length > 0), {
+    message: "provide scope:'all' or a non-empty imageIds array"
+  });
 
 export async function POST(req: Request) {
   // Explicit in-handler gate: middleware only guarantees "signed in".
@@ -34,7 +43,9 @@ export async function POST(req: Request) {
 
   // Resolve targets: explicit ids win; otherwise the full corpus.
   const targets =
-    'imageIds' in parsed.data ? [...new Set(parsed.data.imageIds)] : await allImageIds();
+    parsed.data.imageIds && parsed.data.imageIds.length > 0
+      ? [...new Set(parsed.data.imageIds)]
+      : await allImageIds();
 
   let enqueued = 0;
   for (const imageId of targets) {

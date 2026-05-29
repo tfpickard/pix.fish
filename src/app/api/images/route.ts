@@ -235,16 +235,11 @@ export async function POST(req: Request) {
     );
   }
 
-  // feat/hud: a new image shifts the corpus centroid and dispersion, so kick
-  // an entropy recompute. Best-effort and deliberately after the enrich
-  // enqueue -- a failure here must never fail the upload (the 202 already
-  // committed the blob + row). The recompute is idempotent and also runs via
-  // scripts/compute-entropy.ts, so a dropped enqueue is self-healing.
-  try {
-    await enqueueJob({ type: 'entropy.recompute', payload: {} });
-  } catch (err) {
-    console.error('failed to enqueue entropy.recompute job', row.id, err);
-  }
+  // feat/hud: the entropy recompute (surprisal + collection temperature) is
+  // enqueued at the END of enrichment (src/lib/enrichment-persist.ts), once the
+  // new image's caption embedding actually exists. Enqueuing it here would run
+  // before enrich.image produced the vector, so the recompute would miss the
+  // very image that triggered it. Do NOT re-add an enqueue at upload time.
 
   return NextResponse.json({ image: row, status: 'queued' }, { status: 202 });
 }

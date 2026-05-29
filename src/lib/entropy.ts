@@ -232,7 +232,14 @@ export async function persistSurprisal(surprisalById: Map<number, number>): Prom
 
 // Insert one collection_temperature row so dispersion history accrues. Returns
 // the previous row's value (or null) so callers can report the delta.
+//
+// A zero-point corpus (fresh or fully key-less deployment with no embeddings)
+// has no meaningful temperature: computeEntropy returns 0 as a placeholder, not
+// a measurement. Recording it would seed the HUD time series with a fake 0
+// reading, so skip the insert entirely and report no previous-row delta.
 export async function recordTemperature(result: EntropyResult): Promise<{ previous: number | null }> {
+  if (result.pointCount === 0) return { previous: null };
+
   const prev = await db.execute<{ value: number }>(sql`
     SELECT value FROM collection_temperature ORDER BY computed_at DESC LIMIT 1
   `);
