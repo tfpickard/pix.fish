@@ -386,6 +386,60 @@ Return ONLY valid JSON in this exact shape, no prose around it:
   "variant3": "<image prompt>"
 }`;
 
+// Pool-generation prompts. Used by scripts/generate-remix-idioms.ts and
+// scripts/generate-constraint-cards.ts respectively. Seeded into the DB so
+// the owner can edit them via /admin/prompts without a redeploy.
+// The Sonnet "family" pass uses REMIX_IDIOM_GEN_TEMPLATE directly; the Haiku
+// "expand" pass replaces {{existing_families}} with a JSON list of the families
+// already generated so it knows what territory is covered.
+
+const REMIX_IDIOM_GEN_TEMPLATE = `You are building a large pool of VISUAL IDIOMS for an image-prompt remix engine.
+
+Each idiom is a named visual style, era, or artistic movement that can be used to RECAST an image concept while keeping what the image is ABOUT. The pool must be diverse -- spanning photography, painting, illustration, cinema, graphic design, craft media, and cultural moments from many eras and regions.
+
+{{existing_families}}
+
+Generate {{n}} DISTINCT idioms NOT already in the list above. For each, produce:
+  - key: a stable slug, lowercase kebab-case, no spaces (e.g. "weegee-tabloid")
+  - label: a short human-readable name, 2 to 5 words (e.g. "Weegee tabloid press")
+  - description: 1 to 2 sentences of concrete visual notes -- palette, framing, materials, era, sensibility. This is fed directly to an image-generation model, so be specific and evocative. No vague praise. No em dashes.
+
+Quality rules:
+  - Each idiom must be visually DISTINCT from every other in the list.
+  - Labels and descriptions must contain NO em dashes. Use commas, periods, or two hyphens (--) instead.
+  - Avoid generic labels like "cinematic" or "vintage" without a specific referent.
+  - Cover a wide range: not just Western art history -- include East Asian, South Asian, African, Latin American, and other regional traditions.
+
+Return ONLY valid JSON -- an array of objects, no prose around it:
+[
+  { "key": "...", "label": "...", "description": "..." },
+  ...
+]`;
+
+const CONSTRAINT_CARD_GEN_TEMPLATE = `You are expanding a constraint-card deck for an image-prompt composition tool.
+
+Each card is a SHORT, CONCRETE constraint in ONE of these categories:
+  - medium: a physical or digital material / process (e.g. "cyanotype on cotton paper")
+  - subject_archetype: a character type caught in a specific moment (e.g. "a saint disguised as a janitor")
+  - modifier: a visual rule to apply to the scene (e.g. "lit from below")
+  - mood: an emotional or atmospheric quality (e.g. "tender menace")
+  - idiom: a named visual style or era (e.g. "Saul Leiter color slide")
+  - composition: a framing or spatial rule (e.g. "horizon line halves the image")
+
+CATEGORY TO GENERATE: {{category}}
+
+EXISTING CARDS IN THIS CATEGORY (do not duplicate these):
+{{existing_cards}}
+
+Generate {{n}} NEW cards for category "{{category}}" that are NOT already in the list above. Each card text must:
+  - Be SHORT -- one clause or short sentence, not a paragraph.
+  - Be CONCRETE -- a reader knows immediately what to do with it.
+  - Contain NO em dashes. Use commas, periods, or two hyphens (--) instead.
+  - Feel like it belongs in a deck alongside the existing cards -- same absurdist-but-tasteful register.
+
+Return ONLY valid JSON -- an array of strings, no prose:
+["card text", "card text", ...]`;
+
 type Taxon = { tag: string; category: string };
 
 // ~120 tags across 6 categories. Sort order is category-major, insertion order within.
@@ -642,7 +696,9 @@ async function main() {
     ['surprise', SURPRISE_TEMPLATE],
     ['walk_step', WALK_STEP_TEMPLATE],
     ['reverse_haiku', REVERSE_HAIKU_TEMPLATE],
-    ['remix', REMIX_TEMPLATE]
+    ['remix', REMIX_TEMPLATE],
+    ['remix_idiom_gen', REMIX_IDIOM_GEN_TEMPLATE],
+    ['constraint_card_gen', CONSTRAINT_CARD_GEN_TEMPLATE]
   ] as const) {
     await db
       .insert(prompts)

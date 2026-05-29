@@ -6,6 +6,7 @@ import { umapRecomputeHandler } from './umapRecompute';
 import { backupExportHandler } from './backupExport';
 import { entropyRecomputeHandler } from './entropyRecompute';
 import { nsfwScanHandler } from './nsfwScan';
+import { knnRebuildHandler } from './knnRebuild';
 import { manifoldRecomputeHandler } from './manifoldRecompute';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
@@ -34,5 +35,7 @@ export const handlers: Record<string, JobHandler> = {
   'backup.export': backupExportHandler,
   'entropy.recompute': entropyRecomputeHandler,
   'nsfw.scan': nsfwScanHandler,
+  // feat/geodesics: build kNN graph over caption embeddings -> knn_edges
+  'knn.rebuild': knnRebuildHandler,
   'manifold.recompute': manifoldRecomputeHandler
 };

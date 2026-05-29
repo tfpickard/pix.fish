@@ -9,7 +9,7 @@ import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
 import { ImageActions } from '@/components/image-actions';
 import { RemixMenu } from '@/components/remix-menu';
-import { listRemixIdioms } from '@/lib/db/queries/remix-idioms';
+import { listRemixIdiomsSampled } from '@/lib/db/queries/remix-idioms';
 import { EmbeddingViz } from '@/components/embedding-viz';
 import { ExifFacts, PaletteEdgeBand } from '@/components/image-meta';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
@@ -122,8 +122,12 @@ export async function ImageDetail({
   const owner = canEdit(session, img.ownerId);
   // Remix idioms are only needed when the viewer can edit; skip the query for
   // the public path.
+  // Sample a fresh random subset each render so repeat visitors see variety.
+  // getRemixIdiom(key) still resolves any chosen key on POST even if it was
+  // not in the current sample (pool grows, old chips disappear from view but
+  // remain valid selectors).
   const remixIdioms = owner
-    ? await listRemixIdioms().catch(() => [])
+    ? await listRemixIdiomsSampled().catch(() => [])
     : [];
 
   let neighbors: Awaited<ReturnType<typeof hydrateImages>> = [];
