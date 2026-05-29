@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DIALECTS,
   DIALECT_LABELS,
@@ -18,18 +18,38 @@ type SkeletonPrompt = {
 
 type DiceRoll = { id: number; category: string; text: string };
 
+export type VibeAxisOption = {
+  key: string;
+  label: string;
+  negativePole: string;
+  positivePole: string;
+};
+
 const DEFAULT_N_SKELETONS = 6;
 const DEFAULT_N_DICE = 3;
+
+type Tab = 'compose' | 'equalizer' | 'surprise' | 'walk' | 'haiku';
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'compose', label: 'compose' },
+  { id: 'equalizer', label: 'equalizer' },
+  { id: 'surprise', label: 'surprise' },
+  { id: 'walk', label: 'walk' },
+  { id: 'haiku', label: 'reverse haiku' }
+];
 
 export function PlaygroundClient({
   grammarReady,
   categories,
-  cardCounts
+  cardCounts,
+  vibeAxes
 }: {
   grammarReady: boolean;
   categories: string[];
   cardCounts: Record<string, number>;
+  vibeAxes: VibeAxisOption[];
 }) {
+  const [tab, setTab] = useState<Tab>('compose');
   const [skeletons, setSkeletons] = useState<SkeletonPrompt[]>([]);
   const [activeIdx, setActiveIdx] = useState<number>(0);
   // Frozen slot map is GLOBAL across re-rolls -- pinning "mundane_noun: lamp"
@@ -132,7 +152,29 @@ export function PlaygroundClient({
   const dialectOutputs = useMemo(() => toAllDialects(canonical), [canonical]);
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-8">
+      <nav className="flex flex-wrap gap-1 border-b border-ink-800 pb-2">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`rounded-t border-b-2 px-3 py-1 font-mono text-xs ${
+              tab === t.id
+                ? 'border-ink-300 text-ink-100'
+                : 'border-transparent text-ink-500 hover:text-ink-200'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'equalizer' && <EqualizerPanel axes={vibeAxes} />}
+      {tab === 'surprise' && <SurprisePanel />}
+      {tab === 'walk' && <WalkPanel />}
+      {tab === 'haiku' && <HaikuPanel />}
+
+      <div className={tab === 'compose' ? 'space-y-10' : 'hidden'}>
       {/* SKELETONS */}
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -330,6 +372,7 @@ export function PlaygroundClient({
           </div>
         )}
       </section>
+      </div>
     </div>
   );
 }
@@ -354,5 +397,401 @@ function CopyButton({ text, label }: { text: string; label: string }) {
     >
       {copied ? 'copied' : label}
     </button>
+  );
+}
+
+// A generated prompt plus one-click copy in each model dialect. The prompt is
+// treated as the dialect "subject" with no modifiers -- these Phase 2 features
+// produce whole prompts, not skeleton+dice canonicals.
+function PromptResult({ prompt }: { prompt: string }) {
+  const outputs = useMemo(() => toAllDialects({ subject: prompt, modifiers: [] }), [prompt]);
+  return (
+    <div className="space-y-2 rounded border border-ink-800/60 bg-ink-900/30 px-3 py-2">
+      <div className="flex items-start justify-between gap-3">
+        <p className="font-display text-base text-ink-100">{prompt}</p>
+        <CopyButton text={prompt} label="copy" />
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {DIALECTS.map((d: Dialect) => (
+          <CopyButton key={d} text={outputs[d]} label={DIALECT_LABELS[d]} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PromptList({
+  prompts,
+  loading,
+  warning,
+  empty
+}: {
+  prompts: string[];
+  loading: boolean;
+  warning: string | null;
+  empty: string;
+}) {
+  if (warning) return <p className="font-mono text-xs text-amber-400">{warning}</p>;
+  if (loading && prompts.length === 0)
+    return <p className="font-mono text-xs text-ink-500">generating...</p>;
+  if (prompts.length === 0) return <p className="font-mono text-xs text-ink-500">{empty}</p>;
+  return (
+    <ul className="space-y-2">
+      {prompts.map((p, i) => (
+        <li key={i}>
+          <PromptResult prompt={p} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function EqualizerPanel({ axes }: { axes: VibeAxisOption[] }) {
+  const [values, setValues] = useState<Record<string, number>>(() =>
+    Object.fromEntries(axes.map((a) => [a.key, 0.5]))
+  );
+  const [prompts, setPrompts] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
+  // Don't fire a model call on mount; only after the owner touches a slider or
+  // hits regenerate. Auto-regen is debounced 500ms so dragging a slider does
+  // not spray requests.
+  const touched = useRef(false);
+
+  const generate = useCallback(async () => {
+    setLoading(true);
+    setWarning(null);
+    try {
+      const url = new URL('/api/admin/play/equalizer', window.location.origin);
+      for (const [k, v] of Object.entries(values)) url.searchParams.set(k, v.toFixed(2));
+      const res = await fetch(url, { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'failed');
+      setPrompts(data.prompts ?? []);
+      if (data.warning) setWarning(data.warning);
+    } catch (err) {
+      console.error(err);
+      setWarning('generation failed.');
+    } finally {
+      setLoading(false);
+    }
+  }, [values]);
+
+  useEffect(() => {
+    if (!touched.current || axes.length === 0) return;
+    const id = setTimeout(generate, 500);
+    return () => clearTimeout(id);
+  }, [values, generate, axes.length]);
+
+  if (axes.length === 0) {
+    return (
+      <section className="space-y-3">
+        <h2 className="font-mono text-sm uppercase tracking-wider text-ink-300">equalizer</h2>
+        <p className="font-mono text-xs text-amber-400">
+          no vibe axes defined yet. run
+          <code className="mx-1 rounded bg-ink-900 px-1 py-0.5 text-ink-100">
+            bun scripts/vibe-axes.ts
+          </code>
+          to compare approaches, then
+          <code className="mx-1 rounded bg-ink-900 px-1 py-0.5 text-ink-100">--write &lt;approach&gt;</code>
+          to persist them, and reload.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="font-mono text-sm uppercase tracking-wider text-ink-300">equalizer</h2>
+        <button
+          onClick={generate}
+          disabled={loading}
+          className="rounded border border-ink-700 px-3 py-1 font-mono text-xs text-ink-100 hover:bg-ink-800 disabled:opacity-40"
+        >
+          {loading ? 'generating...' : 'reroll'}
+        </button>
+      </div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {axes.map((a) => (
+          <label key={a.key} className="block space-y-1">
+            <span className="flex items-center justify-between font-mono text-[11px] text-ink-300">
+              <span>{a.label}</span>
+              <span className="text-ink-500">{(values[a.key] ?? 0.5).toFixed(2)}</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={values[a.key] ?? 0.5}
+              onChange={(e) => {
+                touched.current = true;
+                const v = Number(e.target.value);
+                setValues((prev) => ({ ...prev, [a.key]: v }));
+              }}
+              className="w-full accent-ink-300"
+            />
+            <span className="flex justify-between font-mono text-[9px] uppercase text-ink-600">
+              <span>{a.negativePole}</span>
+              <span>{a.positivePole}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      <PromptList
+        prompts={prompts}
+        loading={loading}
+        warning={warning}
+        empty="move a slider or hit reroll to steer a prompt."
+      />
+    </section>
+  );
+}
+
+function SurprisePanel() {
+  const [prompts, setPrompts] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  const surprise = useCallback(async () => {
+    setLoading(true);
+    setWarning(null);
+    try {
+      const res = await fetch('/api/admin/play/surprise', { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'failed');
+      setPrompts(data.prompts ?? []);
+      if (data.warning) setWarning(data.warning);
+    } catch (err) {
+      console.error(err);
+      setWarning('generation failed.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="font-mono text-sm uppercase tracking-wider text-ink-300">surprise</h2>
+        <button
+          onClick={surprise}
+          disabled={loading}
+          className="rounded border border-ink-700 px-3 py-1 font-mono text-xs text-ink-100 hover:bg-ink-800 disabled:opacity-40"
+        >
+          {loading ? 'thinking...' : 'surprise me'}
+        </button>
+      </div>
+      <p className="font-mono text-xs text-ink-500">
+        prompts aimed at the empty space -- away from everything the gallery already is.
+      </p>
+      <PromptList
+        prompts={prompts}
+        loading={loading}
+        warning={warning}
+        empty="hit surprise me for prompts unlike anything in the gallery."
+      />
+    </section>
+  );
+}
+
+type SeedThumb = { slug: string; blobUrl: string; caption: string };
+
+function WalkPanel() {
+  const [seeds, setSeeds] = useState<SeedThumb[]>([]);
+  const [seedSlug, setSeedSlug] = useState<string | null>(null);
+  const [steps, setSteps] = useState(5);
+  const [temperature, setTemperature] = useState(0.5);
+  const [path, setPath] = useState<string[]>([]);
+  const [cursor, setCursor] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/images?limit=24', { cache: 'no-store' });
+        const data = await res.json();
+        if (!alive) return;
+        const list: SeedThumb[] = (data.images ?? []).map((img: { slug: string; blobUrl: string; captions?: { text: string }[] }) => ({
+          slug: img.slug,
+          blobUrl: img.blobUrl,
+          caption: img.captions?.[0]?.text ?? img.slug
+        }));
+        setSeeds(list);
+      } catch (err) {
+        console.error(err);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const walk = useCallback(async () => {
+    if (!seedSlug) return;
+    setLoading(true);
+    setWarning(null);
+    try {
+      const url = new URL('/api/admin/play/walk', window.location.origin);
+      url.searchParams.set('seed', seedSlug);
+      url.searchParams.set('steps', String(steps));
+      url.searchParams.set('temperature', temperature.toFixed(2));
+      const res = await fetch(url, { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'failed');
+      setPath(data.steps ?? []);
+      setCursor(0);
+      if (data.warning) setWarning(data.warning);
+    } catch (err) {
+      console.error(err);
+      setWarning('walk failed.');
+    } finally {
+      setLoading(false);
+    }
+  }, [seedSlug, steps, temperature]);
+
+  return (
+    <section className="space-y-4">
+      <h2 className="font-mono text-sm uppercase tracking-wider text-ink-300">latent walk</h2>
+      <p className="font-mono text-xs text-ink-500">
+        pick a seed image and drift away from it, one prompt at a time. the embedding framing is
+        metaphorical -- the model narrates the journey.
+      </p>
+
+      <div className="flex gap-2 overflow-x-auto pb-2">
+        {seeds.map((s) => (
+          <button
+            key={s.slug}
+            onClick={() => setSeedSlug(s.slug)}
+            title={s.caption}
+            className={`shrink-0 overflow-hidden rounded border ${
+              seedSlug === s.slug ? 'border-ink-300' : 'border-ink-800 hover:border-ink-600'
+            }`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- tiny seed-picker thumbnail */}
+            <img src={s.blobUrl} alt={s.caption} loading="lazy" className="h-16 w-16 object-cover" />
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="space-y-1">
+          <span className="block font-mono text-[11px] text-ink-300">steps ({steps})</span>
+          <input
+            type="range"
+            min={1}
+            max={8}
+            step={1}
+            value={steps}
+            onChange={(e) => setSteps(Number(e.target.value))}
+            className="w-32 accent-ink-300"
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="block font-mono text-[11px] text-ink-300">
+            temperature ({temperature.toFixed(2)})
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={temperature}
+            onChange={(e) => setTemperature(Number(e.target.value))}
+            className="w-32 accent-ink-300"
+          />
+        </label>
+        <button
+          onClick={walk}
+          disabled={!seedSlug || loading}
+          className="rounded border border-ink-700 px-3 py-1 font-mono text-xs text-ink-100 hover:bg-ink-800 disabled:opacity-40"
+        >
+          {loading ? 'walking...' : 'walk'}
+        </button>
+      </div>
+
+      {warning && <p className="font-mono text-xs text-amber-400">{warning}</p>}
+
+      {path.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-[11px] text-ink-500">
+              step {cursor + 1} / {path.length}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={path.length - 1}
+              step={1}
+              value={cursor}
+              onChange={(e) => setCursor(Number(e.target.value))}
+              className="flex-1 accent-ink-300"
+            />
+          </div>
+          <PromptResult prompt={path[cursor] ?? ''} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function HaikuPanel() {
+  const [haiku, setHaiku] = useState('');
+  const [prompts, setPrompts] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
+
+  const generate = useCallback(async () => {
+    if (!haiku.trim()) return;
+    setLoading(true);
+    setWarning(null);
+    try {
+      const res = await fetch('/api/admin/play/reverse-haiku', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ haiku })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'failed');
+      setPrompts(data.prompts ?? []);
+      if (data.warning) setWarning(data.warning);
+    } catch (err) {
+      console.error(err);
+      setWarning('generation failed.');
+    } finally {
+      setLoading(false);
+    }
+  }, [haiku]);
+
+  return (
+    <section className="space-y-4">
+      <h2 className="font-mono text-sm uppercase tracking-wider text-ink-300">reverse haiku</h2>
+      <p className="font-mono text-xs text-ink-500">
+        give a haiku, get prompts for an image it could caption.
+      </p>
+      <textarea
+        value={haiku}
+        onChange={(e) => setHaiku(e.target.value)}
+        rows={3}
+        placeholder={'an old silent pond\na frog jumps into the pond\nsplash, silence again'}
+        className="w-full rounded border border-ink-800 bg-ink-950 px-3 py-2 font-mono text-sm text-ink-100"
+      />
+      <button
+        onClick={generate}
+        disabled={!haiku.trim() || loading}
+        className="rounded border border-ink-700 px-3 py-1 font-mono text-xs text-ink-100 hover:bg-ink-800 disabled:opacity-40"
+      >
+        {loading ? 'generating...' : 'generate'}
+      </button>
+      <PromptList
+        prompts={prompts}
+        loading={loading}
+        warning={warning}
+        empty="enter a haiku and generate."
+      />
+    </section>
   );
 }

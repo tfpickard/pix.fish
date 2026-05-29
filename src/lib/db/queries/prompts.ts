@@ -16,7 +16,13 @@ export const PROMPT_KEYS = [
   'breed',
   'depart',
   'antibreed',
-  'subtract'
+  'subtract',
+  // Phase 5 -- inspiration playground.
+  'equalizer',
+  'surprise',
+  'walk_step',
+  'reverse_haiku',
+  'remix'
 ] as const;
 
 export type PromptKey = (typeof PROMPT_KEYS)[number];

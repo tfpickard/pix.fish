@@ -28,12 +28,16 @@ export type GalleryDefaults = {
   // moderation queue) instead of the default 'pending'. Signed-in users
   // always skip moderation regardless of this flag.
   autoApproveComments: boolean;
+  // When true, this owner's lineage graph at /lineage is viewable by anyone.
+  // Default false keeps the creative workflow private to the owner.
+  lineagePublic: boolean;
 };
 
 const KEY_DEFAULT_SORT = 'default_sort';
 const KEY_DEFAULT_SHUFFLE = 'default_shuffle_period';
 const KEY_SEARCH_SIM_THRESHOLD = 'search_similarity_threshold';
 const KEY_AUTO_APPROVE_COMMENTS = 'auto_approve_comments';
+const KEY_LINEAGE_PUBLIC = 'lineage_public';
 
 function parseThreshold(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SEARCH_SIM_THRESHOLD;
@@ -59,14 +63,16 @@ export async function getGalleryDefaults(ownerId: string): Promise<GalleryDefaul
       defaultSort: isSortMode(rawSort) ? rawSort : DEFAULT_SORT,
       defaultShufflePeriod: isShufflePeriod(rawPeriod) ? rawPeriod : DEFAULT_SHUFFLE_PERIOD,
       searchSimilarityThreshold: parseThreshold(byKey.get(KEY_SEARCH_SIM_THRESHOLD)),
-      autoApproveComments: byKey.get(KEY_AUTO_APPROVE_COMMENTS) === 'true'
+      autoApproveComments: byKey.get(KEY_AUTO_APPROVE_COMMENTS) === 'true',
+      lineagePublic: byKey.get(KEY_LINEAGE_PUBLIC) === 'true'
     };
   } catch {
     return {
       defaultSort: DEFAULT_SORT,
       defaultShufflePeriod: DEFAULT_SHUFFLE_PERIOD,
       searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD,
-      autoApproveComments: false
+      autoApproveComments: false,
+      lineagePublic: false
     };
   }
 }
@@ -89,5 +95,6 @@ export const GALLERY_KEYS = {
   defaultSort: KEY_DEFAULT_SORT,
   defaultShufflePeriod: KEY_DEFAULT_SHUFFLE,
   searchSimilarityThreshold: KEY_SEARCH_SIM_THRESHOLD,
-  autoApproveComments: KEY_AUTO_APPROVE_COMMENTS
+  autoApproveComments: KEY_AUTO_APPROVE_COMMENTS,
+  lineagePublic: KEY_LINEAGE_PUBLIC
 } as const;

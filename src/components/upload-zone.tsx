@@ -12,6 +12,7 @@ import {
 } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { DIALECTS, DIALECT_LABELS, type Dialect } from '@/lib/playground/dialects';
 
 type HydratedImage = {
   id: number;
@@ -19,6 +20,8 @@ type HydratedImage = {
   blobUrl: string;
   captions: { variant: number; text: string }[];
 };
+
+type ParentThumb = { slug: string; blobUrl: string; caption: string };
 
 type RowStatus = 'pending' | 'uploading' | 'queued' | 'enriched' | 'failed';
 
@@ -44,6 +47,13 @@ export function UploadZone() {
   const [manualDescription, setManualDescription] = useState('');
   const [manualTags, setManualTags] = useState('');
   const [manualNsfw, setManualNsfw] = useState(false);
+  // Lineage (Phase 5): mark this batch as children of existing images, with the
+  // prompt/dialect that produced them. Applied to every file in the batch.
+  const [lineageOpen, setLineageOpen] = useState(false);
+  const [parentCandidates, setParentCandidates] = useState<ParentThumb[]>([]);
+  const [parentSlugs, setParentSlugs] = useState<Set<string>>(new Set());
+  const [promptUsed, setPromptUsed] = useState('');
+  const [dialectUsed, setDialectUsed] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -57,6 +67,42 @@ export function UploadZone() {
     };
     // only run on unmount; per-row cleanup happens in clearRows below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Lazily load candidate parent images the first time the lineage section is
+  // opened, so the common upload path pays nothing for it.
+  useEffect(() => {
+    if (!lineageOpen || parentCandidates.length > 0) return;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/images?limit=48', { cache: 'no-store' });
+        const data = await res.json();
+        if (!alive) return;
+        const list: ParentThumb[] = (data.images ?? []).map(
+          (img: { slug: string; blobUrl: string; captions?: { text: string }[] }) => ({
+            slug: img.slug,
+            blobUrl: img.blobUrl,
+            caption: img.captions?.[0]?.text ?? img.slug
+          })
+        );
+        setParentCandidates(list);
+      } catch (err) {
+        console.error('failed to load parent candidates', err);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lineageOpen, parentCandidates.length]);
+
+  const toggleParent = useCallback((slug: string) => {
+    setParentSlugs((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      return next;
+    });
   }, []);
 
   const clearRows = useCallback(() => {
@@ -117,6 +163,9 @@ export function UploadZone() {
       manualDescription?: string;
       manualTags?: string;
       manualNsfw: boolean;
+      parents?: string;
+      promptUsed?: string;
+      dialectUsed?: string;
     }
   ) {
     setRows((prev) =>
@@ -129,6 +178,9 @@ export function UploadZone() {
       if (shared.manualDescription) fd.append('manual_description', shared.manualDescription);
       if (shared.manualTags) fd.append('manual_tags', shared.manualTags);
       if (shared.manualNsfw) fd.append('manual_nsfw', 'true');
+      if (shared.parents) fd.append('parents', shared.parents);
+      if (shared.promptUsed) fd.append('prompt_used', shared.promptUsed);
+      if (shared.dialectUsed) fd.append('dialect_used', shared.dialectUsed);
       const res = await fetch('/api/images', { method: 'POST', body: fd });
       const raw = await res.text();
       let payload:
@@ -179,7 +231,10 @@ export function UploadZone() {
       manualCaption: manualCaption.trim() || undefined,
       manualDescription: manualDescription.trim() || undefined,
       manualTags: manualTags.trim() || undefined,
-      manualNsfw
+      manualNsfw,
+      parents: parentSlugs.size > 0 ? [...parentSlugs].join(',') : undefined,
+      promptUsed: promptUsed.trim() || undefined,
+      dialectUsed: dialectUsed || undefined
     };
 
     // Cap concurrent uploads; a single shared index ensures fairness when
@@ -336,6 +391,77 @@ export function UploadZone() {
           />
           mark as nsfw
         </label>
+
+        <div className="space-y-2 rounded-md border border-ink-800 bg-ink-900/20 p-3">
+          <button
+            type="button"
+            onClick={() => setLineageOpen((v) => !v)}
+            className="font-mono text-xs uppercase tracking-wider text-ink-400 hover:text-ink-100"
+          >
+            {lineageOpen ? '- lineage' : '+ lineage (optional)'}
+          </button>
+          {lineageOpen ? (
+            <div className="space-y-3">
+              <p className="font-mono text-xs text-ink-500">
+                generated this from a pix.fish prompt? mark its parents and the prompt that made it.
+                applies to every file in this batch.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {parentCandidates.map((p) => {
+                  const on = parentSlugs.has(p.slug);
+                  return (
+                    <button
+                      key={p.slug}
+                      type="button"
+                      onClick={() => toggleParent(p.slug)}
+                      title={p.caption}
+                      className={`overflow-hidden rounded border ${
+                        on ? 'border-emerald-500' : 'border-ink-800 hover:border-ink-600'
+                      }`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element -- tiny picker thumbnail, not worth the next/image optimizer round-trip */}
+                      <img
+                        src={p.blobUrl}
+                        alt={p.caption}
+                        loading="lazy"
+                        className="h-14 w-14 object-cover"
+                      />
+                    </button>
+                  );
+                })}
+                {parentCandidates.length === 0 ? (
+                  <span className="font-mono text-xs text-ink-600">loading your images...</span>
+                ) : null}
+              </div>
+              {parentSlugs.size > 0 ? (
+                <span className="font-mono text-[11px] text-ink-500">
+                  {parentSlugs.size} parent{parentSlugs.size === 1 ? '' : 's'} selected
+                </span>
+              ) : null}
+              <Textarea
+                value={promptUsed}
+                onChange={(e) => setPromptUsed(e.target.value)}
+                placeholder="the prompt that produced this upload"
+                rows={2}
+              />
+              <label className="flex items-center gap-2 font-mono text-xs text-ink-500">
+                dialect
+                <select
+                  value={dialectUsed}
+                  onChange={(e) => setDialectUsed(e.target.value)}
+                  className="rounded border border-ink-800 bg-ink-950 px-2 py-1 text-ink-100"
+                >
+                  <option value="">(unspecified)</option>
+                  {DIALECTS.map((d: Dialect) => (
+                    <option key={d} value={d}>
+                      {DIALECT_LABELS[d]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          ) : null}
+        </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={pendingCount === 0 || submitting}>

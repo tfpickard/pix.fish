@@ -7,6 +7,7 @@ import { uniquifySlug, pushSlugToHistory } from '@/lib/db/queries/slugs';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { slugify } from '@/lib/slug';
 import { emit } from '@/lib/webhooks/emit';
+import { invalidateGalleryCentroid } from '@/lib/playground/centroid';
 import type { EnrichmentResult } from '@/lib/enrichment';
 
 // Postgres unique-violation. Drizzle surfaces it via the underlying driver
@@ -201,6 +202,10 @@ export async function persistEnrichment(args: {
         provider: embedder.name,
         model: embedder.model
       });
+      // A new caption vector shifts the gallery centroid the surprise engine
+      // pushes away from. Drop the cache so the next /surprise read recomputes
+      // it -- best effort and post-commit, never blocking the upload.
+      invalidateGalleryCentroid();
     } catch (err) {
       console.error('embedding generation failed for image', imageId, err);
     }

@@ -4,6 +4,8 @@ A multi-user image gallery with AI enrichment. Any signed-in GitHub user can upl
 
 The full multi-phase product spec is in [SPEC.md](./SPEC.md). Implementation context for Claude Code is in [CLAUDE.md](./CLAUDE.md) -- treat CLAUDE.md and the code as authoritative where this README lags.
 
+**Inspiration playground.** On top of the gallery, `/admin/play` is a prompt-generation jukebox: mine the corpus caption grammar into fillable skeletons, roll constraint-card dice, steer prompts with a vibe equalizer, push away from the gallery with the surprise engine, drift through a latent walk, or turn a haiku back into an image prompt -- then copy any result in five model dialects (Midjourney, Flux, SDXL, DALL-E 3, Sora). When you generate an image elsewhere and upload it back, you can declare its parents and the prompt that made it; `/lineage` renders the resulting parent -> child graph. See [docs/playground.md](./docs/playground.md).
+
 ## What's in the box
 
 | Capability | Status |
@@ -26,6 +28,9 @@ The full multi-phase product spec is in [SPEC.md](./SPEC.md). Implementation con
 | Outbound webhooks + delivery history | shipped |
 | Background jobs admin, backup export | shipped |
 | PWA (share target, service worker) + JSON feed | shipped |
+| Inspiration playground (`/admin/play`): grammar, dice, dialects | shipped |
+| Vibe equalizer / surprise / latent walk / reverse haiku | shipped |
+| Remix (idiom restyle) + image lineage graph (`/lineage`) | shipped |
 
 ## Stack
 
@@ -181,6 +186,8 @@ bun run db:push     # drizzle-kit push (apply schema)
 bun run db:seed     # seeds prompts, taxonomy, ai_config, about fields
 
 bun scripts/seed.ts                  # same as db:seed
+bun scripts/derive-grammar.ts        # mine caption grammar for the playground (--llm for a curated pass)
+bun scripts/vibe-axes.ts             # compare vibe-axis approaches; --write <tag|pca|kmeans> to persist
 bun scripts/backfill-embeddings.ts   # generate caption embeddings for legacy rows
 bun scripts/ensure-pgvector.ts       # idempotent CREATE EXTENSION vector
 bun scripts/prepare-multiuser.ts     # stand up users table before db:push (legacy migration)
@@ -251,6 +258,11 @@ The full plan lives in [`SPEC.md`](./SPEC.md); the short list of decisions that 
 9. **GPS EXIF is stripped before persisting.** `images.exif` is returned by public endpoints, so persisting GPS would publish GPS. See `src/lib/image-meta.ts`.
 10. **Embeddings are best-effort, post-commit.** A failed embedding does not fail the upload; `scripts/backfill-embeddings.ts` or `/admin/reprocess` can fill it in later.
 11. **No em dashes anywhere.** Use `--` (two hyphens). Project-wide style rule from the bootstrap prompt in SPEC.md.
+12. **Playground prompts route through the `descriptions` provider.** Equalizer/surprise/walk/reverse-haiku/remix all call the text-only completion of whichever provider is configured for the `descriptions` field, and skip gracefully (empty + warning) when there is no key.
+13. **The latent walk is metaphorical.** No per-step vector math; the LLM narrates the drift. Inverting an embedding back to text is a research problem we deliberately do not attempt.
+14. **The gallery centroid is a lazy per-process cache.** Computed on first read, invalidated post-commit after a new caption embedding lands (`src/lib/playground/centroid.ts`). It is the whole-corpus (site admin) centroid, not per-owner.
+15. **Lineage edges are written in the upload transaction.** `POST /api/images` writes the image row and its `image_lineage` edges in one `db.transaction` so a partial failure leaves no orphans. Parent slugs that are not owned by the uploader are silently dropped.
+16. **Vibe axes are chosen, not auto-derived.** `scripts/vibe-axes.ts` compares three approaches (tag/PCA/k-means); the owner runs `--write <approach>` to persist the one they like. Until then the equalizer shows an empty state.
 
 ## License
 
