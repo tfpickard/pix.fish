@@ -57,19 +57,29 @@ export async function getEdgesForNodesExcludingNsfw(
   return out;
 }
 
-// Mirror of getEdgesForNodesExcludingNsfw but restricted to NSFW destination
-// nodes only. Used by path/connect when the visitor is in 'only' mode.
+// Mirror of getEdgesForNodesExcludingNsfw but restricted to NSFW nodes only.
+// Both the source AND destination must be NSFW so SFW start nodes are never
+// expanded and never appear in the reconstructed path.
 export async function getEdgesForNodesNsfwOnly(
   nodeIds: number[]
 ): Promise<Map<number, KnnNeighbor[]>> {
   const out = new Map<number, KnnNeighbor[]>();
   if (nodeIds.length === 0) return out;
 
+  // Filter the source frontier to NSFW-only before touching edges, so SFW
+  // start/intermediate nodes are silently skipped rather than expanded.
+  const nsfwSrcRows = await db
+    .select({ id: images.id })
+    .from(images)
+    .where(and(inArray(images.id, nodeIds), eq(images.isNsfw, true)));
+  const nsfwNodeIds = nsfwSrcRows.map((r) => r.id);
+  if (nsfwNodeIds.length === 0) return out;
+
   const rows = await db
     .select({ srcId: knnEdges.srcId, dstId: knnEdges.dstId, dist: knnEdges.dist })
     .from(knnEdges)
     .innerJoin(images, and(eq(images.id, knnEdges.dstId), eq(images.isNsfw, true)))
-    .where(inArray(knnEdges.srcId, nodeIds));
+    .where(inArray(knnEdges.srcId, nsfwNodeIds));
 
   for (const r of rows) {
     const neighbors = out.get(r.srcId) ?? [];

@@ -24,7 +24,7 @@ type PageProps = {
   searchParams: Promise<{ a?: string; b?: string }>;
 };
 
-type SlimImage = { id: number; slug: string; blobUrl: string };
+type SlimImage = { id: number; slug: string; blobUrl: string; isNsfw: boolean };
 
 // Resolve a raw search-param value to a slim image record. Accepts slugs
 // (preferred -- human-readable) or numeric IDs (backwards compat so
@@ -32,7 +32,7 @@ type SlimImage = { id: number; slug: string; blobUrl: string };
 async function resolveEndpoint(raw: string): Promise<SlimImage | null> {
   if (!raw) return null;
   const [bySlug] = await db
-    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl })
+    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl, isNsfw: images.isNsfw })
     .from(images)
     .where(eq(images.slug, raw))
     .orderBy(asc(images.id))
@@ -41,7 +41,7 @@ async function resolveEndpoint(raw: string): Promise<SlimImage | null> {
   const num = parseInt(raw, 10);
   if (!Number.isInteger(num) || num <= 0) return null;
   const [byId] = await db
-    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl })
+    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl, isNsfw: images.isNsfw })
     .from(images)
     .where(eq(images.id, num))
     .limit(1);
@@ -194,7 +194,7 @@ export default async function ConnectPage({ searchParams }: PageProps) {
           <label htmlFor="a" className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
             image A
           </label>
-          {imgA ? (
+          {imgA && (nsfwMode !== 'only' || imgA.isNsfw) ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={imgA.blobUrl}
@@ -227,7 +227,7 @@ export default async function ConnectPage({ searchParams }: PageProps) {
           <label htmlFor="b" className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
             image B
           </label>
-          {imgB ? (
+          {imgB && (nsfwMode !== 'only' || imgB.isNsfw) ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={imgB.blobUrl}

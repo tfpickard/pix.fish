@@ -44,7 +44,8 @@ export async function GET() {
   const farMatches = await searchByVector(centroid, {
     order: 'farthest',
     limit: FAR_REFERENCES,
-    kind: 'caption'
+    kind: 'caption',
+    nsfwMode: 'include'
   });
   const farRows = await getImagesByIdsOrdered(farMatches.map((m) => m.imageId));
   const farHydrated = await hydrateImages(farRows);
