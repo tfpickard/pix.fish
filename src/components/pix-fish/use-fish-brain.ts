@@ -125,7 +125,12 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  // reducedMotion lives in React state, not a ref, so a mid-session toggle of
+  // prefers-reduced-motion can re-key the RAF effect and switch the fish into
+  // (or out of) the parked branch immediately. A ref alone would not.
+  const [reducedMotion, setReducedMotion] = useState(false);
   const reducedMotionRef = useRef(false);
+  reducedMotionRef.current = reducedMotion;
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
 
@@ -366,17 +371,16 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
     [commitTransform, enterBehavior, pickWanderTarget]
   );
 
-  // RAF lifecycle. Restarts when paused/reducedMotion changes.
+  // RAF lifecycle. Re-runs when paused or reducedMotion changes, so a
+  // mid-session reduced-motion toggle immediately switches into (or out of)
+  // the parked branch.
   useEffect(() => {
-    const reduced =
-      typeof window !== 'undefined' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    reducedMotionRef.current = reduced;
-
     if (paused) return;
 
-    if (reduced) {
-      // Park the fish in a corner, closed eyes, no RAF.
+    if (reducedMotion) {
+      // Park the fish in a corner, no RAF. Eyes still blink on a long
+      // timer so the mascot doesn't look frozen -- per the spec the
+      // reduced-motion fish "parks in a corner and just blinks."
       const el = containerRef.current;
       const x = window.innerWidth - SPRITE_W - 24;
       const y = window.innerHeight - SPRITE_H - 48;
@@ -386,8 +390,28 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
         el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
         el.style.zIndex = '30';
       }
-      setState((s) => ({ ...s, behavior: 'napping', mouthState: 'flat', eyeState: 'closed' }));
-      return;
+      setState((s) => ({ ...s, behavior: 'napping', mouthState: 'flat', eyeState: 'open' }));
+
+      // Blink cadence: ~every 5-8s, three-phase (open -> half -> closed -> open).
+      // Driven by setTimeout rather than RAF to keep CPU at zero between blinks.
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const scheduleNext = () => {
+        const wait = 5000 + Math.random() * 3000;
+        timer = setTimeout(() => {
+          setState((s) => (s.eyeState === 'half' ? s : { ...s, eyeState: 'half' }));
+          timer = setTimeout(() => {
+            setState((s) => (s.eyeState === 'closed' ? s : { ...s, eyeState: 'closed' }));
+            timer = setTimeout(() => {
+              setState((s) => (s.eyeState === 'open' ? s : { ...s, eyeState: 'open' }));
+              scheduleNext();
+            }, 120);
+          }, 90);
+        }, wait);
+      };
+      scheduleNext();
+      return () => {
+        if (timer) clearTimeout(timer);
+      };
     }
 
     let raf = 0;
@@ -405,9 +429,12 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [paused, tick, pickWanderTarget]);
+  }, [paused, reducedMotion, tick, pickWanderTarget]);
 
-  // Cursor tracking + reduced-motion change listener.
+  // Cursor tracking + reduced-motion change listener. The MQL listener
+  // writes to React state (not just the ref) so the RAF effect re-keys and
+  // immediately switches into / out of the parked branch -- no remount or
+  // refresh required.
   useEffect(() => {
     if (paused) return;
     const onMove = (e: PointerEvent) => {
@@ -416,14 +443,10 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
     window.addEventListener('pointermove', onMove, { passive: true });
 
     const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const onMqlChange = () => {
-      // Toggling reduced motion mid-session: cheapest correct response is
-      // to leave the RAF effect to react to its own deps. We force it by
-      // bumping a state value, but since the effect already keys on paused
-      // we can rely on next mount/unmount cycles. The user can also
-      // refresh; this is a rare event.
-      reducedMotionRef.current = mql.matches;
-    };
+    // Seed the current preference on (re)mount in addition to listening for
+    // changes, so the first render after mount already reflects reality.
+    setReducedMotion(mql.matches);
+    const onMqlChange = () => setReducedMotion(mql.matches);
     mql.addEventListener('change', onMqlChange);
 
     const onResize = () => {
