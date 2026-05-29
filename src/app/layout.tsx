@@ -6,6 +6,7 @@ import { Providers } from '@/components/providers';
 import { SiteFooter } from '@/components/site-footer';
 import { JsonLd } from '@/components/json-ld';
 import { TemperatureHud } from '@/components/temperature-hud';
+import { PixFish } from '@/components/pix-fish/pix-fish';
 import { SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION } from '@/lib/site';
 import { buildWebSiteLd } from '@/lib/seo/jsonld';
 import './globals.css';
@@ -99,6 +100,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Providers> so it never affects document flow (zero layout shift).
             Renders nothing until an entropy.recompute has recorded a reading. */}
         <TemperatureHud />
+        {/* feat/pix-fish: ambient mascot. Client-only; lives outside <main>
+            and <Providers> so it never participates in document flow and
+            survives every route change (root layout doesn't remount). */}
+        <PixFish />
         <JsonLd data={buildWebSiteLd()} />
         <Analytics />
       </body>
