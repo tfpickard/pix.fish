@@ -5,6 +5,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  real,
   serial,
   text,
   timestamp,
@@ -58,7 +59,21 @@ export const images = pgTable(
     // an owner's manual call. Default-hide on the public stream is enforced
     // at the query layer.
     isNsfw: boolean('is_nsfw').notNull().default(false),
-    nsfwSource: text('nsfw_source') // 'auto' | 'manual' | null (legacy rows)
+    nsfwSource: text('nsfw_source'), // 'auto' | 'manual' | null (legacy rows)
+    // --- Gate-0 contract: parallel-build feature columns ---------------------
+    // Added once at Gate 0 so the six worktrees never edit the images table
+    // concurrently. Each is nullable / defaulted so existing rows backfill
+    // harmlessly and the column lies dormant until its phase fills it.
+    // feat/hud: normalized 0..1 surprisal, written by scripts/compute-entropy.ts.
+    // Null == not yet scored; the 'surprising-first' sort treats null as least.
+    surprisal: real('surprisal'),
+    // feat/alive: generation 0 == not bred; lineage edges live in image_lineage.
+    // archivedAt hides a row from public surfaces without hard-deleting it.
+    generation: integer('generation').notNull().default(0),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    // feat/basement: basement rows are gated server-side (mirrors the NSFW gate);
+    // never served unless the unlock flag is present.
+    basement: boolean('basement').notNull().default(false)
   },
   (t) => ({
     uploadedAtIdx: index('images_uploaded_at_idx').on(t.uploadedAt),
@@ -67,7 +82,10 @@ export const images = pgTable(
     // /u/bob/sunset; the legacy /<slug> redirect resolves to whichever owner
     // currently holds it (with slug_history covering renames).
     ownerSlugUniq: uniqueIndex('images_owner_slug_uniq').on(t.ownerId, t.slug),
-    nsfwIdx: index('images_is_nsfw_idx').on(t.isNsfw)
+    nsfwIdx: index('images_is_nsfw_idx').on(t.isNsfw),
+    surprisalIdx: index('images_surprisal_idx').on(t.surprisal),
+    archivedIdx: index('images_archived_idx').on(t.archivedAt),
+    basementIdx: index('images_basement_idx').on(t.basement)
   })
 );
 
@@ -634,6 +652,79 @@ export const imageLineage = pgTable(
   })
 );
 
+// === Gate-0 contract: parallel-build feature tables =========================
+// Added once at Gate 0 so the parallel worktrees never edit schema.ts or
+// drizzle/ numbering concurrently. Each feature owns exactly one section; the
+// table stays empty until its phase fills it. See CONTRACTS.md.
+
+// feat/hud: collection temperature time series. One scalar per computed run so
+// dispersion history can be charted. value is e.g. mean pairwise cosine.
+export const collectionTemperature = pgTable(
+  'collection_temperature',
+  {
+    id: serial('id').primaryKey(),
+    value: real('value').notNull(),
+    pointCount: integer('point_count').notNull().default(0),
+    meta: jsonb('meta').$type<Record<string, unknown>>(),
+    computedAt: timestamp('computed_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    computedIdx: index('collection_temperature_computed_idx').on(t.computedAt)
+  })
+);
+
+// feat/manifold: 3D embedding projection. Mirrors umap_projections but stores
+// (x,y,z) and a fixed RNG seed so a layout is reproducible run-to-run.
+export const manifoldProjections = pgTable(
+  'manifold_projections',
+  {
+    id: serial('id').primaryKey(),
+    seed: integer('seed').notNull(),
+    points: jsonb('points')
+      .$type<Array<{ imageId: number; x: number; y: number; z: number }>>()
+      .notNull(),
+    pointCount: integer('point_count').notNull(),
+    params: jsonb('params').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    createdIdx: index('manifold_projections_created_idx').on(t.createdAt)
+  })
+);
+
+// feat/geodesics: kNN graph over caption embeddings. One row per directed edge;
+// dist is the cosine-distance weight. Unique on (src,dst) so rebuilds upsert.
+export const knnEdges = pgTable(
+  'knn_edges',
+  {
+    id: serial('id').primaryKey(),
+    srcId: integer('src_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    dstId: integer('dst_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    dist: real('dist').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    srcIdx: index('knn_edges_src_idx').on(t.srcId),
+    srcDstUniq: uniqueIndex('knn_edges_src_dst_uniq').on(t.srcId, t.dstId)
+  })
+);
+
+// feat/stigmergy: per-image decayed attention. One row per image; read-time
+// exponential decay is applied in code from (value, lastUpdatedAt). No cron.
+export const imageAttention = pgTable('image_attention', {
+  imageId: integer('image_id')
+    .primaryKey()
+    .references(() => images.id, { onDelete: 'cascade' }),
+  value: real('value').notNull().default(0),
+  lastUpdatedAt: timestamp('last_updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// === end Gate-0 contract tables ============================================
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   images: many(images),
@@ -716,6 +807,11 @@ export type NewWebhook = typeof webhooks.$inferInsert;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type NewWebhookDelivery = typeof webhookDeliveries.$inferInsert;
 export type Job = typeof jobs.$inferSelect;
+// Gate-0 contract feature types
+export type CollectionTemperature = typeof collectionTemperature.$inferSelect;
+export type ManifoldProjection = typeof manifoldProjections.$inferSelect;
+export type KnnEdge = typeof knnEdges.$inferSelect;
+export type ImageAttention = typeof imageAttention.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 export type UmapProjection = typeof umapProjections.$inferSelect;
 export type NewUmapProjection = typeof umapProjections.$inferInsert;

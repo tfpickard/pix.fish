@@ -8,6 +8,16 @@ import { backupExportHandler } from './backupExport';
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
 // orphaned job types don't silently loop.
+//
+// Gate-0 contract: reserved job-type keys for the parallel-build features.
+// Each feature worktree registers its own handler here at its gate; the keys
+// are fixed now so enqueue sites and handlers agree. Do NOT enqueue these
+// before the handler is registered (the worker would fail the job):
+//   'nsfw.scan'         -- feat/hud: per-image Haiku nudity classification
+//   'entropy.recompute' -- feat/hud: surprisal + collection temperature
+//   'manifold.recompute'-- feat/manifold: 3D umap projection
+//   'knn.rebuild'       -- feat/geodesics: kNN graph rebuild
+// (feat/stigmergy and feat/alive run inline/admin-triggered, no new job type.)
 export type JobHandler = (job: Job) => Promise<void>;
 
 export const handlers: Record<string, JobHandler> = {

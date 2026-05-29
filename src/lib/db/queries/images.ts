@@ -110,6 +110,16 @@ async function fetchInSortOrder(params: {
       );
     case 'lonely':
       return selectLonely(tagFilter, limit, offset, includeNsfw);
+    case 'surprising-first':
+      // feat/hud: order by the precomputed surprisal score. Unscored rows
+      // (null) sort last so a partial entropy pass never hides them.
+      return selectImagesOrdered(
+        tagFilter,
+        sql`${images.surprisal} DESC NULLS LAST, ${images.uploadedAt} DESC, ${images.id} DESC`,
+        limit,
+        offset,
+        includeNsfw
+      );
     default:
       break;
   }
