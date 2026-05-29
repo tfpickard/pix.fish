@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { getEmbedder, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { searchByVector } from '@/lib/db/queries/embeddings';
@@ -9,6 +11,7 @@ import {
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { ImageGrid } from '@/components/image-grid';
+import { BASEMENT_COOKIE, BASEMENT_PASSPHRASE, readBasementCookie } from '@/lib/basement';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -39,6 +42,26 @@ export default async function SearchPage({ searchParams }: PageProps) {
       </div>
     );
   }
+
+  // Passphrase unlock ritual: exact match (case-insensitive) against the
+  // basement passphrase. Sets the cookie server-side and redirects to
+  // /basement so the URL bar shows the destination without exposing the
+  // passphrase as a query param in the browser history.
+  if (q.toLowerCase() === BASEMENT_PASSPHRASE.toLowerCase()) {
+    const store = await cookies();
+    store.set(BASEMENT_COOKIE, 'unlocked', {
+      httpOnly: false,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 7
+    });
+    redirect('/basement');
+  }
+
+  // Basement gate: exclude basement images from search results for locked
+  // visitors. The embedding lookup returns imageIds without visibility
+  // filtering, so we filter post-hydration rather than modifying searchByVector.
+  const basementUnlocked = await readBasementCookie();
 
   // Threshold is owner-configurable via /admin/gallery; falls back to the
   // hard-coded constant when the gallery_config row is missing or the
@@ -73,7 +96,12 @@ export default async function SearchPage({ searchParams }: PageProps) {
       .filter((m) => m.similarity >= simThreshold);
     rankedCount = ranked.length;
     const rows = await getImagesByIdsOrdered(ranked.map((m) => m.imageId));
-    hydrated = await hydrateImages(rows);
+    const allHydrated = await hydrateImages(rows);
+    // Strip basement images from results when the visitor hasn't unlocked.
+    // This is a secondary gate -- the primary is at the query layer for
+    // listImages; here we intercept the embedding-path which doesn't pass
+    // through that layer.
+    hydrated = basementUnlocked ? allHydrated : allHydrated.filter((img) => !img.basement);
     similarities = new Map(ranked.map((m) => [m.imageId, m.similarity]));
   } catch (err) {
     console.error('semantic search failed', err);

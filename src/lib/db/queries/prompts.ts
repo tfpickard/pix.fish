@@ -13,6 +13,7 @@ export const PROMPT_KEYS = [
   'caption',
   'description',
   'tags',
+  'nsfw',
   'breed',
   'depart',
   'antibreed',
@@ -22,7 +23,9 @@ export const PROMPT_KEYS = [
   'surprise',
   'walk_step',
   'reverse_haiku',
-  'remix'
+  'remix',
+  // feat/basement -- unhinged caption voice for basement-flagged images.
+  'basement_caption'
 ] as const;
 
 export type PromptKey = (typeof PROMPT_KEYS)[number];

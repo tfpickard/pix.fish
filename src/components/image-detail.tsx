@@ -1,13 +1,14 @@
 import type { Metadata } from 'next';
 import Image from 'next/image';
 import Link from 'next/link';
-import { auth, canEdit } from '@/lib/auth';
+import { auth, canEdit, isSiteAdmin } from '@/lib/auth';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import { getCaptionVector, getNeighborsByImageId } from '@/lib/db/queries/embeddings';
 import { countReactions } from '@/lib/db/queries/reactions';
 import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
 import { ImageActions } from '@/components/image-actions';
+import { BasementFlagToggle } from '@/components/basement-flag-toggle';
 import { RemixMenu } from '@/components/remix-menu';
 import { listRemixIdioms } from '@/lib/db/queries/remix-idioms';
 import { EmbeddingViz } from '@/components/embedding-viz';
@@ -119,6 +120,7 @@ export async function ImageDetail({
 }) {
   const session = await auth();
   const owner = canEdit(session, img.ownerId);
+  const admin = isSiteAdmin(session);
   // Remix idioms are only needed when the viewer can edit; skip the query for
   // the public path.
   const remixIdioms = owner
@@ -240,6 +242,13 @@ export async function ImageDetail({
               imageId={img.id}
               idioms={remixIdioms.map((i) => ({ key: i.key, label: i.label }))}
             />
+            {/* Basement flag: only site admins can move images to/from the
+                basement -- the API gate re-checks isSiteAdmin server-side.
+                Shown inside the owner actions block so it's scoped to the
+                admin context but doesn't appear for regular image owners. */}
+            {admin ? (
+              <BasementFlagToggle imageId={img.id} initialBasement={img.basement} />
+            ) : null}
           </div>
         ) : null}
 

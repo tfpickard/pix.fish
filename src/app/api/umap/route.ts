@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server';
 import { latestProjection } from '@/lib/db/queries/umap';
 
 export const runtime = 'nodejs';
-// Recomputes are on-demand; the public endpoint can safely cache at the CDN
-// for a short window so a popular /map page doesn't hammer the DB.
+// force-dynamic prevents Next.js from trying to pre-render this route at
+// build time (which fails without POSTGRES_URL in the build environment).
+// The revalidate hint is left in place for the production runtime cache.
+export const dynamic = 'force-dynamic';
 export const revalidate = 60;
 
 export async function GET() {
