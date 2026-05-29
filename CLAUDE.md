@@ -4,106 +4,162 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Orientation
 
-**pix.fish** is a single-owner image gallery with AI enrichment. README.md has local dev setup, env vars, and scripts; SPEC.md has the full multi-phase product spec. This file captures what isn't obvious from those two documents.
+**pix.fish** is a multi-user image gallery with AI enrichment. Any signed-in GitHub user can upload; the rest of the world can browse, react, comment, report, and build shareable shelves. README.md has local dev setup and env vars; SPEC.md has the full multi-phase product spec (and the phase letters A-F referenced in commit messages). This file captures what isn't obvious from those two documents.
 
-Phase 2 has shipped (embeddings + semantic search, palette/EXIF extraction, delete endpoint, haiku titles); Phase 3 *schema* is in place (`reactions`, `comments`, `reports`) and visitor-facing engagement endpoints are wired (`/api/images/:slug/reactions`, `/api/images/:slug/comments`, `/api/reports`) along with owner moderation under `/api/comments/:id`. `src/lib/db/schema.ts:213-218` still lists Phase 4+ tables that are intentionally not created (`webhooks`, `jobs`, `ai_config`, `saved_prompts`) -- don't add them without being asked.
+It started as a single-owner gallery and the README/.env.example still read that way in places -- treat **this file and the code as authoritative** when they disagree with the README. The build has since shipped multi-user (per-user identity, per-user BYO provider keys), async queue-backed enrichment, NSFW classification + gating, anonymous collections/shelves, an embedding-driven "breed" tool, a UMAP atlas, webhooks, and a background job system. Every table the old spec listed as "Phase 4+, not created" now exists in `src/lib/db/schema.ts` -- so the prior rule about not creating `webhooks`/`jobs`/`ai_config`/`saved_prompts` no longer applies; they are live.
 
 ## Commands
 
-Package manager is **bun** (`bun.lock` is authoritative — never introduce `npm`/`pnpm`/`yarn` lockfiles). Scripts are in `package.json`; most common:
+Package manager is **bun** (`bun.lock` is authoritative -- never introduce `npm`/`pnpm`/`yarn` lockfiles). Scripts from `package.json`:
 
 ```sh
 bun run dev         # next dev
-bun run build       # next build
+bun run build       # next build (runs serwist SW codegen via next.config.mjs)
 bun run lint        # next lint
 bun run typecheck   # tsc --noEmit
 bun run db:generate # drizzle-kit generate (emit a new migration)
 bun run db:push     # drizzle-kit push (apply schema to Neon)
-bun run db:seed     # seeds prompt templates + tag taxonomy (idempotent)
-bun scripts/seed.ts                  # direct invocation of the seed script
-bun scripts/backfill-embeddings.ts   # generate caption embeddings for legacy rows
-bun scripts/ensure-pgvector.ts       # idempotent CREATE EXTENSION vector
+bun run db:seed     # bun scripts/seed.ts -- seeds prompts, taxonomy, ai_config, about fields (idempotent)
 ```
 
-There are no unit tests yet. "Verify a change" = `bun run typecheck && bun run lint && bun run build`, plus hitting the feature in a browser.
+One-off scripts (run with `bun scripts/<name>.ts`):
 
-The `dev.sh` wrapper (`./dev.sh start|stop|restart|status|logs`) launches `bun run dev` as a detached background process with env-var preflight and port-bind checks. Prefer it over `bun run dev` when you need Claude to leave a server running between tool calls — it writes to `.dev-server.pid` and `.dev-server.log` and waits for HTTP 200 before returning. Use `-v`/`-vv` for diagnostics when startup fails.
+```sh
+seed.ts                  # same as db:seed
+backfill-embeddings.ts   # caption embeddings for legacy rows (uses the env ANTHROPIC/OPENAI keys)
+ensure-pgvector.ts       # idempotent CREATE EXTENSION vector
+prepare-multiuser.ts     # pre-migration: stand up users table before db:push (bootstrap)
+backfill-multiuser.ts    # backfill owner_id on legacy single-owner rows to the admin user
+```
+
+There are no unit tests. "Verify a change" = `bun run typecheck && bun run lint && bun run build`, plus exercising the feature in a browser.
+
+The `dev.sh` wrapper (`./dev.sh start|stop|restart|status|logs`) launches `bun run dev` as a detached background process with env preflight and port-bind checks. Prefer it over `bun run dev` when you need a server to persist between tool calls -- it writes `.dev-server.pid`/`.dev-server.log` and waits for HTTP 200 before returning. Use `-v`/`-vv` for startup diagnostics.
 
 ## Architecture
 
+### Multi-user identity, handles, and routing
+
+- A signed-in user is one row in the `users` table (`schema.ts:25`). The PK `id` is the provider-scoped id (GitHub numeric id as text). `handle` is the URL-safe public identifier used in `/u/<handle>/...`; collisions get a `-2`, `-3`, ... suffix resolved at sign-in by `resolveHandle()` (`auth.ts:23`). `role` is `'user' | 'admin'`.
+- The bootstrap admin is whoever matches `OWNER_GITHUB_ID`; the JWT callback stamps their role `admin` and upserts the row on first sign-in (`auth.ts:57-99`). Role is set deterministically *before* the DB upsert so a transient DB failure can't lock the admin out.
+- URL shapes: canonical detail is `/u/<handle>/<slug>`; per-user gallery is `/u/<handle>`. The legacy bare `/<slug>` still resolves (and redirects) for back-compat. Slugs are unique **per owner** (`images_owner_slug_uniq`, `schema.ts:69`), so two users can both own `/u/*/sunset`.
+
+### Auth + three gates (`src/lib/auth.ts`, `middleware.ts`)
+
+The old single `isOwner()` gate has been split. All three live in `auth.ts`:
+
+- `isOwner(session)` (`auth.ts:120`) -- **legacy**, compares `session.user.githubId === OWNER_GITHUB_ID`. Being migrated out; don't add new call sites.
+- `isSiteAdmin(session)` (`auth.ts:130`) -- `session.user.role === 'admin'`. Use for platform-wide actions (taxonomy, prompts, ai_config, the global /about and landing config).
+- `canEdit(session, resourceOwnerId)` (`auth.ts:138`) -- per-resource ownership; site admins always pass so they can moderate/rescue any user's content. Use for image edit/delete and any per-user resource.
+
+`middleware.ts` now enforces only **"must be signed in"** for `/admin/*` (redirect) and writes to `/api/images/*` and `/api/comments/:id` (403). It deliberately does **not** check ownership -- that needs a DB read and is done inside handlers via `canEdit`/`isSiteAdmin`. Matcher: `['/admin/:path*', '/api/images/:path*', '/api/comments/:path*']`. Any admin API outside those matched paths relies entirely on its in-handler gate, so always add an explicit `isSiteAdmin`/`canEdit` check in new handlers. Non-admin users can reach `/admin/*` pages; each page self-gates.
+
 ### AI provider abstraction (`src/lib/ai/`)
 
-Everything that calls a vision model goes through `AIProvider` (`types.ts`). Rules enforced across the codebase:
+Everything that calls a vision/embedding model goes through `AIProvider` (`types.ts`). Files: `anthropic.ts`, `openai.ts` (implementations), `index.ts` (`getProvider`/`getEmbedder` factories), `config.ts` (defaults), `loadConfig.ts` (DB-backed config), `keys.ts` (per-user key crypto + loading), `breed.ts` (embedding-centroid generation), `types.ts` (interface + JSON parsers). The interface has required `captions`/`descriptions`/`tags` plus optional `text?` (breed-only) and `embed?`/`embedModel?` (embeddings-only).
 
-- **Providers don't own prompts.** The prompt string is passed in as an argument. If you're tempted to hardcode prompt text inside `anthropic.ts` or `openai.ts`, stop — prompts come from the DB via `src/lib/prompts/resolve.ts`.
-- **No direct SDK calls outside `src/lib/ai/`.** Route handlers and components must go through `getProvider(field)` in `src/lib/ai/index.ts`.
-- **Per-field routing** (`captions`/`descriptions`/`tags`) lives in `src/lib/ai/config.ts`. Phase 1 hardcodes all three to `anthropic`; Phase 3 moves this into the `ai_config` DB table.
-- **Response parsing helpers** (`parseVariantsJson`, `parseTagsJson` in `types.ts`) strip ```json fenced blocks — use them from new provider implementations rather than re-rolling the parsing.
+Rules enforced across the codebase:
+
+- **Providers don't own prompts.** The prompt string is passed in. Prompts come from the DB via `src/lib/prompts/resolve.ts`; never hardcode prompt text in a provider.
+- **No direct SDK calls outside `src/lib/ai/`.** Route handlers and jobs go through `getProvider(field, cfg, keys)` / `getEmbedder(cfg, keys)` in `index.ts`.
+- **Per-field routing is DB-driven now.** `loadAiConfig()` (`loadConfig.ts`) reads the `ai_config` table (fields `captions`/`descriptions`/`tags`/`embeddings`), falling back to `defaultAiConfig` (`config.ts`: Anthropic for the three text fields, OpenAI `text-embedding-3-small` for embeddings). The owner edits routing via `/admin/ai` -> `/api/admin/ai-config`.
+- **Keys are per-user BYO, encrypted at rest.** `keys.ts` stores AES-256-GCM ciphertext (`base64(iv||tag||ciphertext)`) in `provider_keys`, with the key derived from `AUTH_SECRET` via PBKDF2 (`keys.ts:11-31`). Plaintext is never persisted, returned, or logged. `loadUserProviderKeys(userId)` decrypts a user's rows and **falls back to the `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` env vars** when a user has no row -- this preserves the single-owner deployment during the transition. Rotating `AUTH_SECRET` invalidates all stored keys by design (no key versioning).
+- `getProvider`/`getEmbedder` **return `null`** when the configured provider has no usable key for the current user. Callers must treat null as "skip this field" -- enrichment emits empty arrays so the upload still succeeds.
+- **No SDK client cache** (`index.ts:6-10`): each call constructs a fresh client because the per-user apiKey is a construction arg; pooling would risk leaking keys across users.
+- **Response parsing helpers** (`parseVariantsJson`, `parseTagsJson` in `types.ts`) strip ```json fences -- use them from new provider impls.
 
 ### Prompt resolution (`src/lib/prompts/`)
 
-Prompts are seeded into the `prompts` table by `scripts/seed.ts`, keyed by `caption` | `description` | `tags`. `resolvePrompt(key, ctx)` reads the template and substitutes `{{tag_taxonomy}}`, `{{existing_caption}}`, `{{variant_number}}`. If you add a new placeholder, add it here *and* update the seed script's templates.
+Seeded into the `prompts` table by `scripts/seed.ts`. There are now **seven** keys (`src/lib/db/queries/prompts.ts:13`): `caption`, `description`, `tags`, plus the breed family `breed`, `depart`, `antibreed`, `subtract`. `resolvePrompt(key, ctx)` (`resolve.ts`) substitutes `{{tag_taxonomy}}`, `{{existing_caption}}`, `{{variant_number}}`, and the breed placeholders (`{{source_captions}}`, `{{neighbor_captions}}`, `{{far_neighbor_captions}}`, `{{anchor_caption}}`, `{{subtract_captions}}`, `{{n_sources}}`). Adding a placeholder means updating `resolve.ts` *and* the seed templates.
 
-Editing a prompt in production (Phase 3 feature) = updating the `prompts` row; no redeploy needed.
+`compose.ts` + `fragments.ts` back the prompt composer: users build prompt variants from reusable fragments and save them to `saved_prompts`; a site admin can **promote** a saved prompt (`/api/admin/saved-prompts/:id/promote`), which overwrites `prompts.template` for that key and bumps `prompts.version`. Editing a live prompt = updating the `prompts` row; no redeploy.
 
-### Upload flow (`src/app/api/images/route.ts`)
+### Upload flow is asynchronous now (`src/app/api/images/route.ts` + job queue)
 
-`POST /api/images` is deliberately shaped around "image survives enrichment failure":
+This is the biggest change from the original design. `POST /api/images` no longer enriches inline. It:
 
-1. Upload buffer to Vercel Blob first.
-2. Extract EXIF (`exifr`) and a 5-color palette (`node-vibrant`) from the buffer in parallel via `src/lib/image-meta.ts`. Both pure-JS, no `sharp`. Both helpers swallow errors; on failure the row just gets `null` for that column. EXIF supplies `takenAt`; GPS fields are deliberately stripped before persisting (see `image-meta.ts:17-21`).
-3. Insert `images` row with a **placeholder slug** (`img-<blobkey-tail>`) plus the EXIF/palette/`takenAt` columns.
-4. Call `enrichImage()` (in `src/lib/enrichment.ts`, not the route) -- runs captions/descriptions/tags **in parallel** via `Promise.all`. On failure the row is left with the placeholder slug so the owner can retry; we don't rollback the blob.
-5. Inside a single `db.transaction`, insert captions+descriptions+tags and update the slug to the `slugify(first_caption)` result (or `manualCaption` if provided). `uniquifySlug` appends `-2`, `-3`, ... on collision. The previous slug is appended to `slug_history` (GIN-indexed) so old URLs keep resolving.
-6. Manual captions are stored as `variant=4, locked=true, isSlugSource=true`, *not* as a replacement for one of the 3 AI variants. The AI variants are always variants 1-3.
-7. After the transaction commits, generate a caption embedding (`text-embedding-3-small`, 1536d) and `upsertEmbedding`. Failures are logged and swallowed -- the image stays usable; `scripts/backfill-embeddings.ts` can fill it in later.
+1. Authorizes any signed-in user (ownership enforced later via `canEdit`).
+2. Uploads the buffer to Vercel Blob first (URL survives enrichment failure).
+3. Extracts EXIF (`exifr`) + a 5-color palette (`node-vibrant`) from the buffer in parallel via `src/lib/image-meta.ts` (both pure-JS, no `sharp`; both swallow errors -> `null` column). EXIF supplies `takenAt`; **GPS fields are stripped before persisting** (`image-meta.ts`).
+4. Inserts the `images` row with a **placeholder slug** (`img-<blobkey-tail>`), stamped with `ownerId`.
+5. **Enqueues an `enrich.image` job** (`enqueueJob`) and returns **HTTP 202 `{ status: 'queued' }`**. It does not wait for the model.
 
-`export const maxDuration = 60` on this route — Hobby-tier Vercel without Fluid Compute caps regular routes at 10s and will fail the upload. README §Deployment item 6 covers this.
+The upload UI fires N parallel uploads and polls `GET /api/images?ids=...` to watch each row gain captions. `maxDuration = 60` is still set, but the route is now thin.
 
-### Embeddings + search (`src/lib/db/queries/embeddings.ts`, `src/app/api/search/route.ts`)
+### Background job queue (`src/lib/jobs/`, `src/app/api/cron/jobs`)
 
-Phase 2 writes only `kind='caption'` embeddings (1536d, OpenAI `text-embedding-3-small`). The `embeddings` table is `UNIQUE (image_id, kind)` so writes use `onConflictDoUpdate` -- safe to re-run. `image` and `combined` kinds are reserved for a future CLIP/multimodal pass.
+A DB-backed queue replaces synchronous work. The `jobs` table (`schema.ts:394`) is leased with a **visibility timeout** (`lockedAt`) rather than `FOR UPDATE`, so a function dying mid-handler doesn't orphan rows.
 
-- `/api/search?q=...` -- text query embedded then cosine-ranked against caption embeddings.
-- "More like this" / neighbors -- same query helper, seeded from an existing image's vector.
-- The `vector` extension is enabled by `drizzle/0000_init.sql`; if you ever wipe the DB and re-push schema, run `bun scripts/ensure-pgvector.ts` first.
+- **Drain endpoint**: `/api/cron/jobs` (`route.ts`), invoked every minute by Vercel Cron (`vercel.json`). GET = cron, POST = ad-hoc/manual drain. Both require `Authorization: Bearer ${CRON_SECRET}`. It reclaims stuck `processing` rows older than a 5-min visibility timeout, then claims/runs batches of 10 until a 55s wall budget.
+- **Worker**: `worker.ts` dispatches by `job.type` through `handlers/index.ts`, wraps each in a per-type timeout (kept under the cron wall budget), and on failure reschedules with exponential backoff up to `maxAttempts`, then marks `failed` (visible at `/admin/jobs`).
+- **Handlers** (`src/lib/jobs/handlers/`): `enrichImage` (the real captions/descriptions/tags + embedding work, persisting via `src/lib/enrichment-persist.ts`), `reprocessImage`, `umapRecompute`, `webhookDeliver`, `backupExport`. `src/lib/enrichment.ts` is the provider-orchestration core called by the enrich/reprocess handlers (3 parallel field calls; skips any field with no key).
 
-### Engagement (`src/app/api/images/[slug]/{comments,reactions}`, `src/app/api/comments/[id]`, `src/app/api/reports`)
+When debugging "my upload has no caption," check the `jobs` table / `/admin/jobs`, not the upload route.
 
-Anonymous, IP-hash gated. `src/lib/hash.ts` does the hashing; `src/lib/rate-limit.ts` is the throttle.
+### Enrichment internals (`src/lib/enrichment.ts`, `enrichment-persist.ts`)
 
-- **Reactions** -- `UNIQUE (image_id, ip_hash)`. Re-POSTing the same `kind` toggles off; a different `kind` swaps. `fingerprint` (client UUID in localStorage) is a secondary de-dupe signal. Public POST at `/api/images/:slug/reactions`.
-- **Comments** -- public POST at `/api/images/:slug/comments`; owner-only PATCH/DELETE at `/api/comments/:id` (moderation queue). Status flows `pending -> approved | rejected`; only `approved` is publicly visible.
-- **Reports** -- public POST at `/api/reports`. `target_type` is `'image' | 'comment'`; surfaces in the admin moderation queue.
+`enrichImage()` runs captions/descriptions/tags in parallel; each field is skipped (empty array) if its provider has no key. The tag pass **also returns an NSFW verdict** (`TagsAndNsfw`), and `tagsRan` distinguishes "AI ran, no tags" from "no key, didn't run." Persistence (in `enrichment-persist.ts`) writes captions as variants 1-3, a manual caption as `variant=4, locked=true, isSlugSource=true`, updates the slug to `slugify(first_caption)` (with `uniquifySlug` + `slug_history` GIN-indexed for old-URL resolution), and writes the caption embedding best-effort after commit.
 
-### Auth + owner gating
+### NSFW (`src/lib/nsfw.ts`, `images.isNsfw`/`nsfwSource`)
 
-Two independent gates, both required:
+NSFW is classified by the tag pass (`nsfwSource='auto'`) or asserted by the uploader (`manual_nsfw` checkbox -> `nsfwSource='manual'`); manual never gets clobbered by a later auto pass. Gating is **server-side at the query layer**: the public stream hides NSFW rows unless the visitor opts in via the `pf_show_nsfw=true` cookie (`SHOW_NSFW_COOKIE`), toggled through `/api/nsfw-toggle`. Default-hide is enforced before sending the row down the wire (the blob URL is never shipped to an opted-out visitor). A query param (`include_nsfw`, parsed by `http-params.ts`) can override the cookie for admin tooling.
 
-1. **`middleware.ts`** -- Auth.js v5 wrapper. Redirects unauthenticated requests to `/admin/*`, 403s non-owner writes to `/api/images*` (POST/PATCH/DELETE) and owner-only moderation actions on `/api/comments/:id` (PATCH/DELETE). Matcher: `['/admin/:path*', '/api/images/:path*', '/api/comments/:path*']`. The other admin APIs (`/api/api-keys`, `/api/taxonomy`, `/api/prompts`) are NOT in the matcher and rely on in-handler `isOwner()` -- if you add a new admin endpoint outside those three matched paths, both gates apply.
-2. **`isOwner(session)`** in `src/lib/auth.ts` -- checked *inside* route handlers. Don't assume middleware alone is sufficient; it only runs for routes in the matcher.
+### Breed tool (`src/lib/ai/breed.ts`, `/admin/breed` + `/api/admin/breed`)
 
-Owner identity is `session.user.githubId === process.env.OWNER_GITHUB_ID`, populated via the JWT callback that copies `profile.id` to the token. GitHub handles/emails are not used for gating.
+Generates synthetic descriptions by doing vector math on existing caption embeddings, then asks the LLM to render the result. Four modes: `breed` (centroid of sources), `depart` (centroid, prompted to move away), `antibreed` (centroid but seeded with *farthest* references), `subtract` (anchor - mean(others)). It needs >=2 embedded sources (or an anchor + >=1 subtract). Output includes nearest existing images to the new point. `BreedError` codes surface the precise precondition that failed.
+
+### Embeddings + search (`src/lib/db/queries/embeddings.ts`, `/api/search`)
+
+Only `kind='caption'` (1536d) is written today; `image`/`combined` are reserved for a future CLIP/multimodal pass. `UNIQUE (image_id, kind)` so writes use `onConflictDoUpdate`. `/api/search?q=...` embeds the query then cosine-ranks; "more like this"/neighbors seed from an existing vector. The `vector` extension is enabled in `drizzle/0000_init.sql` -- if you wipe and re-push, run `bun scripts/ensure-pgvector.ts` first.
+
+### UMAP atlas (`/map`, `/admin/map`, `umap_projections` table)
+
+`umap-js` projects caption embeddings to 2D. The projection is **cached** in `umap_projections` (newest row matching the param cache key); recompute is a `umap.recompute` job triggered from `/admin/map`. Rendered client-side by `umap-canvas.tsx` / `embedding-viz.tsx`.
+
+### Collections / shelves (`collections`, `collection_items`, `/c/<slug>`, `/api/collections`)
+
+Anonymous-friendly shareable "shelves." `ownerHash` is the visitor's `ip_hash` (or the `user.id` for signed-in users) so authorization is one comparison; `fingerprint` (localStorage UUID) is a secondary de-dupe. Slugs are human-readable (`adjective-noun-NNNN`) so they share without leaking IDs (minted in `src/lib/collections/slug.ts`). `/api/me/shelf` is the current visitor's default shelf.
+
+### Engagement (`/api/images/:slug/{reactions,comments}`, `/api/comments/:id`, `/api/reports`)
+
+Anonymous, IP-hash gated (`src/lib/hash.ts` + `src/lib/rate-limit.ts`).
+
+- **Reactions** -- `UNIQUE (image_id, ip_hash)`; re-POST same kind toggles off, different kind swaps.
+- **Comments** -- public POST at `/api/images/:slug/comments`; owner moderation PATCH/DELETE at `/api/comments/:id`. Status `pending -> approved | rejected`, only `approved` is public. **Signed-in users skip moderation** (default `approved`); guests default `pending`, may supply `author_name`, and get city/region/country auto-captured from Vercel edge headers (`geoCity`/`geoRegion`/`geoCountry`). `userId` is `ON DELETE SET NULL` so a removed account leaves the comment standing as a guest row.
+- **Reports** -- public POST; separate `imageId`/`commentId` FK columns (not polymorphic) so deletes cascade.
+
+### Gallery sort + color pages
+
+`src/lib/sort/` holds the gallery sort/shuffle strategies (clump, anti-clump, drift, tidal, drunkard's-walk, seeded-shuffle, etc.). The `/api/images` list takes `sort`/`seed` params; without them it falls back to the site-admin's `gallery_config` defaults. `/color/<hex>` (+ `/api/color/<hex>/images`) surfaces images whose extracted palette matches a hex.
 
 ### Database (`src/lib/db/`)
 
-- Drizzle ORM on top of `@vercel/postgres`. Schema in `schema.ts`; config in `drizzle.config.ts` (reads `POSTGRES_URL`).
-- `drizzle/0000_init.sql` enables the `vector` extension up front even though the `embeddings` table is Phase 2 — don't strip this.
-- Query helpers live in `src/lib/db/queries/*.ts` (one file per concern: images, slugs, tags, prompts, taxonomy). Route handlers import from here; they shouldn't build Drizzle queries inline.
+- Drizzle ORM on `@vercel/postgres`. Schema in `schema.ts`; migrations in `drizzle/` (`0000`-`0003`); config in `drizzle.config.ts` (reads `POSTGRES_URL`).
+- Query helpers live one-file-per-concern under `src/lib/db/queries/` (images, slugs, tags, taxonomy, prompts, saved-prompts, ai-config, api-keys, embeddings, reactions, comments, reports, collections, jobs, webhooks, umap, users, about, gallery-config, palette, provenance, reprocess, stats). Route handlers and jobs import from here; **don't build Drizzle queries inline in handlers.**
+- `provider_keys` (outbound BYO AI creds, encrypted) is distinct from `api_keys` (inbound personal access tokens for the public REST API; only the SHA-256 hash stored).
+
+### PWA + SEO
+
+`next.config.mjs` wraps the app with `@serwist/next`; the service worker source is `src/app/sw.ts` (disabled in dev). `/share-target` + `/api/share-target` handle the PWA share target (forwarding to upload). SEO surfaces: `/feed.json`, `json-ld.tsx`, sitemap/robots (`src/lib/seo/`, `src/lib/site.ts`), driven by `NEXT_PUBLIC_SITE_URL` and the optional `GOOGLE_SITE_VERIFICATION`/`BING_SITE_VERIFICATION`.
 
 ## Conventions
 
-- **No em dashes** in code, comments, or prose. Use `--` (two hyphens). This is a project-wide style rule originating in the bootstrap prompt in SPEC.md; the whole codebase follows it.
-- Comments explain *why*, not *what*. The existing code is a good reference for tone — see `src/app/api/images/route.ts` comments about placeholder slugs and transaction boundaries.
-- Error handling at external boundaries (blob upload, provider calls, DB) returns a structured `NextResponse.json({ error }, { status })`; internal helpers throw.
-- Provider/model names are persisted per-row on captions/descriptions/tags so reprocessing (Phase 4) can diff them against current config.
+- **No em dashes** in code, comments, or prose. Use `--` (two hyphens). Project-wide rule from the SPEC.md bootstrap prompt; the whole codebase follows it.
+- Comments explain *why*, not *what*. The schema comments and `src/app/api/images/route.ts` are good references for tone.
+- Error handling at external boundaries (blob, provider, DB) returns a structured `NextResponse.json({ error }, { status })`; internal helpers throw.
+- Provider/model names are persisted per-row on captions/descriptions/tags/embeddings so reprocessing can diff them against current config.
+- New admin endpoints: add an explicit in-handler `isSiteAdmin`/`canEdit` gate. Middleware only guarantees "signed in" and only for its matcher paths.
 
 ## Known judgment calls
 
-Listed in README §"Judgment calls you should know about". The ones most likely to trip up future work:
+- Captions/descriptions are **one JSON call returning 3 variants** per field, not 3 calls. `{{variant_number}}` is wired but unused.
+- Manual caption is **variant 4** (`locked=true, isSlugSource=true`), not a replacement for an AI variant.
+- Random caption/description **selection is server-side per request** -- no stability across refreshes. Don't add client caching that fights this.
+- No `sharp`/native image libs. EXIF + `takenAt` from `exifr`, palette from `node-vibrant`. `images.width`/`height` exist but stay null -- nothing probes dimensions.
+- Embedding + enrichment are **best-effort and async**: a failed model call leaves the row usable (placeholder slug / null embedding) and eligible for `/admin/reprocess` or `scripts/backfill-embeddings.ts`. A failed embedding never fails the upload.
+- **GPS EXIF is stripped before persisting** (`image-meta.ts`). `images.exif` is returned by the public list endpoint, so re-adding GPS means publishing GPS -- needs a private column or server-side redaction first.
+- Per-user BYO keys fall back to env-var keys when a user has no `provider_keys` row -- so the bootstrap admin keeps working purely on `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`.
 
-- Captions/descriptions are **one JSON call returning 3 variants** per field, not 3 separate calls. `{{variant_number}}` is wired but unused in Phase 1 templates.
-- Random caption/description **selection is server-side per request** — no stability across page refreshes. Don't add client-side caching that fights this without checking first.
-- No `sharp` or native image libs. EXIF + `takenAt` come from `exifr`; palette comes from `node-vibrant` (both pure-JS). `width`/`height` columns exist on `images` but are still null -- `image-meta.ts` does not probe dimensions.
-- Embedding writes are best-effort and fire after the upload transaction commits. A failed embedding does NOT fail the upload; it leaves the row eligible for `scripts/backfill-embeddings.ts`.
-- GPS EXIF fields are stripped before persisting (`image-meta.ts:17-21`). `images.exif` is returned by the public list endpoint, so adding GPS back means publishing GPS -- requires a separate private column or server-side redaction first.
+## Required environment
+
+Beyond the README's list, the current code also reads: `CRON_SECRET` (gates `/api/cron/jobs`; the queue does nothing without it), `NEXT_PUBLIC_SITE_URL` (SEO/canonical origin), and optionally `GOOGLE_SITE_VERIFICATION`/`BING_SITE_VERIFICATION`. `AUTH_SECRET` is doubly load-bearing now: Auth.js session signing **and** the PBKDF2 root for provider-key encryption.
