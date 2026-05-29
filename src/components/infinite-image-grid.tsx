@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ImageCard } from './image-card';
+import { AttentionToggle } from './attention-toggle';
+import {
+  isCollectionEnabled,
+  sendAttentionBatch,
+  type DwellEvent
+} from '@/lib/attention-client';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 
 // Mirrors the LS_* pattern in src/components/sort-bar.tsx. Keep the key
@@ -69,6 +75,7 @@ export function InfiniteImageGrid({
   // Guards against concurrent fetches (rapid scroll + manual click).
   const inFlight = useRef(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
   const seenIds = useRef<Set<number>>(new Set(initial.map((i) => i.id)));
   // Generation counter -- incremented whenever the parent gives us a new
   // `initial`/`endpoint`/`query` (i.e. visitor changed sort/seed/tag).
@@ -183,6 +190,83 @@ export function InfiniteImageGrid({
     return () => observer.disconnect();
   }, [autoload, hasMore, loadMore]);
 
+  // Attention telemetry (feat/stigmergy): measure how long each tile is
+  // actually on screen and POST batched, aggregate dwell to /api/attention.
+  // The privacy gate is checked FIRST -- if collection is disabled (Do Not
+  // Track or explicit opt-out) we attach no observer and register no
+  // listeners, so nothing is measured or sent. Re-runs when `items` changes so
+  // newly paginated tiles get tracked.
+  useEffect(() => {
+    if (!isCollectionEnabled()) return;
+    const grid = gridRef.current;
+    if (!grid) return;
+
+    // Per-tile state: when it became visible (or absent if off-screen) and the
+    // dwell accumulated since the last flush.
+    const visibleSince = new Map<number, number>();
+    const pending = new Map<number, number>();
+
+    const accumulate = (id: number, now: number) => {
+      const since = visibleSince.get(id);
+      if (since != null) {
+        pending.set(id, (pending.get(id) || 0) + (now - since));
+        visibleSince.set(id, now);
+      }
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const now = Date.now();
+        for (const entry of entries) {
+          const raw = (entry.target as HTMLElement).dataset.attentionId;
+          if (!raw) continue;
+          const id = Number(raw);
+          if (!Number.isInteger(id)) continue;
+          // Count a tile as "on screen" once at least half is visible, so
+          // partial slivers during scroll don't inflate dwell.
+          if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+            if (!visibleSince.has(id)) visibleSince.set(id, now);
+          } else {
+            accumulate(id, now);
+            visibleSince.delete(id);
+          }
+        }
+      },
+      { threshold: [0, 0.5, 1] }
+    );
+
+    for (const el of grid.querySelectorAll<HTMLElement>('[data-attention-id]')) {
+      observer.observe(el);
+    }
+
+    const flush = () => {
+      const now = Date.now();
+      // Fold any still-visible dwell into pending before sending.
+      for (const id of visibleSince.keys()) accumulate(id, now);
+      const events: DwellEvent[] = [];
+      for (const [imageId, ms] of pending) {
+        if (ms > 0) events.push({ imageId, ms });
+      }
+      pending.clear();
+      sendAttentionBatch(events);
+    };
+
+    // Debounced periodic flush plus a flush on tab-hide so dwell is not lost
+    // when the visitor leaves.
+    const interval = window.setInterval(flush, 15_000);
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    document.addEventListener('visibilitychange', onHide);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onHide);
+      observer.disconnect();
+      flush();
+    };
+  }, [items]);
+
   if (items.length === 0) {
     return (
       <p className="py-24 text-center font-mono text-sm text-ink-500">
@@ -192,7 +276,7 @@ export function InfiniteImageGrid({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-10">
+    <div ref={gridRef} className="mx-auto flex w-full max-w-2xl flex-col gap-10">
       {items.map((img) => (
         <ImageCard
           key={img.id}
@@ -200,6 +284,7 @@ export function InfiniteImageGrid({
           similarity={similarities?.get(img.id)}
         />
       ))}
+      <AttentionToggle />
       {hasMore ? (
         autoload === 'on' ? (
           <div ref={sentinelRef} className="py-8 text-center font-mono text-xs text-ink-500">
