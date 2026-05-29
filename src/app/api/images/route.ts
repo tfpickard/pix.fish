@@ -6,6 +6,7 @@ import { db } from '@/lib/db/client';
 import { images } from '@/lib/db/schema';
 import { extractExif, extractPalette } from '@/lib/image-meta';
 import { hydrateImages, listImages } from '@/lib/db/queries/images';
+import { addLineageEdges, resolveOwnedImageIdsBySlugs } from '@/lib/db/queries/lineage';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
@@ -109,6 +110,24 @@ export async function POST(req: Request) {
       ? true
       : undefined;
 
+  // Lineage (Phase 5): the owner can mark this upload as a child of existing
+  // images they generated it from, plus the prompt/dialect that produced it.
+  // Parents are comma-separated slugs; only the uploader's own slugs resolve.
+  const rawParents = form.get('parents');
+  const parentSlugs =
+    typeof rawParents === 'string' && rawParents.trim()
+      ? rawParents
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  const rawPromptUsed = form.get('prompt_used');
+  const promptUsed =
+    typeof rawPromptUsed === 'string' && rawPromptUsed.trim() ? rawPromptUsed.trim() : null;
+  const rawDialectUsed = form.get('dialect_used');
+  const dialectUsed =
+    typeof rawDialectUsed === 'string' && rawDialectUsed.trim() ? rawDialectUsed.trim() : null;
+
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'file is required' }, { status: 400 });
   }
@@ -146,22 +165,39 @@ export async function POST(req: Request) {
   // Reserve the row with a placeholder slug. The enrich.image job updates
   // the slug after captions come back.
   const placeholderSlug = `img-${blob.pathname.split('/').pop()!.slice(0, 32)}`;
+  // Resolve parent slugs to owned ids before the transaction so a bad slug is
+  // simply dropped (the upload still succeeds) rather than failing the insert.
+  const parentIds =
+    parentSlugs.length > 0 ? await resolveOwnedImageIdsBySlugs(userId, parentSlugs) : [];
   let row: typeof images.$inferSelect | undefined;
   try {
-    [row] = await db
-      .insert(images)
-      .values({
-        slug: placeholderSlug,
-        blobUrl: blob.url,
-        blobKey: blob.pathname,
-        mime,
-        ownerId: userId,
-        manualCaption: manualCaption ?? null,
-        exif: exif ?? null,
-        palette: palette.length > 0 ? palette : null,
-        takenAt: takenAt ?? null
-      })
-      .returning();
+    // Insert the image and its lineage edges in one transaction so a partial
+    // failure leaves no orphan edges pointing at a row that never landed.
+    row = await db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(images)
+        .values({
+          slug: placeholderSlug,
+          blobUrl: blob.url,
+          blobKey: blob.pathname,
+          mime,
+          ownerId: userId,
+          manualCaption: manualCaption ?? null,
+          exif: exif ?? null,
+          palette: palette.length > 0 ? palette : null,
+          takenAt: takenAt ?? null
+        })
+        .returning();
+      if (inserted && parentIds.length > 0) {
+        await addLineageEdges(tx, {
+          childImageId: inserted.id,
+          parentImageIds: parentIds,
+          promptUsed,
+          dialectUsed
+        });
+      }
+      return inserted;
+    });
   } catch (err) {
     console.error('failed to insert image row', err);
     return NextResponse.json({ error: 'failed to create image row' }, { status: 500 });
