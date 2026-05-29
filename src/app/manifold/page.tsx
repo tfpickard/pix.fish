@@ -45,7 +45,8 @@ export default async function ManifoldPage() {
             slug: images.slug,
             handle: users.handle,
             blobUrl: images.blobUrl,
-            palette: images.palette
+            palette: images.palette,
+            surprisal: images.surprisal
           })
           .from(images)
           .innerJoin(users, eq(users.id, images.ownerId))

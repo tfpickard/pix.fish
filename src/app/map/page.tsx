@@ -32,7 +32,8 @@ export default async function MapPage() {
             id: images.id,
             slug: images.slug,
             blobUrl: images.blobUrl,
-            palette: images.palette
+            palette: images.palette,
+            surprisal: images.surprisal
           })
           .from(images)
           .where(inArray(images.id, ids))

@@ -10,6 +10,8 @@ type ImageMeta = {
   // until we update that page too. Components stay backward compatible.
   blobUrl?: string;
   palette?: string[] | null;
+  // Normalized 0..1 surprisal from the entropy pass. Null = not yet scored.
+  surprisal?: number | null;
 };
 
 type Props = {
@@ -106,12 +108,16 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size.w, size.h);
 
-    const radius = 3 + Math.min(2, scale - 1);
+    const baseRadius = 3 + Math.min(2, scale - 1);
     for (const p of points) {
       const { x, y } = projectPoint(p);
       if (x < -10 || x > size.w + 10 || y < -10 || y > size.h + 10) continue;
       const meta = metaById.get(p.imageId);
       const palette = meta?.palette;
+      // Surprisal (0..1) scales radius between 0.6x and 2.2x base. Unscored
+      // images use the median (0.5) so they blend in rather than popping out.
+      const s = meta?.surprisal ?? 0.5;
+      const radius = baseRadius * (0.6 + s * 1.6);
       const fill =
         palette && palette[0] ? withAlpha(palette[0], 0.75) : 'rgba(99, 179, 237, 0.55)';
       ctx.fillStyle = fill;

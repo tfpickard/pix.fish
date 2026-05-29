@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Points, PointMaterial } from '@react-three/drei';
+import { OrbitControls, Points } from '@react-three/drei';
 import * as THREE from 'three';
 import { useRouter } from 'next/navigation';
 
@@ -17,6 +17,7 @@ export type ManifoldImage = {
   handle: string;
   blobUrl: string;
   palette: string[] | null;
+  surprisal: number | null;
 };
 
 type Props = {
@@ -79,10 +80,13 @@ function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
 
   // Build Float32Arrays once per points change. Three.js BufferGeometry expects
   // flat arrays; hit-testing uses the original `points` array by index.
-  const { positions, colors } = useMemo(() => {
+  // `sizes` drives per-point scale: surprisal (0..1) maps to 0.6x..2.2x the
+  // base point size. Unscored images (null) use 0.5 so they blend in.
+  const { positions, colors, sizes } = useMemo(() => {
     const normalised = normalisePoints(points);
     const pos = new Float32Array(normalised.length * 3);
     const col = new Float32Array(normalised.length * 3);
+    const sz = new Float32Array(normalised.length);
     for (let i = 0; i < normalised.length; i++) {
       const p = normalised[i]!;
       pos[i * 3] = p.x;
@@ -93,8 +97,12 @@ function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
       col[i * 3] = r;
       col[i * 3 + 1] = g;
       col[i * 3 + 2] = b;
+      // With sizeAttenuation (300/-z) and camera at z=4, size 0.035 -> ~2.6px
+      // and 0.11 -> ~8px. Surprisal null (unscored) uses 0.5 to blend in.
+      const s = meta?.surprisal ?? 0.5;
+      sz[i] = 0.035 + s * 0.075; // 0.035 (cluster center) to 0.11 (max outlier)
     }
-    return { positions: pos, colors: col };
+    return { positions: pos, colors: col, sizes: sz };
   }, [points, metaById]);
 
   // Raycaster for hover/click. We do it manually each frame rather than using
@@ -148,14 +156,40 @@ function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
     if (pt) onClickPoint(pt);
   }
 
+  // Custom shader so we can read the per-point `size` attribute that drei
+  // writes when `sizes` is passed. THREE.PointsMaterial ignores that attribute
+  // and only supports a single uniform size; a ShaderMaterial lets us scale
+  // each point by its surprisal-derived size. The fragment shader rounds the
+  // square gl_PointCoord quad into a circle with a soft edge.
+  const vertexShader = `
+    attribute float size;
+    attribute vec3 color;
+    varying vec3 vColor;
+    void main() {
+      vColor = color;
+      vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+      // sizeAttenuation: points grow as you zoom in (scale ~ 300 matches
+      // Three.js PointsMaterial default for a 600px canvas).
+      gl_PointSize = size * (300.0 / -mvPos.z);
+      gl_Position = projectionMatrix * mvPos;
+    }
+  `;
+  const fragmentShader = `
+    varying vec3 vColor;
+    void main() {
+      float d = length(gl_PointCoord - vec2(0.5));
+      if (d > 0.5) discard;
+      float a = 0.85 * (1.0 - smoothstep(0.38, 0.5, d));
+      gl_FragColor = vec4(vColor, a);
+    }
+  `;
+
   return (
-    <Points ref={pointsRef} positions={positions} colors={colors} onClick={handleClick}>
-      <PointMaterial
-        vertexColors
-        size={0.025}
-        sizeAttenuation
+    <Points ref={pointsRef} positions={positions} colors={colors} sizes={sizes} onClick={handleClick}>
+      <shaderMaterial
+        vertexShader={vertexShader}
+        fragmentShader={fragmentShader}
         transparent
-        opacity={0.85}
         depthWrite={false}
       />
     </Points>
