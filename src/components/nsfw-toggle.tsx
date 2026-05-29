@@ -20,7 +20,7 @@ function readCookieMode(): NsfwMode {
 const MODE_CONFIG: Record<NsfwMode, { label: string; nextLabel: string; icon: typeof Eye; className: string }> = {
   hide:    { label: 'nsfw hidden',  nextLabel: 'show nsfw',    icon: EyeOff, className: 'text-ink-500' },
   include: { label: 'nsfw visible', nextLabel: 'nsfw only',    icon: Eye,    className: 'text-ink-400' },
-  only:    { label: 'nsfw only',    nextLabel: 'hide nsfw',    icon: Eye,    className: 'text-amber-400' },
+  only:    { label: 'nsfw only',    nextLabel: 'hide nsfw',    icon: Eye,    className: 'text-rose-600' },
 };
 
 // Cycles the visitor NSFW preference through three states:
