@@ -31,10 +31,15 @@ const SONNET_MODEL = 'claude-sonnet-4-6';
 const HAIKU_MODEL = 'claude-haiku-4-5-20251001';
 
 // How many Sonnet "family" idioms to seed before Haiku expands them.
-// 30 families * ~33 Haiku siblings each = ~1000 total (matches default target).
 const N_SONNET_FAMILIES = 30;
-// Haiku batch size per expansion call -- small enough to get clean JSON.
-const HAIKU_BATCH_SIZE = 10;
+// Per-call generation batch size. The shared AIProvider.text() caps responses
+// at max_tokens=1024; each idiom-with-description runs ~110 tokens, so asking
+// for more than ~6 at once overflows the cap, truncates the JSON array
+// mid-string, and parseIdiomArray returns zero (this is what stalled the run
+// at 32). Keep batches small and loop instead.
+const GEN_BATCH_SIZE = 6;
+// Haiku batch size per expansion call -- same token-cap constraint.
+const HAIKU_BATCH_SIZE = 6;
 
 // EM dash variants to strip from generated output. The prompt instructs the
 // model not to use them, but we enforce it defensively here too.
@@ -214,9 +219,9 @@ async function generateAllSonnet(opts: {
   existing: RawIdiom[];
   target: number;
 }): Promise<RawIdiom[]> {
-  // Split into batches of 30 max to stay within a single context window and
-  // keep JSON output clean.
-  const BATCH = 30;
+  // Batch small so each call's JSON array fits under the text() max_tokens cap
+  // (see GEN_BATCH_SIZE); larger batches truncate and parse to nothing.
+  const BATCH = GEN_BATCH_SIZE;
   const seen = {
     keys: new Set(opts.existing.map((i) => i.key)),
     labels: new Set(opts.existing.map((i) => i.label.toLowerCase().replace(/[^a-z0-9]/g, '')))
@@ -317,26 +322,38 @@ async function main() {
     // Hybrid: Sonnet seeds families; Haiku expands to target.
     console.log('strategy: hybrid (Sonnet families + Haiku expansion)');
 
-    // Step 1 -- Sonnet families.
-    const familyCount = Math.min(N_SONNET_FAMILIES, needed);
-    const rawFamilies = await generateSonnetFamilies({
-      apiKey,
-      promptTemplate,
-      existing,
-      n: familyCount,
-      dryRun
-    });
-    const families = dedupeAgainst(rawFamilies.map(sanitize).filter(isValid), seen);
-    console.log(`  accepted ${families.length} Sonnet families`);
-    newIdioms.push(...families);
+    // Step 1 -- Sonnet families, generated in small token-cap-safe batches and
+    // looped until we have enough or the model stops producing new ones.
+    const familyTarget = Math.min(N_SONNET_FAMILIES, needed);
+    let sonnetEmptyStreak = 0;
+    while (newIdioms.length < familyTarget && sonnetEmptyStreak < 2) {
+      const batchN = Math.min(GEN_BATCH_SIZE, familyTarget - newIdioms.length);
+      const rawFamilies = await generateSonnetFamilies({
+        apiKey,
+        promptTemplate,
+        existing: [...existing, ...newIdioms],
+        n: batchN,
+        dryRun
+      });
+      const families = dedupeAgainst(rawFamilies.map(sanitize).filter(isValid), seen);
+      if (families.length === 0) {
+        sonnetEmptyStreak++;
+        console.warn(`  [sonnet] batch produced no new idioms (streak ${sonnetEmptyStreak})`);
+        continue;
+      }
+      sonnetEmptyStreak = 0;
+      newIdioms.push(...families);
+      console.log(`  [sonnet] accepted ${families.length}; families so far: ${newIdioms.length}`);
+    }
 
-    // Step 2 -- Haiku expansion in batches until target reached.
-    const totalExistingForHaiku = [...existing, ...newIdioms];
+    // Step 2 -- Haiku expansion in small batches until target reached. Tolerate
+    // a few duplicate-heavy batches before giving up: one all-dupe draw does
+    // not mean the model is exhausted.
     let haikusNeeded = needed - newIdioms.length;
-
-    while (haikusNeeded > 0) {
+    let haikuEmptyStreak = 0;
+    while (haikusNeeded > 0 && haikuEmptyStreak < 3) {
       const batchN = Math.min(HAIKU_BATCH_SIZE, haikusNeeded);
-      const currentContext = [...totalExistingForHaiku, ...newIdioms];
+      const currentContext = [...existing, ...newIdioms];
       const rawExpansion = await generateHaikuExpansion({
         apiKey,
         promptTemplate,
@@ -345,9 +362,11 @@ async function main() {
       });
       const expansion = dedupeAgainst(rawExpansion.map(sanitize).filter(isValid), seen);
       if (expansion.length === 0) {
-        console.warn('  [haiku] no unique idioms in batch; stopping expansion early.');
-        break;
+        haikuEmptyStreak++;
+        console.warn(`  [haiku] no unique idioms in batch (streak ${haikuEmptyStreak})`);
+        continue;
       }
+      haikuEmptyStreak = 0;
       newIdioms.push(...expansion);
       haikusNeeded -= expansion.length;
       console.log(`  [haiku] accepted ${expansion.length}; total new: ${newIdioms.length}`);
