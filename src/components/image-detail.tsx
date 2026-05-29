@@ -29,6 +29,7 @@ import {
   pickSlugCaption
 } from '@/lib/seo/image-meta';
 import { absoluteUrl } from '@/lib/site';
+import { readShowNsfwCookie } from '@/lib/nsfw';
 
 // Canonical URL for an image. Phase D moves the canonical from /<slug> to
 // /u/<handle>/<slug> so search engines pick up the per-user namespace; the
@@ -87,7 +88,7 @@ export function buildImageDetailMetadata(
 // link to /u/<handle>/<slug> via metadata, so search engines still pick
 // up the canonical URL. A future polish would hydrate owner handles for
 // neighbors and emit /u/<handle>/<slug> links directly.
-function NeighborGrid({ images }: { images: ImageWithRelations[] }) {
+function NeighborGrid({ images, showNsfw }: { images: ImageWithRelations[]; showNsfw: boolean }) {
   return (
     <div className="mx-auto grid w-full max-w-md grid-cols-2 gap-2">
       {images.map((img) => (
@@ -101,7 +102,7 @@ function NeighborGrid({ images }: { images: ImageWithRelations[] }) {
             alt={img.captions[0]?.text ?? img.slug}
             fill
             sizes="(min-width: 640px) 208px, 45vw"
-            className={`object-cover transition-[transform,filter] duration-200 group-hover:scale-[1.03]${img.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
+            className={`object-cover transition-[transform,filter] duration-200 group-hover:scale-[1.03]${img.isNsfw && !showNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
           />
         </Link>
       ))}
@@ -118,7 +119,7 @@ export async function ImageDetail({
   ownerHandle?: string | null;
   ownerName?: string | null;
 }) {
-  const session = await auth();
+  const [session, showNsfw] = await Promise.all([auth(), readShowNsfwCookie()]);
   const owner = canEdit(session, img.ownerId);
   // Remix idioms are only needed when the viewer can edit; skip the query for
   // the public path.
@@ -188,7 +189,7 @@ export async function ImageDetail({
             alt={caption || img.slug}
             width={img.width}
             height={img.height}
-            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
+            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw && !showNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
             priority
           />
         ) : (
@@ -198,7 +199,7 @@ export async function ImageDetail({
             width={0}
             height={0}
             sizes="(min-width: 1024px) 1024px, 100vw"
-            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
+            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw && !showNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
             priority
           />
         )}
@@ -258,14 +259,14 @@ export async function ImageDetail({
       {neighbors.length > 0 ? (
         <section aria-label="more like this" className="mx-auto max-w-md space-y-3 pt-6">
           <h2 className="text-center font-mono text-xs uppercase tracking-wide text-ink-500">more like this</h2>
-          <NeighborGrid images={neighbors} />
+          <NeighborGrid images={neighbors} showNsfw={showNsfw} />
         </section>
       ) : null}
 
       {opposites.length > 0 ? (
         <section aria-label="more unlike this" className="mx-auto max-w-md space-y-3 pt-6">
           <h2 className="text-center font-mono text-xs uppercase tracking-wide text-ink-500">more unlike this</h2>
-          <NeighborGrid images={opposites} />
+          <NeighborGrid images={opposites} showNsfw={showNsfw} />
         </section>
       ) : null}
 

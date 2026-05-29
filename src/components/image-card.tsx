@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
@@ -13,7 +13,21 @@ type Props = {
   similarity?: number;
 };
 
+function readShowNsfw(): boolean {
+  if (typeof document === 'undefined') return false;
+  const m = document.cookie.match(/(?:^|; )pf_show_nsfw=([^;]*)/);
+  return m?.[1] === 'true';
+}
+
 export function ImageCard({ image, similarity }: Props) {
+  // Mirror the nsfw-toggle.tsx pattern: start false (SSR/hydration agree),
+  // then resolve from the cookie after mount. The toggle always calls
+  // router.refresh() so the value is stable for the lifetime of this render.
+  const [showNsfw, setShowNsfw] = useState(false);
+  useEffect(() => {
+    setShowNsfw(readShowNsfw());
+  }, []);
+
   // Deterministic per-image caption pick. The previous Math.random() pick
   // ran at every render in client contexts (e.g. the InfiniteImageGrid
   // re-rendering as `isLoading` toggles), which caused hydration
@@ -55,14 +69,14 @@ export function ImageCard({ image, similarity }: Props) {
               // a landscape both show uncropped; the parent's aspectRatio is
               // computed from the image itself so there's no letterboxing in
               // practice.
-              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
+              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw && !showNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
               sizes="(min-width: 1024px) 640px, 100vw"
             />
           ) : (
             <img
               src={image.blobUrl}
               alt={caption || image.slug}
-              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
+              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw && !showNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
             />
           )}
         </div>
