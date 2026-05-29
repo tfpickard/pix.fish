@@ -36,6 +36,11 @@ export type ImageWithRelations = Image & {
   captions: { id: number; variant: number; text: string; isSlugSource: boolean; locked: boolean }[];
   descriptions: { id: number; variant: number; text: string; locked: boolean }[];
   tags: { id: number; tag: string; source: string; confidence: number | null }[];
+  // Engagement counts for gallery cards. Populated by hydrateImages (the
+  // gallery/search/list path); the single-image detail builders leave them
+  // undefined since the detail page fetches reactions/comments separately.
+  reactionCounts?: { up: number; down: number };
+  commentCount?: number;
 };
 
 export type ListImagesOpts = {
@@ -395,7 +400,7 @@ export async function hydrateImages(imageRows: Image[]): Promise<ImageWithRelati
   if (imageRows.length === 0) return [];
 
   const ids = imageRows.map((i) => i.id);
-  const [capRows, descRows, tagRows] = await Promise.all([
+  const [capRows, descRows, tagRows, reactionRows, commentCountRows] = await Promise.all([
     db
       .select()
       .from(captions)
@@ -406,12 +411,40 @@ export async function hydrateImages(imageRows: Image[]): Promise<ImageWithRelati
       .from(descriptions)
       .where(inArray(descriptions.imageId, ids))
       .orderBy(asc(descriptions.imageId), asc(descriptions.variant)),
-    db.select().from(tags).where(inArray(tags.imageId, ids)).orderBy(asc(tags.tag))
+    db.select().from(tags).where(inArray(tags.imageId, ids)).orderBy(asc(tags.tag)),
+    db
+      .select({
+        imageId: reactions.imageId,
+        kind: reactions.kind,
+        n: sql<number>`count(*)::int`
+      })
+      .from(reactions)
+      .where(inArray(reactions.imageId, ids))
+      .groupBy(reactions.imageId, reactions.kind),
+    // Only approved comments are public, so the card count matches what a
+    // visitor can actually read on the detail page.
+    db
+      .select({
+        imageId: comments.imageId,
+        n: sql<number>`count(*)::int`
+      })
+      .from(comments)
+      .where(and(inArray(comments.imageId, ids), eq(comments.status, 'approved')))
+      .groupBy(comments.imageId)
   ]);
 
   const capByImage = groupBy(capRows, (r) => r.imageId);
   const descByImage = groupBy(descRows, (r) => r.imageId);
   const tagByImage = groupBy(tagRows, (r) => r.imageId);
+
+  const reactionByImage = new Map<number, { up: number; down: number }>();
+  for (const r of reactionRows) {
+    const cur = reactionByImage.get(r.imageId) ?? { up: 0, down: 0 };
+    if (r.kind === 'up') cur.up = r.n;
+    else if (r.kind === 'down') cur.down = r.n;
+    reactionByImage.set(r.imageId, cur);
+  }
+  const commentCountByImage = new Map(commentCountRows.map((r) => [r.imageId, r.n]));
 
   return imageRows.map((img) => ({
     ...img,
@@ -433,7 +466,9 @@ export async function hydrateImages(imageRows: Image[]): Promise<ImageWithRelati
       tag: t.tag,
       source: t.source,
       confidence: t.confidence
-    }))
+    })),
+    reactionCounts: reactionByImage.get(img.id) ?? { up: 0, down: 0 },
+    commentCount: commentCountByImage.get(img.id) ?? 0
   }));
 }
 
