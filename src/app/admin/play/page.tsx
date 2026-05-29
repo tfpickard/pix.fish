@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { hasAnyGrammar } from '@/lib/db/queries/grammar';
 import { CARD_CATEGORIES, countCardsByCategory } from '@/lib/db/queries/constraint-cards';
+import { listVibeAxes } from '@/lib/db/queries/vibe-axes';
 import { PlaygroundClient } from './_components/playground-client';
 
 export const dynamic = 'force-dynamic';
@@ -10,9 +11,10 @@ export default async function AdminPlayPage() {
   const session = await auth();
   if (!isSiteAdmin(session) || !session?.user?.id) redirect('/admin/upload');
 
-  const [grammarReady, cardCounts] = await Promise.all([
+  const [grammarReady, cardCounts, vibeAxes] = await Promise.all([
     hasAnyGrammar(session.user.id),
-    countCardsByCategory()
+    countCardsByCategory(),
+    listVibeAxes()
   ]);
 
   return (
@@ -39,6 +41,12 @@ export default async function AdminPlayPage() {
         grammarReady={grammarReady}
         categories={[...CARD_CATEGORIES]}
         cardCounts={cardCounts}
+        vibeAxes={vibeAxes.map((a) => ({
+          key: a.key,
+          label: a.label,
+          negativePole: a.negativePole,
+          positivePole: a.positivePole
+        }))}
       />
     </div>
   );

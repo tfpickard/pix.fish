@@ -8,6 +8,8 @@ import { countReactions } from '@/lib/db/queries/reactions';
 import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
 import { ImageActions } from '@/components/image-actions';
+import { RemixMenu } from '@/components/remix-menu';
+import { listRemixIdioms } from '@/lib/db/queries/remix-idioms';
 import { EmbeddingViz } from '@/components/embedding-viz';
 import { ExifFacts, PaletteEdgeBand } from '@/components/image-meta';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
@@ -117,6 +119,11 @@ export async function ImageDetail({
 }) {
   const session = await auth();
   const owner = canEdit(session, img.ownerId);
+  // Remix idioms are only needed when the viewer can edit; skip the query for
+  // the public path.
+  const remixIdioms = owner
+    ? await listRemixIdioms().catch(() => [])
+    : [];
 
   let neighbors: Awaited<ReturnType<typeof hydrateImages>> = [];
   let opposites: Awaited<ReturnType<typeof hydrateImages>> = [];
@@ -225,7 +232,15 @@ export async function ImageDetail({
 
         <SaveToShelf imageId={img.id} />
 
-        {owner ? <ImageActions slug={img.slug} /> : null}
+        {owner ? (
+          <div className="space-y-4">
+            <ImageActions slug={img.slug} />
+            <RemixMenu
+              slug={img.slug}
+              idioms={remixIdioms.map((i) => ({ key: i.key, label: i.label }))}
+            />
+          </div>
+        ) : null}
 
         <div className="flex justify-end pt-1">
           <ReportButton targetType="image" targetId={img.id} />
