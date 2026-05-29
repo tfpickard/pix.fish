@@ -19,6 +19,7 @@ import { ReactionBar } from '@/components/reaction-bar';
 import { SaveToShelf } from '@/components/save-to-shelf';
 import { CommentList } from '@/components/comment-list';
 import { ReportButton } from '@/components/report-button';
+import { SurprisalReadout } from '@/components/surprisal-readout';
 import { JsonLd } from '@/components/json-ld';
 import { buildImageObjectLd } from '@/lib/seo/jsonld';
 import {
@@ -225,6 +226,8 @@ export async function ImageDetail({
         ) : null}
 
         <p className="text-center font-mono text-xs text-ink-500">{uploaded}</p>
+
+        <SurprisalReadout surprisal={img.surprisal} />
 
         <ExifFacts exif={img.exif as Record<string, unknown> | null} />
 
