@@ -4,8 +4,13 @@ import { reprocessImageHandler } from './reprocessImage';
 import { enrichImageHandler } from './enrichImage';
 import { umapRecomputeHandler } from './umapRecompute';
 import { backupExportHandler } from './backupExport';
+<<<<<<< HEAD
 import { nsfwScanHandler } from './nsfwScan';
 import { entropyRecomputeHandler } from './entropyRecompute';
+||||||| parent of 260a1b4 (feat(manifold): 3D point cloud -- umap-js nComponents:3, r3f scene, lazy thumbs)
+=======
+import { manifoldRecomputeHandler } from './manifoldRecompute';
+>>>>>>> 260a1b4 (feat(manifold): 3D point cloud -- umap-js nComponents:3, r3f scene, lazy thumbs)
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -30,7 +35,14 @@ export const handlers: Record<string, JobHandler> = {
   'reprocess.image': reprocessImageHandler,
   'enrich.image': enrichImageHandler,
   'umap.recompute': umapRecomputeHandler,
+<<<<<<< HEAD
   'backup.export': backupExportHandler,
   'nsfw.scan': nsfwScanHandler,
   'entropy.recompute': entropyRecomputeHandler
+||||||| parent of 260a1b4 (feat(manifold): 3D point cloud -- umap-js nComponents:3, r3f scene, lazy thumbs)
+  'backup.export': backupExportHandler
+=======
+  'backup.export': backupExportHandler,
+  'manifold.recompute': manifoldRecomputeHandler
+>>>>>>> 260a1b4 (feat(manifold): 3D point cloud -- umap-js nComponents:3, r3f scene, lazy thumbs)
 };

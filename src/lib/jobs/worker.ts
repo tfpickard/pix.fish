@@ -20,6 +20,7 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'reprocess.image': 50_000, // 3 parallel vision calls; Anthropic can run long
   'enrich.image': 50_000, // same shape as reprocess.image -- 3 parallel vision calls
   'umap.recompute': 55_000, // single heavy job; fills the tick
+  'manifold.recompute': 55_000, // 3D umap; more compute than 2D but same wall budget
   'backup.export': 55_000, // large zip upload; fills the tick
   'nsfw.scan': 25_000, // single Haiku vision call; same shape as a webhook fetch
   'entropy.recompute': 55_000, // read-then-write over the whole corpus; fills the tick
