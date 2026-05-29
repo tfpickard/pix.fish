@@ -403,6 +403,32 @@ Client subscribes to `image:<id>` channel after upload. Server publishes:
 - Stats dashboard
 - Full backup export
 
+### Phase 5 – Inspiration playground + lineage
+
+The corpus becomes a generative jukebox: the owner conceives new images here, then takes
+the prompts to whatever image model they prefer, and uploads the results back so the
+gallery tracks creative lineage. See `docs/playground.md` for the full writeup.
+
+- **Grammar + dice + dialects** (`/admin/play`): mine the corpus caption grammar
+  (`scripts/derive-grammar.ts`), fill skeleton templates with weighted-random slots, roll
+  constraint-card dice, and copy any result in five model dialects (Midjourney, Flux,
+  SDXL, DALL-E 3, Sora).
+- **Vibe equalizer**: interpretable sliders steer the LLM toward gallery coordinates;
+  axes derived by `scripts/vibe-axes.ts` (tag-cluster / PCA / k-means, owner picks).
+- **Surprise engine**: prompts aimed away from the gallery centroid (motif inversion +
+  far-territory sampling, hybrid).
+- **Latent walk**: LLM-narrated drift from a seed image (metaphorical, no per-step vector
+  math).
+- **Reverse haiku**: a haiku in, prompts for the image it could caption out.
+- **Remix**: recast an image's concept into a different visual idiom (`remix_idioms`).
+- **Lineage**: `image_lineage` (multi-parent) tracks parent -> child; uploads can declare
+  parents + the prompt that made them; `/lineage` renders a d3 force-directed graph,
+  owner-only with a per-user public toggle.
+
+New tables: `grammar_slots`, `grammar_fillers`, `constraint_cards`, `vibe_axes`,
+`remix_idioms`, `image_lineage`. New prompt keys: `equalizer`, `surprise`, `walk_step`,
+`reverse_haiku`, `remix`.
+
 -----
 
 ## Appendix: Claude Code bootstrap prompt
