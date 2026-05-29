@@ -21,8 +21,13 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'enrich.image': 50_000, // same shape as reprocess.image -- 3 parallel vision calls
   'umap.recompute': 55_000, // single heavy job; fills the tick
   'backup.export': 55_000, // large zip upload; fills the tick
+<<<<<<< HEAD
   'nsfw.scan': 25_000, // single Haiku vision call; same shape as a webhook fetch
   'entropy.recompute': 55_000, // read-then-write over the whole corpus; fills the tick
+||||||| parent of f9ad7d0 (feat(geodesics): kNN graph build, Dijkstra pathfinding, /api/path, /connect filmstrip)
+=======
+  'knn.rebuild': 55_000, // O(n^2) all-pairs; fills the tick at ~5000 images
+>>>>>>> f9ad7d0 (feat(geodesics): kNN graph build, Dijkstra pathfinding, /api/path, /connect filmstrip)
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;
