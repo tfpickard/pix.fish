@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { inArray, asc } from 'drizzle-orm';
+import { eq, inArray, asc } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, captions, users } from '@/lib/db/schema';
 import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw } from '@/lib/db/queries/knn';
@@ -23,6 +23,30 @@ export const metadata: Metadata = {
 type PageProps = {
   searchParams: { a?: string; b?: string };
 };
+
+type SlimImage = { id: number; slug: string; blobUrl: string };
+
+// Resolve a raw search-param value to a slim image record. Accepts slugs
+// (preferred -- human-readable) or numeric IDs (backwards compat so
+// /api/path cross-links keep working). Returns null when nothing matches.
+async function resolveEndpoint(raw: string): Promise<SlimImage | null> {
+  if (!raw) return null;
+  const [bySlug] = await db
+    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl })
+    .from(images)
+    .where(eq(images.slug, raw))
+    .orderBy(asc(images.id))
+    .limit(1);
+  if (bySlug) return bySlug;
+  const num = parseInt(raw, 10);
+  if (!Number.isInteger(num) || num <= 0) return null;
+  const [byId] = await db
+    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl })
+    .from(images)
+    .where(eq(images.id, num))
+    .limit(1);
+  return byId ?? null;
+}
 
 // Hydrate a set of image ids into PathNode records in one pair of round-trips.
 // Shared with /api/path -- kept here to avoid a circular import between the
@@ -120,22 +144,20 @@ export default async function ConnectPage({ searchParams }: PageProps) {
   const rawA = searchParams.a ?? '';
   const rawB = searchParams.b ?? '';
 
-  const a = rawA ? parseInt(rawA, 10) : NaN;
-  const b = rawB ? parseInt(rawB, 10) : NaN;
+  // Resolve slugs (or fallback numeric IDs) to slim image records in parallel.
+  const [imgA, imgB, edgeCount, includeNsfw] = await Promise.all([
+    resolveEndpoint(rawA),
+    resolveEndpoint(rawB),
+    countKnnEdges().catch(() => 0),
+    readShowNsfwCookie()
+  ]);
 
-  const hasValidParams = Number.isInteger(a) && Number.isInteger(b) && a > 0 && b > 0;
-
-  // Always check edge count so we can warn if the graph hasn't been built.
-  const edgeCount = await countKnnEdges().catch(() => 0);
+  const hasValidParams = !!(imgA && imgB);
   const graphReady = edgeCount > 0;
-
-  // Read the visitor's NSFW opt-in cookie once and pass it into resolvePath
-  // so paths are filtered consistently with the rest of the gallery.
-  const includeNsfw = await readShowNsfwCookie();
 
   let outcome: PathOutcome | null = null;
   if (hasValidParams && graphReady) {
-    outcome = await resolvePath(a, b, includeNsfw).catch((err) => {
+    outcome = await resolvePath(imgA.id, imgB.id, includeNsfw).catch((err) => {
       console.error('/connect: resolvePath error', err);
       return null;
     });
@@ -146,9 +168,8 @@ export default async function ConnectPage({ searchParams }: PageProps) {
       <section className="space-y-2">
         <h1 className="font-fungal-lite text-3xl text-ink-100">connect</h1>
         <p className="font-mono text-xs text-ink-500">
-          find the shortest path between two images through the semantic similarity graph. enter the
-          numeric image ids below (find an id via the admin panel or{' '}
-          <code className="text-ink-400">GET /api/path?a=&amp;b=</code>).
+          find the shortest path between two images through the semantic similarity graph. paste
+          a slug from any image page into each field below.
         </p>
       </section>
 
@@ -166,48 +187,84 @@ export default async function ConnectPage({ searchParams }: PageProps) {
       ) : null}
 
       {/* Picker form. GET so the result URL is shareable. */}
-      <form method="GET" action="/connect" className="flex flex-wrap items-end gap-3">
-        <div className="flex flex-col gap-1">
+      <form method="GET" action="/connect" className="flex flex-wrap items-end gap-4">
+        {/* Endpoint A */}
+        <div className="flex flex-col gap-1.5">
           <label htmlFor="a" className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-            image A (id)
+            image A
           </label>
+          {imgA ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={imgA.blobUrl}
+              alt={imgA.slug}
+              width={72}
+              height={72}
+              className="rounded border border-ink-700 object-cover"
+              style={{ width: 72, height: 72 }}
+            />
+          ) : rawA ? (
+            <div className="flex items-center justify-center rounded border border-red-800/50 bg-red-950/20" style={{ width: 72, height: 72 }}>
+              <span className="font-mono text-[9px] text-red-400">not found</span>
+            </div>
+          ) : null}
           <input
             id="a"
             name="a"
-            type="number"
-            min="1"
-            step="1"
-            defaultValue={Number.isInteger(a) && a > 0 ? String(a) : ''}
-            placeholder="e.g. 42"
-            className="w-32 rounded border border-ink-700 bg-ink-900 px-3 py-1.5 font-mono text-sm text-ink-100 placeholder-ink-600 focus:border-primary/60 focus:outline-none"
+            type="text"
+            defaultValue={imgA?.slug ?? rawA}
+            placeholder="slug..."
+            autoComplete="off"
+            className="w-44 rounded border border-ink-700 bg-ink-900 px-3 py-1.5 font-mono text-xs text-ink-100 placeholder-ink-600 focus:border-primary/60 focus:outline-none"
           />
         </div>
-        <div className="flex flex-col gap-1">
+
+        <span className="mb-1.5 font-mono text-xs text-ink-600 self-end">to</span>
+
+        {/* Endpoint B */}
+        <div className="flex flex-col gap-1.5">
           <label htmlFor="b" className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
-            image B (id)
+            image B
           </label>
+          {imgB ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={imgB.blobUrl}
+              alt={imgB.slug}
+              width={72}
+              height={72}
+              className="rounded border border-ink-700 object-cover"
+              style={{ width: 72, height: 72 }}
+            />
+          ) : rawB ? (
+            <div className="flex items-center justify-center rounded border border-red-800/50 bg-red-950/20" style={{ width: 72, height: 72 }}>
+              <span className="font-mono text-[9px] text-red-400">not found</span>
+            </div>
+          ) : null}
           <input
             id="b"
             name="b"
-            type="number"
-            min="1"
-            step="1"
-            defaultValue={Number.isInteger(b) && b > 0 ? String(b) : ''}
-            placeholder="e.g. 99"
-            className="w-32 rounded border border-ink-700 bg-ink-900 px-3 py-1.5 font-mono text-sm text-ink-100 placeholder-ink-600 focus:border-primary/60 focus:outline-none"
+            type="text"
+            defaultValue={imgB?.slug ?? rawB}
+            placeholder="slug..."
+            autoComplete="off"
+            className="w-44 rounded border border-ink-700 bg-ink-900 px-3 py-1.5 font-mono text-xs text-ink-100 placeholder-ink-600 focus:border-primary/60 focus:outline-none"
           />
         </div>
-        <button
-          type="submit"
-          className="rounded border border-primary/50 bg-primary/10 px-4 py-1.5 font-mono text-xs text-primary hover:bg-primary/20"
-        >
-          find path
-        </button>
-        {hasValidParams ? (
-          <Link href="/connect" className="font-mono text-xs text-ink-500 hover:text-ink-300">
-            clear
-          </Link>
-        ) : null}
+
+        <div className="flex items-center gap-3 self-end">
+          <button
+            type="submit"
+            className="rounded border border-primary/50 bg-primary/10 px-4 py-1.5 font-mono text-xs text-primary hover:bg-primary/20"
+          >
+            find path
+          </button>
+          {hasValidParams || rawA || rawB ? (
+            <Link href="/connect" className="font-mono text-xs text-ink-500 hover:text-ink-300">
+              clear
+            </Link>
+          ) : null}
+        </div>
       </form>
 
       {/* Result */}
@@ -221,16 +278,18 @@ export default async function ConnectPage({ searchParams }: PageProps) {
             <PathFilmstrip path={outcome.nodes} totalDist={outcome.totalDist} />
           ) : outcome.status === 'same-node' ? (
             <p className="font-mono text-xs text-ink-400">
-              A and B are the same image -- try two different ids.
+              A and B are the same image -- pick two different ones.
             </p>
           ) : outcome.status === 'bad-ids' ? (
             <p className="font-mono text-xs text-ink-400">
-              one or both image ids not found.
+              one or both images not found.
             </p>
           ) : outcome.status === 'no-path' ? (
             <p className="font-mono text-xs text-ink-400">
-              no path found between image {a} and image {b}. the graph may have disconnected
-              components (images without a caption embedding share no edges).
+              no path found between{' '}
+              <span className="text-ink-300">{imgA.slug}</span> and{' '}
+              <span className="text-ink-300">{imgB.slug}</span>. the graph may have disconnected
+              components -- images without a caption embedding share no edges.
             </p>
           ) : outcome.status === 'missing-embedding' ? (
             <p className="font-mono text-xs text-ink-400">
@@ -239,6 +298,10 @@ export default async function ConnectPage({ searchParams }: PageProps) {
             </p>
           ) : null}
         </section>
+      ) : rawA && !imgA ? (
+        <p className="font-mono text-xs text-ink-500">no image found for slug &ldquo;{rawA}&rdquo;.</p>
+      ) : rawB && !imgB ? (
+        <p className="font-mono text-xs text-ink-500">no image found for slug &ldquo;{rawB}&rdquo;.</p>
       ) : hasValidParams && !graphReady ? (
         <p className="font-mono text-xs text-ink-500">build the graph first, then try again.</p>
       ) : null}

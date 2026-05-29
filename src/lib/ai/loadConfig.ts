@@ -20,3 +20,13 @@ export async function loadAiConfig(): Promise<AiConfigMap> {
   }
   return out;
 }
+
+// Reads the imagegen-specific row from ai_config. Lives here rather than in
+// loadAiConfig() to avoid widening ProviderName/ProviderField -- imagegen
+// uses a different provider set (openrouter, stub) than the enrichment pipeline.
+export async function loadImageGenConfig(): Promise<{ provider: string; model: string }> {
+  const rows = await listAiConfig();
+  const row = rows.find((r) => r.field === 'imagegen');
+  if (!row) return { provider: 'stub', model: 'placeholder-1x1' };
+  return { provider: row.provider, model: row.model };
+}

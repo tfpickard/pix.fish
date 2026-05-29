@@ -6,8 +6,8 @@ import { listAiConfig, upsertAiConfig } from '@/lib/db/queries/ai-config';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const FIELDS = ['captions', 'descriptions', 'tags', 'embeddings'] as const;
-const PROVIDERS = ['anthropic', 'openai'] as const;
+const FIELDS = ['captions', 'descriptions', 'tags', 'embeddings', 'imagegen'] as const;
+const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
 
 const putSchema = z.object({
   field: z.enum(FIELDS),

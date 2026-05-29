@@ -4,8 +4,8 @@ import { useEffect, useState, useTransition } from 'react';
 
 type Row = { id: number; field: string; provider: string; model: string; updatedAt: string };
 
-const FIELDS = ['captions', 'descriptions', 'tags', 'embeddings'] as const;
-const PROVIDERS = ['anthropic', 'openai'] as const;
+const FIELDS = ['captions', 'descriptions', 'tags', 'embeddings', 'imagegen'] as const;
+const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
 
 export default function AdminAiPage() {
   const [rows, setRows] = useState<Row[]>([]);

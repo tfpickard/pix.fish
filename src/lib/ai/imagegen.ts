@@ -1,13 +1,13 @@
 // Pluggable text-to-image generation, for feat/alive (synthetic children).
 //
-// The project ships no image-generation provider yet (ground rule 7). This
-// file is the Gate-0 contract: a stable interface plus a stub so feat/alive
-// can build and dry-run the reproduction pipeline end to end. The OWNER must
-// wire a real adapter (and its API key) before live births produce real
-// imagery -- see getImageGenerator() and CONTRACTS.md.
-//
 // Like the AIProvider abstraction, all SDK calls for a real adapter MUST live
 // in src/lib/ai/; callers go through getImageGenerator().
+//
+// Provider and model are configured via /admin/ai (stored in ai_config table,
+// field='imagegen'). The API key still comes from the env var OPENROUTER_API_KEY
+// because keys are site-level credentials, not per-user BYO rows.
+// Callers load config via loadImageGenConfig() from src/lib/ai/loadConfig.ts
+// and pass it to getImageGenerator(cfg).
 
 export type ImageGenRequest = {
   // Text-to-image prompt. feat/alive builds this from the child's blended
@@ -55,11 +55,73 @@ export class StubImageGenerator implements ImageGenerator {
   }
 }
 
-// Factory. Returns the configured generator, or the stub when none is wired.
-// Never returns null: feat/alive always has something to call, and dry-run
-// never calls generate() at all. When the owner adds a real provider, branch
-// on an env var here (e.g. IMAGEGEN_PROVIDER) and construct it -- keeping the
-// SDK call inside src/lib/ai/.
-export function getImageGenerator(): ImageGenerator {
+// OpenRouter adapter -- routes to FLUX.1-schnell-Free (or IMAGEGEN_MODEL override)
+// via the OpenAI-compatible images/generations endpoint. OpenRouter returns
+// base64 image data; we decode it into a Buffer ready for Vercel Blob.
+export class OpenRouterImageGenerator implements ImageGenerator {
+  readonly name = 'openrouter';
+  readonly model: string;
+  private apiKey: string;
+
+  constructor(apiKey: string, model?: string) {
+    this.apiKey = apiKey;
+    this.model = model ?? 'black-forest-labs/FLUX.1-schnell-Free';
+  }
+
+  async generate(req: ImageGenRequest): Promise<ImageGenResult> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      prompt: req.prompt,
+      n: 1,
+      response_format: 'b64_json'
+    };
+    if (req.width) body.width = req.width;
+    if (req.height) body.height = req.height;
+
+    const res = await fetch('https://openrouter.ai/api/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+        'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL ?? 'https://pix.fish',
+        'X-Title': 'pix.fish'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`OpenRouter image gen failed (${res.status}): ${text}`);
+    }
+
+    type OpenRouterResponse = { data: { b64_json: string }[] };
+    const json = await res.json() as OpenRouterResponse;
+    const b64 = json.data?.[0]?.b64_json;
+    if (!b64) throw new Error('OpenRouter returned no image data');
+
+    return {
+      bytes: Buffer.from(b64, 'base64'),
+      mime: 'image/png',
+      provider: 'openrouter',
+      model: this.model
+    };
+  }
+}
+
+// Factory. Accepts the resolved config from loadImageGenConfig() so the
+// provider/model come from the DB (editable at /admin/ai), with the API key
+// pulled from the env. Never returns null: the alive pipeline always has
+// something to call; dry-run never calls generate() at all.
+export function getImageGenerator(cfg?: { provider: string; model: string }): ImageGenerator {
+  const provider = cfg?.provider ?? 'stub';
+  const model = cfg?.model;
+  if (provider === 'openrouter') {
+    const key = process.env.OPENROUTER_API_KEY;
+    if (!key) {
+      console.warn('[imagegen] provider=openrouter but OPENROUTER_API_KEY is not set -- falling back to stub');
+      return new StubImageGenerator();
+    }
+    return new OpenRouterImageGenerator(key, model);
+  }
   return new StubImageGenerator();
 }
