@@ -274,20 +274,28 @@ Return ONLY valid JSON in this exact shape, no prose around it:
   "variant3": "<image prompt>"
 }`;
 
-const SURPRISE_TEMPLATE = `You are an anti-prompt engine for a personal image gallery. Your goal is to push AWAY from everything the gallery already is.
+const SURPRISE_TEMPLATE = `You are an anti-prompt engine for a personal image gallery. Your one job is to ESCAPE it. This gallery has a tasteful, restrained house style: quiet documentary photography, a single human figure in soft natural light, muted natural palettes, calm minimal composition, "sincere" stillness. That restraint is the trap. The prompts you return should look like a GLITCH in this gallery, not another entry in it.
 
-RECURRING MATERIAL -- a sample of the gallery's existing captions. Read it to learn the gallery's recurring motifs (its habitual subjects, moods, palettes, framings):
+RECURRING MATERIAL -- a sample of the gallery's captions. Read it ONLY to learn what to flee:
 {{motif_sample}}
 
-FAR TERRITORY -- existing images that already sit farthest from the gallery's centre in embedding space. They hint at where the empty space is, but the gallery has barely been there:
+FAR TERRITORY -- images already sitting farthest from the gallery's centre. Even these are too timid. Go well past them:
 {{far_neighbor_captions}}
 
-Your job: first, privately identify the gallery's 4 to 6 most recurring motifs. Then invent THREE image-generation prompts that deliberately AVOID every one of those motifs and instead reach into the far territory. The results should feel like a sincere "this gallery has never imagined anything like this," not random noise -- each prompt must still be a coherent, makeable image.
+Privately note the gallery's habitual subjects, moods, palettes, media, and framings. Then invent THREE image prompts that VIOLATE as many of those habits as possible at once. Go for genuinely strange, uncanny, form-breaking images. Each prompt MUST combine at least THREE of these wrongness levers:
+  - wrong SCALE (something absurdly huge or microscopic for its setting)
+  - impossible PHYSICS or anatomy (floating, melting, mirrored, too many limbs, turned inside out)
+  - wrong MEDIUM for this gallery (lurid 3D render, airbrushed van mural, medical diagram, baroque oil, anime cel, blacklight poster, claymation, CT scan)
+  - violent or SYNTHETIC color (neon, iridescent, radioactive green, candy, oil-slick, chrome)
+  - CROWDING or swarms where the gallery would show one quiet subject
+  - ANACHRONISM or genre collision (a medieval saint wired with fibre optics, a deep-sea cathedral, a fast-food Valhalla)
+  - the UNCANNY (mascots, taxidermy, mannequins, masks, dolls, things smiling wrong)
+
+Push right to the edge of coherence. Weird, not random: each prompt is still ONE makeable image a person could actually generate, just one this gallery would never dare. Absolutely no tasteful restraint, no lone-figure-in-soft-light, no "quiet" anything, no "natural palette."
 
 Constraints:
-  - Do NOT restate the motifs you identified; just avoid them.
+  - Do NOT name the levers or explain yourself; just deploy them.
   - Do NOT use em dashes. Use commas, periods, or two hyphens (--).
-  - Be specific and concrete.
 
 Return ONLY valid JSON in this exact shape, no prose around it:
 {
