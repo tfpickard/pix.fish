@@ -101,7 +101,7 @@ function NeighborGrid({ images }: { images: ImageWithRelations[] }) {
             alt={img.captions[0]?.text ?? img.slug}
             fill
             sizes="(min-width: 640px) 208px, 45vw"
-            className="object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+            className={`object-cover transition-[transform,filter] duration-200 group-hover:scale-[1.03]${img.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
           />
         </Link>
       ))}
@@ -188,7 +188,7 @@ export async function ImageDetail({
             alt={caption || img.slug}
             width={img.width}
             height={img.height}
-            className="h-auto w-full rounded-lg border border-ink-800"
+            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
             priority
           />
         ) : (
@@ -198,7 +198,7 @@ export async function ImageDetail({
             width={0}
             height={0}
             sizes="(min-width: 1024px) 1024px, 100vw"
-            className="h-auto w-full rounded-lg border border-ink-800"
+            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
             priority
           />
         )}

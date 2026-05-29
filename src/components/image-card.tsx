@@ -55,14 +55,14 @@ export function ImageCard({ image, similarity }: Props) {
               // a landscape both show uncropped; the parent's aspectRatio is
               // computed from the image itself so there's no letterboxing in
               // practice.
-              className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.01]"
+              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
               sizes="(min-width: 1024px) 640px, 100vw"
             />
           ) : (
             <img
               src={image.blobUrl}
               alt={caption || image.slug}
-              className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.01]"
+              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
             />
           )}
         </div>
