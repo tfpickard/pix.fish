@@ -419,7 +419,13 @@ export function UploadZone() {
                         on ? 'border-emerald-500' : 'border-ink-800 hover:border-ink-600'
                       }`}
                     >
-                      <img src={p.blobUrl} alt={p.caption} className="h-14 w-14 object-cover" />
+                      {/* eslint-disable-next-line @next/next/no-img-element -- tiny picker thumbnail, not worth the next/image optimizer round-trip */}
+                      <img
+                        src={p.blobUrl}
+                        alt={p.caption}
+                        loading="lazy"
+                        className="h-14 w-14 object-cover"
+                      />
                     </button>
                   );
                 })}

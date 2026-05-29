@@ -237,6 +237,7 @@ export async function ImageDetail({
             <ImageActions slug={img.slug} />
             <RemixMenu
               slug={img.slug}
+              imageId={img.id}
               idioms={remixIdioms.map((i) => ({ key: i.key, label: i.label }))}
             />
           </div>

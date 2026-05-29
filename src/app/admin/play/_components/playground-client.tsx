@@ -671,8 +671,8 @@ function WalkPanel() {
               seedSlug === s.slug ? 'border-ink-300' : 'border-ink-800 hover:border-ink-600'
             }`}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={s.blobUrl} alt={s.caption} className="h-16 w-16 object-cover" />
+            {/* eslint-disable-next-line @next/next/no-img-element -- tiny seed-picker thumbnail */}
+            <img src={s.blobUrl} alt={s.caption} loading="lazy" className="h-16 w-16 object-cover" />
           </button>
         ))}
       </div>

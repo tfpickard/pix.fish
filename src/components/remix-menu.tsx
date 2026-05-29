@@ -7,7 +7,15 @@ type Idiom = { key: string; label: string };
 
 // Owner-only "remix this concept as..." menu. Keeps the concept, swaps the
 // visual idiom, then offers the rewritten prompt in each model dialect.
-export function RemixMenu({ slug, idioms }: { slug: string; idioms: Idiom[] }) {
+export function RemixMenu({
+  slug,
+  imageId,
+  idioms
+}: {
+  slug: string;
+  imageId: number;
+  idioms: Idiom[];
+}) {
   const [open, setOpen] = useState(false);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [prompts, setPrompts] = useState<string[]>([]);
@@ -24,7 +32,7 @@ export function RemixMenu({ slug, idioms }: { slug: string; idioms: Idiom[] }) {
         const res = await fetch(`/api/images/${encodeURIComponent(slug)}/remix`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ idiomKey })
+          body: JSON.stringify({ idiomKey, imageId })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error ?? 'failed');
@@ -37,7 +45,7 @@ export function RemixMenu({ slug, idioms }: { slug: string; idioms: Idiom[] }) {
         setLoading(false);
       }
     },
-    [slug]
+    [slug, imageId]
   );
 
   if (idioms.length === 0) return null;

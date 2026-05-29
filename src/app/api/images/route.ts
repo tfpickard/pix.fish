@@ -114,12 +114,15 @@ export async function POST(req: Request) {
   // images they generated it from, plus the prompt/dialect that produced it.
   // Parents are comma-separated slugs; only the uploader's own slugs resolve.
   const rawParents = form.get('parents');
+  // Cap both the count and individual slug length so a malicious client can't
+  // force a huge IN (...) lookup, mirroring the `ids` cap in GET above.
   const parentSlugs =
     typeof rawParents === 'string' && rawParents.trim()
       ? rawParents
           .split(',')
           .map((s) => s.trim())
-          .filter(Boolean)
+          .filter((s) => s.length > 0 && s.length <= 128)
+          .slice(0, 25)
       : [];
   const rawPromptUsed = form.get('prompt_used');
   const promptUsed =
