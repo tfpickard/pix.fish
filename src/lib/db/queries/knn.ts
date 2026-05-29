@@ -57,6 +57,28 @@ export async function getEdgesForNodesExcludingNsfw(
   return out;
 }
 
+// Mirror of getEdgesForNodesExcludingNsfw but restricted to NSFW destination
+// nodes only. Used by path/connect when the visitor is in 'only' mode.
+export async function getEdgesForNodesNsfwOnly(
+  nodeIds: number[]
+): Promise<Map<number, KnnNeighbor[]>> {
+  const out = new Map<number, KnnNeighbor[]>();
+  if (nodeIds.length === 0) return out;
+
+  const rows = await db
+    .select({ srcId: knnEdges.srcId, dstId: knnEdges.dstId, dist: knnEdges.dist })
+    .from(knnEdges)
+    .innerJoin(images, and(eq(images.id, knnEdges.dstId), eq(images.isNsfw, true)))
+    .where(inArray(knnEdges.srcId, nodeIds));
+
+  for (const r of rows) {
+    const neighbors = out.get(r.srcId) ?? [];
+    neighbors.push({ dstId: r.dstId, dist: r.dist });
+    out.set(r.srcId, neighbors);
+  }
+  return out;
+}
+
 // Load all outgoing edges for a single node. Thin wrapper around
 // getEdgesForNodes used when the caller has exactly one node.
 export async function getEdgesForNode(nodeId: number): Promise<KnnNeighbor[]> {

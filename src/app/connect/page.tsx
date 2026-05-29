@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { eq, inArray, asc } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, captions, users } from '@/lib/db/schema';
-import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw } from '@/lib/db/queries/knn';
+import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw, getEdgesForNodesNsfwOnly } from '@/lib/db/queries/knn';
 import { getCaptionVector } from '@/lib/db/queries/embeddings';
 import { findPath } from '@/lib/knn';
 import { readNsfwMode } from '@/lib/nsfw';
@@ -108,7 +108,7 @@ type PathOutcome =
   | { status: 'missing-embedding' }
   | { status: 'bad-ids' };
 
-async function resolvePath(a: number, b: number, includeNsfw: boolean): Promise<PathOutcome> {
+async function resolvePath(a: number, b: number, nsfwMode: 'hide' | 'include' | 'only'): Promise<PathOutcome> {
   if (a === b) return { status: 'same-node' };
 
   // Verify both images exist before running Dijkstra.
@@ -126,10 +126,12 @@ async function resolvePath(a: number, b: number, includeNsfw: boolean): Promise<
   const [vecA, vecB] = await Promise.all([getCaptionVector(a), getCaptionVector(b)]);
   if (!vecA || !vecB) return { status: 'missing-embedding' };
 
-  // Route Dijkstra through a filtered edge loader when the visitor has not
-  // opted in to NSFW content. This excludes NSFW nodes from both the search
-  // and the reconstructed path rather than just hiding them post-hoc.
-  const edgeLoader = includeNsfw ? getEdgesForNodes : getEdgesForNodesExcludingNsfw;
+  // Select the edge loader that matches the visitor's NSFW mode. This excludes
+  // SFW or NSFW nodes from both the search and the reconstructed path.
+  const edgeLoader =
+    nsfwMode === 'only' ? getEdgesForNodesNsfwOnly :
+    nsfwMode === 'include' ? getEdgesForNodes :
+    getEdgesForNodesExcludingNsfw;
 
   const result = await findPath(a, b, edgeLoader);
   if (!result.found) {
@@ -153,11 +155,10 @@ export default async function ConnectPage({ searchParams }: PageProps) {
 
   const hasValidParams = !!(imgA && imgB);
   const graphReady = edgeCount > 0;
-  const includeNsfw = nsfwMode !== 'hide';
 
   let outcome: PathOutcome | null = null;
   if (hasValidParams && graphReady) {
-    outcome = await resolvePath(imgA.id, imgB.id, includeNsfw).catch((err) => {
+    outcome = await resolvePath(imgA.id, imgB.id, nsfwMode).catch((err) => {
       console.error('/connect: resolvePath error', err);
       return null;
     });

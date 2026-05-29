@@ -4,6 +4,7 @@ import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { searchByVector } from '@/lib/db/queries/embeddings';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import { getSiteAdminId } from '@/lib/db/queries/users';
+import { resolveNsfwMode } from '@/lib/http-params';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,8 +37,10 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'search failed' }, { status: 502 });
   }
 
+  const nsfwMode = await resolveNsfwMode(url.searchParams.get('include_nsfw'));
+
   try {
-    const matches = await searchByVector(vec, { limit, kind: 'caption' });
+    const matches = await searchByVector(vec, { limit, kind: 'caption', nsfwMode });
     const rows = await getImagesByIdsOrdered(matches.map((m) => m.imageId));
     const hydrated = await hydrateImages(rows);
     return NextResponse.json({ q, images: hydrated });
