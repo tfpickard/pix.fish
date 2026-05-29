@@ -78,12 +78,11 @@ function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
   const metaById = useMemo(() => new Map(images.map((im) => [im.id, im])), [images]);
 
   // Build Float32Arrays once per points change. Three.js BufferGeometry expects
-  // flat arrays; we keep a parallel imageId array for hit-testing.
-  const { positions, colors, imageIds } = useMemo(() => {
+  // flat arrays; hit-testing uses the original `points` array by index.
+  const { positions, colors } = useMemo(() => {
     const normalised = normalisePoints(points);
     const pos = new Float32Array(normalised.length * 3);
     const col = new Float32Array(normalised.length * 3);
-    const ids: number[] = [];
     for (let i = 0; i < normalised.length; i++) {
       const p = normalised[i]!;
       pos[i * 3] = p.x;
@@ -94,9 +93,8 @@ function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
       col[i * 3] = r;
       col[i * 3 + 1] = g;
       col[i * 3 + 2] = b;
-      ids.push(p.imageId);
     }
-    return { positions: pos, colors: col, imageIds: ids };
+    return { positions: pos, colors: col };
   }, [points, metaById]);
 
   // Raycaster for hover/click. We do it manually each frame rather than using
@@ -164,11 +162,17 @@ function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
   );
 }
 
-// Lazy thumbnail loader. Tracks camera position each frame; only images within
-// THUMB_LOAD_RADIUS of the camera are added to the load set. This avoids
-// loading thousands of Blob URLs at page open while still loading nearby ones
-// as the user orbits into a cluster.
-function useNearbyThumbs(points: ManifoldPoint[], images: ManifoldImage[]) {
+// Lazy thumbnail loader. Tracks camera position each frame; images within
+// THUMB_LOAD_RADIUS of the camera are eagerly added to the load set. The
+// hovered image id is always included so any hovered point resolves immediately
+// regardless of camera distance -- without this, points far from the initial
+// camera position at [0,0,4] show "loading..." forever because they fall
+// outside the 2.5-unit eager radius.
+function useNearbyThumbs(
+  points: ManifoldPoint[],
+  images: ManifoldImage[],
+  hoveredId: number | null
+) {
   const [loadedIds, setLoadedIds] = useState<Set<number>>(new Set());
   // We get the camera via useThree inside the Canvas. This hook must be called
   // inside the scene, not the outer component.
@@ -201,6 +205,18 @@ function useNearbyThumbs(points: ManifoldPoint[], images: ManifoldImage[]) {
     }
   });
 
+  // Always include the hovered point so it loads immediately on hover
+  // regardless of camera distance.
+  useEffect(() => {
+    if (hoveredId !== null && !loadedIds.has(hoveredId)) {
+      setLoadedIds((prev) => {
+        const next = new Set(prev);
+        next.add(hoveredId);
+        return next;
+      });
+    }
+  }, [hoveredId, loadedIds]);
+
   // Return a map of id -> blobUrl for ids that should be loaded.
   const metaById = useMemo(() => new Map(images.map((im) => [im.id, im])), [images]);
   return useMemo(() => {
@@ -218,9 +234,10 @@ type InnerProps = Props & {
   onHover: (point: ManifoldPoint | null) => void;
   onClickPoint: (point: ManifoldPoint) => void;
   onThumbsUpdate: (m: Map<number, string>) => void;
+  hoveredId: number | null;
 };
-function SceneInner({ points, images, onHover, onClickPoint, onThumbsUpdate }: InnerProps) {
-  const thumbs = useNearbyThumbs(points, images);
+function SceneInner({ points, images, onHover, onClickPoint, onThumbsUpdate, hoveredId }: InnerProps) {
+  const thumbs = useNearbyThumbs(points, images, hoveredId);
   useEffect(() => {
     onThumbsUpdate(thumbs);
   }, [thumbs, onThumbsUpdate]);
@@ -305,6 +322,7 @@ export function ManifoldScene({ points, images }: Props) {
           onHover={handleHover}
           onClickPoint={handleClick}
           onThumbsUpdate={handleThumbsUpdate}
+          hoveredId={hovered?.imageId ?? null}
         />
       </Canvas>
 

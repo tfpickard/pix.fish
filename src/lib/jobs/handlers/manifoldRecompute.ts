@@ -12,7 +12,9 @@ type Payload = {
 
 // Subsample budget. umap-js at nComponents=3 is more compute-intensive than
 // 2D; stay well under the 55s cron wall budget.
-const MAX_POINTS = 3000;
+// Exported so the /manifold page can compare pointCount against the same cap
+// when deciding whether the projection is stale.
+export const MANIFOLD_SUBSAMPLE_CAP = 3000;
 
 // Fixed default seed stored in the DB row alongside the projection. The same
 // seed + same corpus subset yields the same UMAP layout run-to-run, so an
@@ -47,13 +49,16 @@ export async function manifoldRecomputeHandler(job: Job): Promise<void> {
     return;
   }
 
-  // Deterministic subsample. Use the seed (not point count) so the same seed
-  // always picks the same subset regardless of corpus size changes between runs.
-  // The same rng instance drives the shuffle AND is passed to umap-js so both
-  // random stages are reproducible from a single seed.
+  // Deterministic subsample. allCaptionVectors() returns rows sorted by
+  // image_id, so the Fisher-Yates shuffle here operates on a stable-ordered
+  // input. Combined with the fixed seed, the same seed always picks the same
+  // subset when the corpus has not changed. Adding new images changes the full
+  // corpus, which can shift the shuffle; that is expected and why the stale
+  // hint triggers a recompute. The same rng instance drives the shuffle AND is
+  // passed to umap-js so both random stages are reproducible from a single seed.
   const rng = mulberry32(seed);
   let sample = all;
-  if (all.length > MAX_POINTS) {
+  if (all.length > MANIFOLD_SUBSAMPLE_CAP) {
     const indices = all.map((_, i) => i);
     for (let i = indices.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -61,7 +66,7 @@ export async function manifoldRecomputeHandler(job: Job): Promise<void> {
       indices[i] = indices[j]!;
       indices[j] = tmp;
     }
-    sample = indices.slice(0, MAX_POINTS).map((i) => all[i]!);
+    sample = indices.slice(0, MANIFOLD_SUBSAMPLE_CAP).map((i) => all[i]!);
   }
 
   const nbrs = Math.min(nNeighbors, sample.length - 1);

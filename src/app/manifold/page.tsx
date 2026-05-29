@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
-import dynamicImport from 'next/dynamic';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, users } from '@/lib/db/schema';
 import { latestManifold } from '@/lib/db/queries/manifold';
 import { countCaptionEmbeddings } from '@/lib/db/queries/embeddings';
+import { readShowNsfwCookie } from '@/lib/nsfw';
+import { ManifoldSceneClient } from '@/components/manifold-scene-client';
+import { MANIFOLD_SUBSAMPLE_CAP } from '@/lib/jobs/handlers/manifoldRecompute';
 
 // App Router segment config -- force-dynamic prevents static pre-render at
 // build time when POSTGRES_URL is absent, and keeps projection data fresh.
@@ -19,29 +21,21 @@ export const metadata: Metadata = {
   robots: { index: false, follow: true }
 };
 
-// Three.js has no SSR-safe path in Next 14 App Router. The component imports
-// WebGL APIs at module load, so we must skip SSR entirely.
-const ManifoldScene = dynamicImport(
-  () => import('@/components/manifold-scene').then((m) => m.ManifoldScene),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-[600px] items-center justify-center rounded border border-ink-800 bg-ink-950 font-mono text-xs text-ink-500">
-        loading scene...
-      </div>
-    )
-  }
-);
-
 export default async function ManifoldPage() {
-  const [row, totalEmbedded] = await Promise.all([
+  const [row, totalEmbedded, showNsfw] = await Promise.all([
     latestManifold(),
-    countCaptionEmbeddings().catch(() => 0)
+    countCaptionEmbeddings().catch(() => 0),
+    readShowNsfwCookie()
   ]);
 
   type Pt = { imageId: number; x: number; y: number; z: number };
   const points: Pt[] = (row?.points as Pt[] | null) ?? [];
   const ids = points.map((p) => p.imageId);
+
+  // Apply the same NSFW visibility predicate used by the public gallery: omit
+  // hidden images before sending blobUrls to the client. Opted-out visitors
+  // never receive URLs of NSFW images.
+  const nsfwFilter = showNsfw ? undefined : eq(images.isNsfw, false);
 
   const metaRows =
     ids.length > 0
@@ -55,10 +49,21 @@ export default async function ManifoldPage() {
           })
           .from(images)
           .innerJoin(users, eq(users.id, images.ownerId))
-          .where(inArray(images.id, ids))
+          .where(nsfwFilter ? and(inArray(images.id, ids), nsfwFilter) : inArray(images.id, ids))
       : [];
 
-  const stale = row ? row.pointCount < totalEmbedded : totalEmbedded > 0;
+  // "Stale" means a newer projection would incorporate more embeddings.
+  // Compare against min(totalEmbedded, SUBSAMPLE_CAP): if the corpus exceeds
+  // the cap the projection intentionally covers only SUBSAMPLE_CAP points and
+  // that is not stale -- only genuinely new embeddings beyond what the cap
+  // allowed at last run time warrant a recompute hint.
+  const effectiveCap = Math.min(totalEmbedded, MANIFOLD_SUBSAMPLE_CAP);
+  const stale = row ? row.pointCount < effectiveCap : totalEmbedded > 0;
+
+  // Filter out NSFW points so they don't appear as orphaned dots with no
+  // thumbnail. Build a set of visible ids from metaRows for O(1) lookup.
+  const visibleIds = new Set(metaRows.map((r) => r.id));
+  const visiblePoints = points.filter((p) => visibleIds.has(p.imageId));
 
   return (
     <div className="space-y-4 pt-8">
@@ -67,7 +72,7 @@ export default async function ManifoldPage() {
         3D semantic point cloud. each dot is an image; position reflects caption-embedding
         similarity projected via UMAP to 3 dimensions.
       </p>
-      <ManifoldScene points={points} images={metaRows} />
+      <ManifoldSceneClient points={visiblePoints} images={metaRows} />
       {row ? (
         <p className="font-mono text-xs text-ink-500">
           {row.pointCount} of {totalEmbedded} points
