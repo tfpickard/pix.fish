@@ -199,7 +199,10 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
         speedRef.current = randInRange([MIN_SPEED, MAX_SPEED]);
         if (el) el.style.zIndex = '30';
       } else if (next === 'napping') {
-        targetRef.current = posRef.current;
+        // Copy, don't alias. The bob formula writes pos.y = target.y + bob
+        // each frame; aliasing posRef would mutate the anchor too, causing
+        // the fish to drift downward across longer naps.
+        targetRef.current = { ...posRef.current };
         speedRef.current = 0;
         mouthState = 'flat';
         eyeState = 'closed';
@@ -221,7 +224,12 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
         speedRef.current = randInRange([40, 70]);
         if (el) {
           zRestoreRef.current = el.style.zIndex || '30';
+          // z-index:1 is below z-30 (normal fish layer) but still above
+          // static-flow content unless the cards establish their own
+          // stacking context. pointer-events:none ensures the fish never
+          // intercepts clicks on whatever it overlaps while "hiding".
           el.style.zIndex = '1';
+          el.style.pointerEvents = 'none';
         }
       } else if (next === 'excursion') {
         targetRef.current = pickExcursionTarget();
@@ -232,10 +240,10 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
         speedRef.current = STARTLE_SPEED;
       }
 
-      // Restore z when leaving hiding (caller decides next; we cover the
-      // transition out by always restoring before entering anything else).
+      // Restore z + pointer-events when leaving hiding.
       if (prev === 'hiding' && next !== 'hiding' && el) {
         el.style.zIndex = zRestoreRef.current || '30';
+        el.style.pointerEvents = '';
       }
 
       setState((s) => ({ ...s, behavior: next, mouthState, eyeState }));
