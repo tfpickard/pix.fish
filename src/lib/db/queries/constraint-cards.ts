@@ -18,6 +18,12 @@ export function isCardCategory(value: string): value is CardCategory {
   return (CARD_CATEGORIES as readonly string[]).includes(value);
 }
 
+// How many cards to sample per category for the dice UX. With a large pool
+// (hundreds per category) shipping all of them as JSON is wasteful. 20 per
+// category gives the client plenty of variety for the Fisher-Yates roll;
+// rollDice picks n=3 per category from whatever subset it receives.
+export const CARDS_PER_CATEGORY_PER_LOAD = 20;
+
 export async function listCards(opts: {
   categories?: CardCategory[];
   activeOnly?: boolean;
@@ -35,6 +41,35 @@ export async function listCards(opts: {
     .orderBy(constraintCards.category, constraintCards.id);
   if (where.length === 0) return query;
   return query.where(where.length === 1 ? where[0] : and(...where));
+}
+
+// Sample up to `perCategory` random active cards from each category so the
+// dice route doesn't ship the full pool to the client when the table grows
+// large. The dice client receives this slice and does a client-side
+// Fisher-Yates roll on it (rollDice / rollDicePerCategory), which still
+// produces meaningful randomness as long as perCategory >> n-per-roll (3).
+// We run one query per category in parallel rather than a LATERAL join
+// because Drizzle's query builder doesn't support LATERAL without raw SQL
+// and the category count is fixed and small (6).
+export async function listCardsSampled(opts: {
+  categories?: CardCategory[];
+  perCategory?: number;
+} = {}): Promise<ConstraintCard[]> {
+  const cats = opts.categories ?? [...CARD_CATEGORIES];
+  const perCat = opts.perCategory ?? CARDS_PER_CATEGORY_PER_LOAD;
+
+  const batches = await Promise.all(
+    cats.map((cat) =>
+      db
+        .select()
+        .from(constraintCards)
+        .where(and(eq(constraintCards.category, cat), eq(constraintCards.active, true)))
+        .orderBy(sql`random()`)
+        .limit(perCat)
+    )
+  );
+
+  return batches.flat();
 }
 
 export async function upsertCard(input: {

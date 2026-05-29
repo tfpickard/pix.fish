@@ -25,7 +25,13 @@ export const PROMPT_KEYS = [
   'surprise',
   'walk_step',
   'reverse_haiku',
-  'remix'
+  'remix',
+  // Pool generation -- used by scripts/generate-remix-idioms.ts and
+  // scripts/generate-constraint-cards.ts to produce large idiom/card pools.
+  // Kept in the DB so the owner can tune the generation voice without a
+  // redeploy.
+  'remix_idiom_gen',
+  'constraint_card_gen'
 ] as const;
 
 export type PromptKey = (typeof PROMPT_KEYS)[number];

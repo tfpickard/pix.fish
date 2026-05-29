@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import {
   CARD_CATEGORIES,
+  CARDS_PER_CATEGORY_PER_LOAD,
   isCardCategory,
-  listCards,
+  listCardsSampled,
   type CardCategory
 } from '@/lib/db/queries/constraint-cards';
 import { rollDice, rollDicePerCategory } from '@/lib/playground/dice';
@@ -29,9 +30,14 @@ export async function GET(req: Request) {
   // the dice section is best-effort and never blocking.
   const categories: CardCategory[] = requested.filter(isCardCategory) as CardCategory[];
 
-  const pool = await listCards({
+  // Sample a per-category slice of the pool so the response stays small even
+  // when the constraint_cards table grows to hundreds per category. The
+  // client-side Fisher-Yates roll (rollDice/rollDicePerCategory) picks n=3
+  // from this slice, so CARDS_PER_CATEGORY_PER_LOAD >> 3 gives plenty of
+  // variety without shipping the full pool.
+  const pool = await listCardsSampled({
     categories: categories.length > 0 ? categories : undefined,
-    activeOnly: true
+    perCategory: CARDS_PER_CATEGORY_PER_LOAD
   });
   if (pool.length === 0) {
     return NextResponse.json({ rolls: [], warning: 'no active constraint cards' });
