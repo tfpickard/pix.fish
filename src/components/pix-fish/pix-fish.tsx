@@ -70,19 +70,24 @@ export function PixFish() {
         ref={setContainerRef}
         aria-hidden="true"
         className="pointer-events-none fixed left-0 top-0 z-30 text-ink-100"
-        style={{ width: 64, height: 38, willChange: 'transform' }}
+        style={{ width: 72, height: 43, willChange: 'transform' }}
       >
         <div
           onClick={onClick}
           className="pointer-events-auto cursor-pointer"
           style={{
-            width: 64,
-            height: 38,
+            width: 72,
+            height: 43,
             transform: `scaleX(${state.facing})`,
             transition: 'transform 220ms ease-in-out'
           }}
         >
-          <FishSprite eyeState={state.eyeState} mouthState={state.mouthState} width={64} />
+          <FishSprite
+            eyeState={state.eyeState}
+            mouthState={state.mouthState}
+            morphProgress={state.morphProgress}
+            width={72}
+          />
         </div>
       </div>
 

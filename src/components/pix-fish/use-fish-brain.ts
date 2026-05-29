@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { pickHideTarget, pickPerchTarget } from './dom-targets';
+import { NUM_FISH_VARIANTS } from './fish-sprite';
 import type { EyeState, MouthState } from './fish-sprite';
 
 // The brain. A single requestAnimationFrame loop drives a probabilistic
@@ -29,10 +30,11 @@ interface FishBrainState {
   eyeState: EyeState;
   mouthState: MouthState;
   facing: 1 | -1;
+  morphProgress: number;
 }
 
-const SPRITE_W = 64;
-const SPRITE_H = 38;
+const SPRITE_W = 72;
+const SPRITE_H = 43;
 const MIN_SPEED = 30;
 const MAX_SPEED = 80;
 const STARTLE_SPEED = 240;
@@ -115,7 +117,8 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
     behavior: 'wandering',
     eyeState: 'open',
     mouthState: 'smile',
-    facing: -1
+    facing: -1,
+    morphProgress: 0
   });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -136,6 +139,10 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
   const lastFrameRef = useRef(0);
   const cursorRef = useRef({ x: -1, y: -1, lastMoveAt: 0 });
   const zRestoreRef = useRef<string>('');
+  // morphProgress advances as a float in the RAF loop; setState is throttled
+  // to ~16fps so React doesn't rerender every frame.
+  const morphProgressRef = useRef(0);
+  const lastMorphUpdateRef = useRef(0);
 
   // commitTransform -- writes position + facing-driven z-index hints to the
   // DOM without rerendering React.
@@ -328,6 +335,19 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
       }
 
       commitTransform();
+
+      // Morph advance -- rate scales with speed so the fish morphs faster
+      // when darting (startled) and barely at all when napping.
+      // Range: ~0.08/s (nap) to ~1.2/s (startled). One full 5-variant cycle
+      // takes ~12s wandering, ~60s napping.
+      const morphRate = Math.max(0.08, speedRef.current * 0.005);
+      morphProgressRef.current =
+        (morphProgressRef.current + morphRate * dt) % NUM_FISH_VARIANTS;
+      if (now - lastMorphUpdateRef.current >= 60) {
+        lastMorphUpdateRef.current = now;
+        const mp = morphProgressRef.current;
+        setState((s) => (Math.abs(s.morphProgress - mp) < 0.001 ? s : { ...s, morphProgress: mp }));
+      }
 
       // Behavior expiry -> sample next.
       if (now >= behaviorEndsAtRef.current) {
