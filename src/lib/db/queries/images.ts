@@ -52,6 +52,10 @@ export type ListImagesOpts = {
   // Default false: NSFW images are hidden from the public stream. The
   // visitor "Show NSFW" toggle (cookie-backed) opts back in.
   includeNsfw?: boolean;
+  // Default false: basement images are hidden from every surface unless
+  // the visitor has performed the unlock ritual. Gate is enforced at the
+  // query layer -- the blob URL is never shipped to a locked visitor.
+  includeBasement?: boolean;
 };
 
 export async function listImages(opts: ListImagesOpts): Promise<ImageWithRelations[]> {
@@ -61,8 +65,9 @@ export async function listImages(opts: ListImagesOpts): Promise<ImageWithRelatio
   const seed = opts.seed ?? '';
   const tagFilter = opts.tags && opts.tags.length > 0 ? opts.tags : null;
   const includeNsfw = opts.includeNsfw === true;
+  const includeBasement = opts.includeBasement === true;
 
-  const imageRows = await fetchInSortOrder({ sort, seed, limit, offset, tagFilter, includeNsfw });
+  const imageRows = await fetchInSortOrder({ sort, seed, limit, offset, tagFilter, includeNsfw, includeBasement });
   return hydrateImages(imageRows);
 }
 
@@ -73,6 +78,14 @@ function nsfwPredicate(includeNsfw: boolean) {
   return includeNsfw ? null : eq(images.isNsfw, false);
 }
 
+// AND-composable basement predicate. Mirrors nsfwPredicate exactly: when
+// basement is locked (default), restrict to `basement = false`; when
+// unlocked, return null so the clause is omitted. This is the server-side
+// gate -- callers never need to filter after the fact.
+function basementPredicate(includeBasement: boolean) {
+  return includeBasement ? null : eq(images.basement, false);
+}
+
 async function fetchInSortOrder(params: {
   sort: SortMode;
   seed: string;
@@ -80,23 +93,25 @@ async function fetchInSortOrder(params: {
   offset: number;
   tagFilter: string[] | null;
   includeNsfw: boolean;
+  includeBasement: boolean;
 }): Promise<Image[]> {
-  const { sort, seed, limit, offset, tagFilter, includeNsfw } = params;
+  const { sort, seed, limit, offset, tagFilter, includeNsfw, includeBasement } = params;
 
   // Base row set for SQL-native sorts. Tag-filter composes by restricting
   // the images set up front.
   switch (sort) {
     case 'newest':
-      return selectImagesOrdered(tagFilter, sql`${images.uploadedAt} DESC, ${images.id} DESC`, limit, offset, includeNsfw);
+      return selectImagesOrdered(tagFilter, sql`${images.uploadedAt} DESC, ${images.id} DESC`, limit, offset, includeNsfw, includeBasement);
     case 'oldest':
-      return selectImagesOrdered(tagFilter, sql`${images.uploadedAt} ASC, ${images.id} ASC`, limit, offset, includeNsfw);
+      return selectImagesOrdered(tagFilter, sql`${images.uploadedAt} ASC, ${images.id} ASC`, limit, offset, includeNsfw, includeBasement);
     case 'memory-lane':
       return selectImagesOrdered(
         tagFilter,
         sql`${images.takenAt} ASC NULLS LAST, ${images.uploadedAt} ASC, ${images.id} ASC`,
         limit,
         offset,
-        includeNsfw
+        includeNsfw,
+        includeBasement
       );
     case 'chronograph':
       return selectImagesOrdered(
@@ -106,10 +121,11 @@ async function fetchInSortOrder(params: {
             ${images.id} DESC`,
         limit,
         offset,
-        includeNsfw
+        includeNsfw,
+        includeBasement
       );
     case 'lonely':
-      return selectLonely(tagFilter, limit, offset, includeNsfw);
+      return selectLonely(tagFilter, limit, offset, includeNsfw, includeBasement);
     case 'surprising-first':
       // feat/hud: order by the precomputed surprisal score. Unscored rows
       // (null) sort last so a partial entropy pass never hides them.
@@ -118,7 +134,8 @@ async function fetchInSortOrder(params: {
         sql`${images.surprisal} DESC NULLS LAST, ${images.uploadedAt} DESC, ${images.id} DESC`,
         limit,
         offset,
-        includeNsfw
+        includeNsfw,
+        includeBasement
       );
     default:
       break;
@@ -131,7 +148,7 @@ async function fetchInSortOrder(params: {
   const oldestBase = sql`${images.uploadedAt} ASC, ${images.id} ASC`;
 
   if (sort === 'random') {
-    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0, includeNsfw);
+    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0, includeNsfw, includeBasement);
     const shuffled = seededShuffle(baseRows, seed || 'unseeded');
     return sliceCandidateWindowWithBaseTail({
       reordered: shuffled,
@@ -139,12 +156,13 @@ async function fetchInSortOrder(params: {
       baseOrder: newestBase,
       limit,
       offset,
-      includeNsfw
+      includeNsfw,
+      includeBasement
     });
   }
 
   if (sort === 'rainbow') {
-    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0, includeNsfw);
+    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0, includeNsfw, includeBasement);
     const ordered = baseRows
       .map((row) => ({ row, hue: dominantHue(row.palette) }))
       .sort((a, b) => a.hue - b.hue || a.row.id - b.row.id)
@@ -155,12 +173,13 @@ async function fetchInSortOrder(params: {
       baseOrder: newestBase,
       limit,
       offset,
-      includeNsfw
+      includeNsfw,
+      includeBasement
     });
   }
 
   if (sort === 'tidal') {
-    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0, includeNsfw);
+    const baseRows = await selectImagesOrdered(tagFilter, newestBase, CANDIDATE_CAP, 0, includeNsfw, includeBasement);
     const interleaved = tidal(baseRows);
     return sliceCandidateWindowWithBaseTail({
       reordered: interleaved,
@@ -168,14 +187,15 @@ async function fetchInSortOrder(params: {
       baseOrder: newestBase,
       limit,
       offset,
-      includeNsfw
+      includeNsfw,
+      includeBasement
     });
   }
 
   // Embedding-driven reorder modes.
   const direction = sort === 'ancient-drift' ? 'asc' : 'desc';
   const baseOrder = direction === 'asc' ? oldestBase : newestBase;
-  const candidates = await fetchCandidates(tagFilter, direction, CANDIDATE_CAP, includeNsfw);
+  const candidates = await fetchCandidates(tagFilter, direction, CANDIDATE_CAP, includeNsfw, includeBasement);
   const reordered = applyReorder(sort, candidates, seed);
   return sliceCandidateWindowWithBaseTail({
     reordered,
@@ -183,7 +203,8 @@ async function fetchInSortOrder(params: {
     baseOrder,
     limit,
     offset,
-    includeNsfw
+    includeNsfw,
+    includeBasement
   });
 }
 
@@ -198,8 +219,9 @@ async function sliceCandidateWindowWithBaseTail(params: {
   limit: number;
   offset: number;
   includeNsfw: boolean;
+  includeBasement: boolean;
 }): Promise<Image[]> {
-  const { reordered, tagFilter, baseOrder, limit, offset, includeNsfw } = params;
+  const { reordered, tagFilter, baseOrder, limit, offset, includeNsfw, includeBasement } = params;
   if (limit <= 0) return [];
 
   // A reordered window shorter than CANDIDATE_CAP means the total table
@@ -209,7 +231,7 @@ async function sliceCandidateWindowWithBaseTail(params: {
 
   if (offset >= reordered.length) {
     if (!hasTail) return [];
-    return selectImagesOrdered(tagFilter, baseOrder, limit, offset, includeNsfw);
+    return selectImagesOrdered(tagFilter, baseOrder, limit, offset, includeNsfw, includeBasement);
   }
 
   const windowEnd = Math.min(offset + limit, reordered.length);
@@ -226,7 +248,8 @@ async function sliceCandidateWindowWithBaseTail(params: {
     baseOrder,
     remaining,
     reordered.length,
-    includeNsfw
+    includeNsfw,
+    includeBasement
   );
   return windowRows.concat(tailRows);
 }
@@ -252,9 +275,15 @@ async function selectImagesOrdered(
   orderBy: ReturnType<typeof sql>,
   limit: number,
   offset: number,
-  includeNsfw: boolean
+  includeNsfw: boolean,
+  includeBasement: boolean = false
 ): Promise<Image[]> {
   const nsfw = nsfwPredicate(includeNsfw);
+  const bsmt = basementPredicate(includeBasement);
+  // Compose NSFW + basement predicates. Both are AND conditions; either or
+  // both may be null (meaning "no restriction on that dimension").
+  const visibilityWhere = nsfw && bsmt ? and(nsfw, bsmt) : nsfw ?? bsmt ?? null;
+
   if (tagFilter) {
     const matchingIdsSubquery = db
       .select({ id: tags.imageId })
@@ -262,9 +291,8 @@ async function selectImagesOrdered(
       .where(inArray(tags.tag, tagFilter))
       .groupBy(tags.imageId)
       .having(sql`count(distinct ${tags.tag}) = ${tagFilter.length}`);
-    const where = nsfw
-      ? and(inArray(images.id, matchingIdsSubquery), nsfw)
-      : inArray(images.id, matchingIdsSubquery);
+    const tagWhere = inArray(images.id, matchingIdsSubquery);
+    const where = visibilityWhere ? and(tagWhere, visibilityWhere) : tagWhere;
     return db
       .select()
       .from(images)
@@ -274,7 +302,7 @@ async function selectImagesOrdered(
       .offset(offset);
   }
   const q = db.select().from(images);
-  return (nsfw ? q.where(nsfw) : q).orderBy(orderBy).limit(limit).offset(offset);
+  return (visibilityWhere ? q.where(visibilityWhere) : q).orderBy(orderBy).limit(limit).offset(offset);
 }
 
 // Lonely: order by (approved-comments + reactions) ascending. LEFT JOIN with
@@ -284,9 +312,11 @@ async function selectLonely(
   tagFilter: string[] | null,
   limit: number,
   offset: number,
-  includeNsfw: boolean
+  includeNsfw: boolean,
+  includeBasement: boolean = false
 ): Promise<Image[]> {
   const nsfw = nsfwPredicate(includeNsfw);
+  const bsmt = basementPredicate(includeBasement);
   const commentsSub = db
     .select({
       imageId: comments.imageId,
@@ -322,7 +352,9 @@ async function selectLonely(
           .having(sql`count(distinct ${tags.tag}) = ${tagFilter.length}`)
       )
     : null;
-  const composed = tagWhere && nsfw ? and(tagWhere, nsfw) : tagWhere ?? nsfw ?? null;
+  // Compose tag + NSFW + basement predicates.
+  const visibilityWhere = nsfw && bsmt ? and(nsfw, bsmt) : nsfw ?? bsmt ?? null;
+  const composed = tagWhere && visibilityWhere ? and(tagWhere, visibilityWhere) : tagWhere ?? visibilityWhere ?? null;
   const ordered = composed ? query.where(composed) : query;
 
   const rows = await ordered
@@ -342,9 +374,11 @@ async function fetchCandidates(
   tagFilter: string[] | null,
   direction: 'asc' | 'desc',
   cap: number,
-  includeNsfw: boolean
+  includeNsfw: boolean,
+  includeBasement: boolean = false
 ): Promise<Candidate[]> {
   const nsfw = nsfwPredicate(includeNsfw);
+  const bsmt = basementPredicate(includeBasement);
   const orderExpr =
     direction === 'asc'
       ? sql`${images.uploadedAt} ASC, ${images.id} ASC`
@@ -374,7 +408,8 @@ async function fetchCandidates(
           .having(sql`count(distinct ${tags.tag}) = ${tagFilter.length}`)
       )
     : null;
-  const composed = tagWhere && nsfw ? and(tagWhere, nsfw) : tagWhere ?? nsfw ?? null;
+  const visibilityWhere = nsfw && bsmt ? and(nsfw, bsmt) : nsfw ?? bsmt ?? null;
+  const composed = tagWhere && visibilityWhere ? and(tagWhere, visibilityWhere) : tagWhere ?? visibilityWhere ?? null;
   const scoped = composed ? base.where(composed) : base;
 
   const rows = await scoped.orderBy(orderExpr).limit(cap);
@@ -619,10 +654,10 @@ export async function getOwnerHandlesForImages(
 // Per-user gallery for /u/[handle]. Newest-first listing scoped to one
 // owner; no embedding-driven sort modes (visitor sees the public stream
 // for those). Hydrates captions/descriptions/tags so the grid can render.
-// `includeNsfw` honors the visitor's site-wide preference cookie.
+// `includeNsfw` and `includeBasement` honor the visitor's cookie preferences.
 export async function listImagesByHandle(
   handle: string,
-  opts: { limit?: number; offset?: number; includeNsfw?: boolean } = {}
+  opts: { limit?: number; offset?: number; includeNsfw?: boolean; includeBasement?: boolean } = {}
 ): Promise<{
   owner: { id: string; handle: string; displayName: string | null } | null;
   images: ImageWithRelations[];
@@ -636,7 +671,10 @@ export async function listImagesByHandle(
   const limit = clampInt(opts.limit, 60, 1, 200);
   const offset = clampInt(opts.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const nsfw = nsfwPredicate(opts.includeNsfw === true);
-  const where = nsfw ? and(eq(images.ownerId, user.id), nsfw) : eq(images.ownerId, user.id);
+  const bsmt = basementPredicate(opts.includeBasement === true);
+  const ownerFilter = eq(images.ownerId, user.id);
+  const visibilityWhere = nsfw && bsmt ? and(nsfw, bsmt) : nsfw ?? bsmt ?? null;
+  const where = visibilityWhere ? and(ownerFilter, visibilityWhere) : ownerFilter;
   const rows = await db
     .select()
     .from(images)
@@ -670,6 +708,9 @@ export async function getImagesByIdsOrdered(ids: number[]): Promise<Image[]> {
 export async function listSitemapImages(): Promise<
   { slug: string; uploadedAt: Date; takenAt: Date | null; ownerHandle: string | null }[]
 > {
+  // Basement images are excluded from the sitemap -- they must not appear
+  // in public search indexes even as URL-only entries. NSFW is excluded for
+  // the same reason (the sitemap is public and doesn't carry cookie context).
   const rows = await db
     .select({
       slug: images.slug,
@@ -679,19 +720,23 @@ export async function listSitemapImages(): Promise<
     })
     .from(images)
     .leftJoin(users, eq(users.id, images.ownerId))
+    .where(and(eq(images.isNsfw, false), eq(images.basement, false)))
     .orderBy(desc(images.uploadedAt));
   return rows;
 }
 
 // Cheap counter scoped to one owner. Returned total includes/excludes
-// NSFW the same way the corresponding list query does, so the header
-// pictures count matches what the visitor can actually scroll through.
+// NSFW and basement the same way the corresponding list queries do, so
+// the header count matches what the visitor can actually scroll through.
 export async function countImagesByOwner(
   ownerId: string,
-  opts: { includeNsfw?: boolean } = {}
+  opts: { includeNsfw?: boolean; includeBasement?: boolean } = {}
 ): Promise<number> {
   const nsfw = nsfwPredicate(opts.includeNsfw === true);
-  const where = nsfw ? and(eq(images.ownerId, ownerId), nsfw) : eq(images.ownerId, ownerId);
+  const bsmt = basementPredicate(opts.includeBasement === true);
+  const ownerFilter = eq(images.ownerId, ownerId);
+  const visibilityWhere = nsfw && bsmt ? and(nsfw, bsmt) : nsfw ?? bsmt ?? null;
+  const where = visibilityWhere ? and(ownerFilter, visibilityWhere) : ownerFilter;
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(images)
@@ -701,9 +746,11 @@ export async function countImagesByOwner(
 
 export async function countImages(
   tagsFilter?: string[],
-  opts: { includeNsfw?: boolean } = {}
+  opts: { includeNsfw?: boolean; includeBasement?: boolean } = {}
 ): Promise<number> {
   const nsfw = nsfwPredicate(opts.includeNsfw === true);
+  const bsmt = basementPredicate(opts.includeBasement === true);
+  const visibilityWhere = nsfw && bsmt ? and(nsfw, bsmt) : nsfw ?? bsmt ?? null;
   if (tagsFilter && tagsFilter.length > 0) {
     const matchingIdsSubquery = db
       .select({ id: tags.imageId })
@@ -711,9 +758,8 @@ export async function countImages(
       .where(inArray(tags.tag, tagsFilter))
       .groupBy(tags.imageId)
       .having(sql`count(distinct ${tags.tag}) = ${tagsFilter.length}`);
-    const where = nsfw
-      ? and(inArray(images.id, matchingIdsSubquery), nsfw)
-      : inArray(images.id, matchingIdsSubquery);
+    const tagWhere = inArray(images.id, matchingIdsSubquery);
+    const where = visibilityWhere ? and(tagWhere, visibilityWhere) : tagWhere;
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(images)
@@ -721,7 +767,7 @@ export async function countImages(
     return row?.count ?? 0;
   }
   const base = db.select({ count: sql<number>`count(*)::int` }).from(images);
-  const [row] = await (nsfw ? base.where(nsfw) : base);
+  const [row] = await (visibilityWhere ? base.where(visibilityWhere) : base);
   return row?.count ?? 0;
 }
 

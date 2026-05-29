@@ -10,7 +10,7 @@ import { addLineageEdges, resolveOwnedImageIdsBySlugs } from '@/lib/db/queries/l
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
-import { parseIntParam, resolveIncludeNsfw } from '@/lib/http-params';
+import { parseIntParam, resolveIncludeNsfw, resolveIncludeBasement } from '@/lib/http-params';
 import { isSortMode, type SortMode } from '@/lib/sort/types';
 
 export const runtime = 'nodejs';
@@ -57,8 +57,12 @@ export async function GET(req: Request) {
   // The query param overrides the cookie -- lets clients force include
   // (e.g. signed-in admin tooling) without flipping the visitor cookie.
   const includeNsfw = await resolveIncludeNsfw(url.searchParams.get('include_nsfw'));
+  // Basement gate is cookie-only -- no query-string override. Basement rows
+  // are excluded from the main public feed even when unlocked; the /basement
+  // route is the dedicated surface for them.
+  const includeBasement = false;
 
-  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed, includeNsfw });
+  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed, includeNsfw, includeBasement });
   return NextResponse.json({ images: rows });
 }
 

@@ -29,12 +29,12 @@ export function normalizeHex(input: string): string | null {
 
 // Returns hydrated images whose palette array contains at least one hex
 // within the RGB_THRESHOLD of the target color. Honors the visitor's
-// NSFW preference -- without this, NSFW rows would slip past the
-// site-wide hide gate (they're filtered everywhere else by query, not
-// by CSS, so the URL never reaches a default-hide visitor).
+// NSFW preference and the basement gate -- without this, gated rows
+// would slip past the site-wide hide gate (they're filtered everywhere
+// else by query, not by CSS, so the URL never reaches a locked visitor).
 export async function listImagesByPaletteHex(
   hex: string,
-  opts: { limit?: number; offset?: number; includeNsfw?: boolean } = {}
+  opts: { limit?: number; offset?: number; includeNsfw?: boolean; includeBasement?: boolean } = {}
 ): Promise<ImageWithRelations[]> {
   const target = hexToRgb(hex);
   if (!target) return [];
@@ -43,12 +43,13 @@ export async function listImagesByPaletteHex(
   const [tr, tg, tb] = target;
   const t2 = RGB_THRESHOLD * RGB_THRESHOLD;
   const includeNsfw = opts.includeNsfw === true;
+  const includeBasement = opts.includeBasement === true;
 
   // Postgres-side filter: unnest the palette array and compare the parsed
   // RGB to the target. Returns at most one row per image (best match) and
   // ranks by squared RGB distance. `^` would be XOR in Postgres, so each
-  // squared term uses an explicit multiply. The NSFW predicate is
-  // pre-aggregation so an NSFW row never reaches the candidate set.
+  // squared term uses an explicit multiply. Both the NSFW and basement
+  // predicates are pre-aggregation so gated rows never reach the candidate set.
   const rows = await db.execute<{ id: number }>(sql`
     WITH candidates AS (
       SELECT
@@ -67,6 +68,7 @@ export async function listImagesByPaletteHex(
       WHERE i.palette IS NOT NULL
         AND c ~ '^#[0-9a-fA-F]{6}$'
         ${includeNsfw ? sql`` : sql`AND i.is_nsfw = false`}
+        ${includeBasement ? sql`` : sql`AND i.basement = false`}
       GROUP BY i.id
     )
     SELECT id FROM candidates
@@ -97,13 +99,14 @@ export async function listImagesByPaletteHex(
 // pass the squared-distance threshold.
 export async function countImagesByPaletteHex(
   hex: string,
-  opts: { includeNsfw?: boolean } = {}
+  opts: { includeNsfw?: boolean; includeBasement?: boolean } = {}
 ): Promise<number> {
   const target = hexToRgb(hex);
   if (!target) return 0;
   const [tr, tg, tb] = target;
   const t2 = RGB_THRESHOLD * RGB_THRESHOLD;
   const includeNsfw = opts.includeNsfw === true;
+  const includeBasement = opts.includeBasement === true;
   const result = await db.execute<{ count: number }>(sql`
     WITH candidates AS (
       SELECT
@@ -122,6 +125,7 @@ export async function countImagesByPaletteHex(
       WHERE i.palette IS NOT NULL
         AND c ~ '^#[0-9a-fA-F]{6}$'
         ${includeNsfw ? sql`` : sql`AND i.is_nsfw = false`}
+        ${includeBasement ? sql`` : sql`AND i.basement = false`}
       GROUP BY i.id
     )
     SELECT count(*)::int AS count FROM candidates WHERE dist2 <= ${t2}

@@ -364,6 +364,29 @@ Return ONLY valid JSON in this exact shape, no prose around it:
   "variant3": "<image prompt>"
 }`;
 
+// feat/basement: a deliberately unhinged caption voice for basement-flagged
+// images. Still three variants and the same JSON shape as the main caption
+// prompt so the same parsing and persistence code handles it. No em dashes.
+const BASEMENT_CAPTION_TEMPLATE = `You are generating captions for a hidden, unfiltered gallery section called the basement. These images are not for the main feed.
+
+Look at the attached image and produce exactly three short captions, each in a distinct voice that leans into the strange, the uncomfortable, or the grandiose:
+  - variant1: CLINICAL. Describe what is literally in the image with a cold, affectless precision. No metaphor. Like a police report or a museum label for something disturbing.
+  - variant2: UNHINGED. Dramatic, overwrought, possibly conspiratorial. Treat the image as if it confirms something you have long suspected about the nature of reality. Go further than seems warranted.
+  - variant3: TENDER AND WRONG. Sincere warmth applied to entirely the wrong thing -- as if this image is the most moving thing you have ever seen, and the sincerity is somehow both genuine and off.
+
+Constraints:
+  - Each caption must be under 12 words.
+  - Do NOT repeat the same phrasing or central noun across variants.
+  - Do NOT use em dashes. Use commas, periods, or two hyphens (--) if needed.
+  - No em dashes. No em dashes. Two hyphens only.
+
+Return ONLY valid JSON in this exact shape, with no prose around it:
+{
+  "variant1": "<clinical caption>",
+  "variant2": "<unhinged caption>",
+  "variant3": "<tender-and-wrong caption>"
+}`;
+
 const REMIX_TEMPLATE = `You are recasting an existing image's CONCEPT into a different visual idiom, keeping what the image is ABOUT while changing how it would LOOK.
 
 ORIGINAL CONCEPT -- the canonical caption of the image being remixed:
@@ -642,7 +665,8 @@ async function main() {
     ['surprise', SURPRISE_TEMPLATE],
     ['walk_step', WALK_STEP_TEMPLATE],
     ['reverse_haiku', REVERSE_HAIKU_TEMPLATE],
-    ['remix', REMIX_TEMPLATE]
+    ['remix', REMIX_TEMPLATE],
+    ['basement_caption', BASEMENT_CAPTION_TEMPLATE]
   ] as const) {
     await db
       .insert(prompts)
