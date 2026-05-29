@@ -110,11 +110,12 @@ export async function getCaptionVector(imageId: number): Promise<number[] | null
 // pgvector returns the vector as a bracketed string which we parse once here
 // so downstream callers don't have to know about the wire format.
 //
-// ORDER BY image_id so the row order is stable run-to-run. The entropy
-// recompute draws a seeded pairwise sample from this corpus; an unordered
-// scan would index different vectors each run and make the seeded temperature
-// estimate non-deterministic. No existing caller depends on the prior
-// (unspecified) order.
+// ORDER BY image_id so the row order is stable run-to-run. Both the entropy
+// recompute (seeded pairwise temperature sample) and the manifold handler
+// (seeded subsample shuffle) draw deterministic slices from this corpus; an
+// unordered scan would pick different vectors each run even with the same
+// seed, breaking the stable-layout and reproducible-temperature guarantees.
+// No existing caller depends on the prior (unspecified) order.
 export async function allCaptionVectors(): Promise<{ imageId: number; vec: number[] }[]> {
   const res = await db.execute<{ image_id: number; vec: string }>(sql`
     SELECT image_id, vec::text AS vec FROM embeddings WHERE kind = 'caption' ORDER BY image_id

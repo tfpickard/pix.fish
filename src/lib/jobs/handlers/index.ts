@@ -7,6 +7,7 @@ import { backupExportHandler } from './backupExport';
 import { entropyRecomputeHandler } from './entropyRecompute';
 import { nsfwScanHandler } from './nsfwScan';
 import { knnRebuildHandler } from './knnRebuild';
+import { manifoldRecomputeHandler } from './manifoldRecompute';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -35,5 +36,6 @@ export const handlers: Record<string, JobHandler> = {
   'entropy.recompute': entropyRecomputeHandler,
   'nsfw.scan': nsfwScanHandler,
   // feat/geodesics: build kNN graph over caption embeddings -> knn_edges
-  'knn.rebuild': knnRebuildHandler
+  'knn.rebuild': knnRebuildHandler,
+  'manifold.recompute': manifoldRecomputeHandler
 };
