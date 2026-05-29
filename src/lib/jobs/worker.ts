@@ -23,6 +23,7 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'backup.export': 55_000, // large zip upload; fills the tick
   'nsfw.scan': 25_000, // single Haiku vision call; same shape as a webhook fetch
   'entropy.recompute': 55_000, // read-then-write over the whole corpus; fills the tick
+  'knn.rebuild': 55_000, // O(n^2) all-pairs; fills the tick at ~5000 images
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;

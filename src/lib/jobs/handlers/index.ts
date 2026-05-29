@@ -4,8 +4,9 @@ import { reprocessImageHandler } from './reprocessImage';
 import { enrichImageHandler } from './enrichImage';
 import { umapRecomputeHandler } from './umapRecompute';
 import { backupExportHandler } from './backupExport';
-import { nsfwScanHandler } from './nsfwScan';
 import { entropyRecomputeHandler } from './entropyRecompute';
+import { nsfwScanHandler } from './nsfwScan';
+import { knnRebuildHandler } from './knnRebuild';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -31,6 +32,8 @@ export const handlers: Record<string, JobHandler> = {
   'enrich.image': enrichImageHandler,
   'umap.recompute': umapRecomputeHandler,
   'backup.export': backupExportHandler,
+  'entropy.recompute': entropyRecomputeHandler,
   'nsfw.scan': nsfwScanHandler,
-  'entropy.recompute': entropyRecomputeHandler
+  // feat/geodesics: build kNN graph over caption embeddings -> knn_edges
+  'knn.rebuild': knnRebuildHandler
 };
