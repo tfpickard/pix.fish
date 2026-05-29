@@ -248,6 +248,25 @@ Return ONLY valid JSON in this shape, with no prose around it:
   "nsfw": false
 }`;
 
+// feat/hud: dedicated nudity classifier for the batch NSFW scan. Distinct from
+// the tags prompt so the scan can run cheaply on Haiku without rewriting tags.
+// Output is parseable by parseTagsJson (reads `nsfw`; empty `tags` is fine).
+const NSFW_TEMPLATE = `You are a single-purpose nudity classifier for an image gallery.
+
+Look at the attached image and decide one thing: does it contain human nudity?
+Set "nsfw": true if the image shows visible human nudity (exposed genitalia,
+bare breasts, bare buttocks, or otherwise unclothed human bodies), and false
+otherwise. Nudity is the ONLY criterion. Violence, gore, suggestive-but-clothed
+imagery, drug use, and merely intense subject matter do NOT count and are false.
+Err toward true when nudity is clearly identifiable; err toward false when you
+cannot tell.
+
+Do NOT use em dashes. Return ONLY valid JSON in this exact shape, no prose:
+{
+  "tags": [],
+  "nsfw": false
+}`;
+
 // Phase 5 -- inspiration playground prompts. All return the same three-voice
 // JSON shape as breed so the API can reuse parseVariantsJson and the
 // playground can offer the owner three prompt options to copy.
@@ -614,6 +633,7 @@ async function main() {
     ['caption', CAPTION_TEMPLATE],
     ['description', DESCRIPTION_TEMPLATE],
     ['tags', TAGS_TEMPLATE],
+    ['nsfw', NSFW_TEMPLATE],
     ['breed', BREED_TEMPLATE],
     ['depart', DEPART_TEMPLATE],
     ['antibreed', ANTIBREED_TEMPLATE],

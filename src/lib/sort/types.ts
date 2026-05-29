@@ -20,6 +20,7 @@ export type SortMode =
   | 'chronograph'
   | 'memory-lane'
   | 'lonely'
+  | 'surprising-first'
   | 'drunkards-walk'
   | 'tidal';
 
@@ -127,6 +128,15 @@ export const SORT_META: Record<SortMode, SortMeta> = {
     label: 'Lonely first',
     description: 'Underseen images: fewest reactions and comments up top',
     group: 'weird',
+    randomSeeded: false,
+    needsEmbeddings: false
+  },
+  'surprising-first': {
+    id: 'surprising-first',
+    label: 'Surprising first',
+    description: 'Most unexpected images first, by entropy surprisal score',
+    group: 'weird',
+    // Sorts the precomputed images.surprisal column, not live vectors.
     randomSeeded: false,
     needsEmbeddings: false
   },
