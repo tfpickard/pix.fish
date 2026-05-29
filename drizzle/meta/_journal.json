@@ -29,6 +29,13 @@
       "when": 1779949076862,
       "tag": "0003_past_thaddeus_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779980369179,
+      "tag": "0004_mysterious_riptide",
+      "breakpoints": true
     }
   ]
 }
