@@ -32,9 +32,9 @@ import { bulkInsertFillers, bulkInsertSlots, clearGrammar } from '../src/lib/db/
 type SlotType = 'noun' | 'verb' | 'adjective';
 
 const SLOT_TYPES: SlotType[] = ['noun', 'verb', 'adjective'];
-// Drop templates that appear only once -- they bloat the artifact without
-// adding generative variety. Drop fillers that are too long (likely a parse
-// glitch) or that are common-stopword-ish.
+// Keep templates that meet the minimum frequency threshold. With the current
+// value of 1, even one-off templates are retained. Drop fillers that are too
+// long (likely a parse glitch) or that are common-stopword-ish.
 const MIN_TEMPLATE_FREQ = 1;
 const MAX_FILLER_LEN = 32;
 const STOP_FILLERS = new Set([
