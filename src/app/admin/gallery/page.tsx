@@ -17,13 +17,15 @@ type Defaults = {
   defaultSort: SortMode;
   defaultShufflePeriod: ShufflePeriod;
   searchSimilarityThreshold: number;
+  autoApproveComments: boolean;
 };
 
 export default function AdminGalleryPage() {
   const [defaults, setDefaults] = useState<Defaults>({
     defaultSort: DEFAULT_SORT,
     defaultShufflePeriod: DEFAULT_SHUFFLE_PERIOD,
-    searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD
+    searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD,
+    autoApproveComments: false
   });
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle');
@@ -52,7 +54,8 @@ export default function AdminGalleryPage() {
             defaultShufflePeriod: obj.defaultShufflePeriod as ShufflePeriod,
             searchSimilarityThreshold: Number.isFinite(rawN)
               ? Math.max(0, Math.min(1, rawN))
-              : DEFAULT_SEARCH_SIM_THRESHOLD
+              : DEFAULT_SEARCH_SIM_THRESHOLD,
+            autoApproveComments: obj.autoApproveComments === true
           });
         }
         setLoading(false);
@@ -165,6 +168,24 @@ export default function AdminGalleryPage() {
               cosine similarity floor for /search results (0 = keep everything, 1 = exact-match
               only). 0.30 is the compiled-in default; raise to surface only tighter matches,
               lower to be more permissive.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 font-mono text-sm text-ink-100">
+              <input
+                type="checkbox"
+                checked={defaults.autoApproveComments}
+                onChange={(e) => save({ autoApproveComments: e.target.checked })}
+                disabled={isPending}
+                className="accent-primary"
+              />
+              auto-approve comments
+            </label>
+            <p className="font-mono text-xs text-ink-500">
+              when on, guest comments publish immediately instead of waiting in the moderation
+              queue. signed-in users always skip moderation. leave off to review guest comments
+              before they appear.
             </p>
           </div>
 

@@ -38,6 +38,7 @@ export async function PATCH(req: Request) {
     defaultSort?: unknown;
     defaultShufflePeriod?: unknown;
     searchSimilarityThreshold?: unknown;
+    autoApproveComments?: unknown;
   };
 
   const ownerId = getSiteAdminId();
@@ -70,6 +71,19 @@ export async function PATCH(req: Request) {
       ownerId,
       GALLERY_KEYS.searchSimilarityThreshold,
       n.toFixed(3)
+    );
+  }
+  if (payload.autoApproveComments !== undefined) {
+    if (typeof payload.autoApproveComments !== 'boolean') {
+      return NextResponse.json(
+        { error: 'invalid autoApproveComments (expected boolean)' },
+        { status: 400 }
+      );
+    }
+    await setGalleryDefault(
+      ownerId,
+      GALLERY_KEYS.autoApproveComments,
+      payload.autoApproveComments ? 'true' : 'false'
     );
   }
 
