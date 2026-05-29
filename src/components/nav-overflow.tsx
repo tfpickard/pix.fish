@@ -51,6 +51,10 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
 
   const items: NavItem[] = [
     { href: '/', label: 'gallery' },
+    { href: '/map', label: 'atlas' },
+    { href: '/manifold', label: 'manifold' },
+    { href: '/connect', label: 'connect' },
+    { href: '/search', label: 'search' },
     { href: '/about', label: 'about' },
     ...(signedIn ? [{ href: '/admin/upload', label: 'upload' }] : []),
     ...(handle ? [{ href: `/u/${handle}`, label: `/u/${handle}` }] : []),

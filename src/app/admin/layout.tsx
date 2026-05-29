@@ -31,9 +31,16 @@ const ADMIN_NAV = [
   { href: '/admin/breed', label: 'breed' },
   { href: '/admin/play', label: 'play' },
   { href: '/admin/reprocess', label: 'reprocess' },
+  { href: '/admin/scan-nsfw', label: 'scan-nsfw' },
+  // --- explore ---
+  { href: '/admin/map', label: 'map (2d)' },
+  { href: '/admin/manifold', label: 'manifold (3d)' },
+  { href: '/admin/knn', label: 'knn graph' },
+  // --- alive ---
+  { href: '/admin/alive', label: 'alive' },
+  // --- ops ---
   { href: '/admin/webhooks', label: 'webhooks' },
   { href: '/admin/jobs', label: 'jobs' },
-  { href: '/admin/map', label: 'map' },
   { href: '/admin/stats', label: 'stats' },
   { href: '/admin/backup', label: 'backup' }
 ];
