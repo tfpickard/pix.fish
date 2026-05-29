@@ -15,6 +15,14 @@ export type GrammarSlotInput = { template: string; frequency: number };
 
 const SLOT_REGEX = /\[([a-z0-9_]+)\]/gi;
 
+// Positional slots are named `<base>_<n>` (e.g. noun_1, noun_2) so each
+// occurrence in a template is distinct and gets its own filler. The filler
+// pool, though, is keyed by the BASE name (all noun positions draw from the
+// same noun pool), so strip the trailing _<n> to look fillers up.
+export function baseSlotName(name: string): string {
+  return name.replace(/_\d+$/, '');
+}
+
 export function extractSlotNames(template: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -66,7 +74,9 @@ export function generateSkeleton(opts: {
         frozenNames.push(name);
         continue;
       }
-      const candidates = fillersBySlot[name];
+      // Exact name first (supports flat, non-positional legacy grammars and
+      // LLM-renamed bases), then fall back to the positional base pool.
+      const candidates = fillersBySlot[name] ?? fillersBySlot[baseSlotName(name)];
       if (!candidates || candidates.length === 0) {
         // No fillers for this slot yet -- leave the bracketed placeholder
         // visible so the owner can see which slot is empty rather than

@@ -161,4 +161,10 @@ Both scripts are safe to re-run.
 - Admin CRUD UI for `grammar_slots` / `grammar_fillers` / `constraint_cards`. The seed + derive scripts cover Phase 1 fine.
 - URL-encoded state (shareable prompt permalinks).
 - Per-user grammar. Phase 1 ships the site-admin's grammar only; users running the script under a non-admin id will write rows but the playground page is owner-gated.
-- LLM positional disambiguation (template `[noun_1]` vs `[noun_2]` named per template).
+- LLM *semantic* per-position naming. Slots are now positional (`[noun_1]`, `[noun_2]` -- see below) so each occurrence fills independently, but the names are still type-based; an LLM pass could name them by role ("subject" vs "object").
+
+## Fix: positional slots
+
+Originally every `[noun]` in a template shared one filler (the sampler deduped slot names and `renderTemplate` reused the single pick), so a template with several noun slots collapsed to the same word repeated -- "the expertise stands stands black" -- and pinning a slot forced every occurrence of that type to one word. `derive-grammar.ts` now numbers each occurrence per type (`[noun_1]`, `[noun_2]`, ...); the sampler (`src/lib/playground/skeleton.ts`) treats each as a distinct slot but resolves the shared filler pool via `baseSlotName()` (strip the trailing `_<n>`). Each occurrence fills independently and is individually freezable.
+
+Re-run `bun scripts/derive-grammar.ts` to regenerate a positional grammar -- a previously-derived flat grammar (`[noun]`) still renders, but keeps the old collapse until re-derived. Long description-derived templates (6+ slots) remain a separate quality lever: they now read with varied words but can still run on; tighten by mining captions only or capping slot count.

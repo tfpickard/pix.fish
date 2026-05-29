@@ -75,6 +75,11 @@ function extractFromText(text: string): Extraction {
   const fillers: { slot: SlotType; text: string }[] = [];
   let currentSlot: SlotType | null = null;
   let currentSpan: string[] = [];
+  // Number each slot occurrence per type within this template so the renderer
+  // fills each occurrence independently. [noun_1] and [noun_2] are distinct
+  // slots that both draw from the shared noun filler pool, which is what stops
+  // "expertise on a expertise expertise" collapse.
+  const slotCounters: Record<SlotType, number> = { noun: 0, verb: 0, adjective: 0 };
 
   const flush = () => {
     if (currentSlot && currentSpan.length > 0) {
@@ -86,7 +91,8 @@ function extractFromText(text: string): Extraction {
       ) {
         fillers.push({ slot: currentSlot, text: filler });
       }
-      out.push(`[${currentSlot}]`);
+      slotCounters[currentSlot] += 1;
+      out.push(`[${currentSlot}_${slotCounters[currentSlot]}]`);
     } else if (currentSpan.length > 0) {
       out.push(currentSpan.join(' '));
     }
@@ -287,7 +293,9 @@ async function main() {
     for (const slot of SLOT_TYPES) {
       const newName = slotRename[slot];
       if (newName === slot) continue;
-      out = out.replaceAll(`[${slot}]`, `[${newName}]`);
+      // Slots are positional ([noun_1], [noun_2], ...); rename the base and
+      // keep the occurrence index.
+      out = out.replace(new RegExp(`\\[${slot}_(\\d+)\\]`, 'g'), `[${newName}_$1]`);
     }
     return out;
   }
