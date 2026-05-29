@@ -6,7 +6,7 @@ import { images, captions, users } from '@/lib/db/schema';
 import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw } from '@/lib/db/queries/knn';
 import { getCaptionVector } from '@/lib/db/queries/embeddings';
 import { findPath } from '@/lib/knn';
-import { readShowNsfwCookie } from '@/lib/nsfw';
+import { readNsfwMode } from '@/lib/nsfw';
 import { PathFilmstrip } from '@/components/path-filmstrip';
 import type { PathNode } from '@/lib/knn-path-types';
 
@@ -21,7 +21,7 @@ export const metadata: Metadata = {
 };
 
 type PageProps = {
-  searchParams: { a?: string; b?: string };
+  searchParams: Promise<{ a?: string; b?: string }>;
 };
 
 type SlimImage = { id: number; slug: string; blobUrl: string };
@@ -141,19 +141,19 @@ async function resolvePath(a: number, b: number, includeNsfw: boolean): Promise<
 }
 
 export default async function ConnectPage({ searchParams }: PageProps) {
-  const rawA = searchParams.a ?? '';
-  const rawB = searchParams.b ?? '';
+  const { a: rawA = '', b: rawB = '' } = await searchParams;
 
   // Resolve slugs (or fallback numeric IDs) to slim image records in parallel.
-  const [imgA, imgB, edgeCount, includeNsfw] = await Promise.all([
+  const [imgA, imgB, edgeCount, nsfwMode] = await Promise.all([
     resolveEndpoint(rawA),
     resolveEndpoint(rawB),
     countKnnEdges().catch(() => 0),
-    readShowNsfwCookie()
+    readNsfwMode()
   ]);
 
   const hasValidParams = !!(imgA && imgB);
   const graphReady = edgeCount > 0;
+  const includeNsfw = nsfwMode !== 'hide';
 
   let outcome: PathOutcome | null = null;
   if (hasValidParams && graphReady) {

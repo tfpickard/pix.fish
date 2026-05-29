@@ -5,7 +5,7 @@ import { tagCloudByOwner } from '@/lib/db/queries/tags';
 import { InfiniteImageGrid } from '@/components/infinite-image-grid';
 import { TagCloud } from '@/components/tag-cloud';
 import { SITE_NAME } from '@/lib/site';
-import { readShowNsfwCookie } from '@/lib/nsfw';
+import { readNsfwMode } from '@/lib/nsfw';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,15 +33,15 @@ export default async function HandleGalleryPage({
   params: { handle: string };
 }) {
   const handle = decodeURIComponent(params.handle).toLowerCase();
-  const includeNsfw = await readShowNsfwCookie();
-  const { owner, images } = await listImagesByHandle(handle, { limit: 16, includeNsfw });
+  const nsfwMode = await readNsfwMode();
+  const { owner, images } = await listImagesByHandle(handle, { limit: 16, nsfwMode });
   if (!owner) notFound();
   // Header total is the real per-owner count, not the SSR window size.
   // Without this, a prolific user's header would shrink from "60
   // pictures" (pre-PR cap) to "16 pictures" (current SSR window).
   const [cloud, totalCount] = await Promise.all([
     tagCloudByOwner(owner.id, 48).catch(() => []),
-    countImagesByOwner(owner.id, { includeNsfw }).catch(() => images.length)
+    countImagesByOwner(owner.id, { nsfwMode }).catch(() => images.length)
   ]);
   return (
     <div className="pt-8">

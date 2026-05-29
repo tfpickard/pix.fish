@@ -12,7 +12,7 @@ export const revalidate = 0;
 export async function GET() {
   let items: Awaited<ReturnType<typeof listImages>> = [];
   try {
-    items = await listImages({ limit: 50, sort: 'newest', includeNsfw: false });
+    items = await listImages({ limit: 50, sort: 'newest', nsfwMode: 'hide' });
   } catch (err) {
     console.error('feed.json failed to load images', err);
     return NextResponse.json(

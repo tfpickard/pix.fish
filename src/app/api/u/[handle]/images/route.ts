@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { listImagesByHandle } from '@/lib/db/queries/images';
-import { parseIntParam, resolveIncludeNsfw } from '@/lib/http-params';
+import { parseIntParam, resolveNsfwMode } from '@/lib/http-params';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,13 +15,13 @@ export async function GET(
   const url = new URL(req.url);
   const limit = parseIntParam(url.searchParams.get('limit'), 24);
   const offset = parseIntParam(url.searchParams.get('offset'), 0);
-  const includeNsfw = await resolveIncludeNsfw(url.searchParams.get('include_nsfw'));
+  const nsfwMode = await resolveNsfwMode(url.searchParams.get('include_nsfw'));
 
   const handle = decodeURIComponent(params.handle).toLowerCase();
   const { owner, images } = await listImagesByHandle(handle, {
     limit,
     offset,
-    includeNsfw
+    nsfwMode
   });
   if (!owner) return NextResponse.json({ images: [] }, { status: 404 });
   return NextResponse.json({ images });

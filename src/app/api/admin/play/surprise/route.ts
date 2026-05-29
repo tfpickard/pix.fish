@@ -51,7 +51,7 @@ export async function GET() {
 
   // Motif sample: a slice of the gallery's actual captions so the model can
   // infer recurring motifs to invert.
-  const sampleImages = await listImages({ limit: MOTIF_SAMPLE, sort: 'newest', includeNsfw: true });
+  const sampleImages = await listImages({ limit: MOTIF_SAMPLE, sort: 'newest', nsfwMode: 'include' });
 
   const prompt = await resolvePrompt('surprise', {
     far_neighbor_captions: formatCaptionsForPrompt(farHydrated),

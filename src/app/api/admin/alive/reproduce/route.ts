@@ -21,6 +21,7 @@ import {
   mulberry32
 } from '@/lib/alive';
 import { slugify } from '@/lib/slug';
+import { uniquifySlug } from '@/lib/db/queries/slugs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -201,7 +202,7 @@ export async function POST(req: Request) {
 
   const blobKey = blob.pathname;
   const blobTail = blobKey.slice(-12).replace(/[^a-zA-Z0-9]/g, '') || 'img';
-  const placeholderSlug = `img-${blobTail}`;
+  const placeholderSlug = await uniquifySlug(`img-${blobTail}`, userId);
 
   let inserted;
   try {

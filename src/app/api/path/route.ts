@@ -5,7 +5,7 @@ import { images, captions, users } from '@/lib/db/schema';
 import { getEdgesForNodes, getEdgesForNodesExcludingNsfw } from '@/lib/db/queries/knn';
 import { getCaptionVector } from '@/lib/db/queries/embeddings';
 import { findPath } from '@/lib/knn';
-import { resolveIncludeNsfw } from '@/lib/http-params';
+import { resolveNsfwMode } from '@/lib/http-params';
 import type { PathNode, PathResponse } from '@/lib/knn-path-types';
 
 export const runtime = 'nodejs';
@@ -70,8 +70,8 @@ export async function GET(req: Request): Promise<NextResponse<PathResponse | { e
   // images. Passing a filtered edge loader to Dijkstra achieves both: NSFW
   // nodes have no outgoing edges in the filtered view, so they are never
   // expanded during search and never appear in the reconstructed path.
-  const includeNsfw = await resolveIncludeNsfw(searchParams.get('include_nsfw'));
-  const edgeLoader = includeNsfw ? getEdgesForNodes : getEdgesForNodesExcludingNsfw;
+  const nsfwMode = await resolveNsfwMode(searchParams.get('include_nsfw'));
+  const edgeLoader = nsfwMode !== 'hide' ? getEdgesForNodes : getEdgesForNodesExcludingNsfw;
 
   // Run Dijkstra with lazy edge loading from the DB.
   const result = await findPath(a, b, edgeLoader);
