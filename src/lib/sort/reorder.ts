@@ -69,6 +69,17 @@ function partitionByEmbedding<I extends Image>(
   return { embedded, missing };
 }
 
+// How hard attention nudges the drift order. The MMR score is in 0..1 (a
+// blend of recency and dispersion). We add ATTENTION_STRENGTH * normalized
+// attention on top, so the most-attended image gets at most +0.12 to its
+// score. That is enough to let a popular image jump a few positions earlier
+// when scores are otherwise close, but far too small to override the recency
+// term (alpha=0.65 spans a full 0..0.65 range) or to drag an old, unpopular
+// image to the front. By design this is a nudge, not a takeover: with the
+// default it cannot move an item more than a handful of slots. Raise it to
+// make popularity louder; set to 0 (or pass no attention map) to disable.
+export const ATTENTION_STRENGTH = 0.12;
+
 // MMR-style greedy reorder. Starts with the first item (already in the
 // caller's desired base order, e.g. newest first) and repeatedly picks the
 // next item that scores highest on:
@@ -76,13 +87,21 @@ function partitionByEmbedding<I extends Image>(
 // where rank_norm is the candidate's position in the base order normalized
 // to [0, 1]. alpha ~= 0.65 keeps the overall shape recency-biased while
 // still punishing back-to-back near-duplicates.
+//
+// Attention bias (feat/stigmergy): when `opts.attention` is supplied, a small
+// ATTENTION_STRENGTH term keyed on image id is *added* to the MMR score so
+// popular images drift slightly earlier. It composes with (does not replace)
+// the recency/dispersion blend, so callers that pass no map get the exact
+// original behaviour. The map is passed in by the query layer rather than read
+// from the DB here, keeping drift() pure and testable.
 export function drift<I extends Image>(
   items: Candidate<I>[],
-  opts: { alpha?: number; lookback?: number } = {}
+  opts: { alpha?: number; lookback?: number; attention?: Map<number, number> } = {}
 ): I[] {
   if (items.length < 2) return items.map((c) => c.image);
   const alpha = opts.alpha ?? 0.65;
   const K = Math.max(1, opts.lookback ?? 3);
+  const attention = opts.attention;
 
   const { embedded, missing } = partitionByEmbedding(items);
   if (embedded.length < 2) return items.map((c) => c.image);
@@ -111,7 +130,15 @@ export function drift<I extends Image>(
       // If no usable distance was available against the lookback window,
       // treat the dispersion term as neutral rather than maximum.
       const dispersionScore = minDist === Infinity ? 0.5 : minDist / 2;
-      const score = alpha * recencyScore + (1 - alpha) * dispersionScore;
+      let score = alpha * recencyScore + (1 - alpha) * dispersionScore;
+      // Attention nudge: add a small, bounded bonus for images the crowd has
+      // dwelled on. attention is normalized to 0..1, so the bonus tops out at
+      // ATTENTION_STRENGTH. Additive (not multiplicative) so an unpopular but
+      // very recent image still wins on recency.
+      if (attention) {
+        const a = attention.get(cand.image.id);
+        if (a) score += ATTENTION_STRENGTH * a;
+      }
       if (score > bestScore) {
         bestScore = score;
         bestIdx = i;

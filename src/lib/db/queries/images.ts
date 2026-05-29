@@ -26,6 +26,8 @@ import {
   type Candidate
 } from '../../sort/reorder';
 import { hexToHsl, UNKNOWN_HUE } from '../../sort/hsl';
+import { getDecayedAttentionMap } from './attention';
+import { normalizeAttention } from '../../attention';
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return fallback;
@@ -176,7 +178,7 @@ async function fetchInSortOrder(params: {
   const direction = sort === 'ancient-drift' ? 'asc' : 'desc';
   const baseOrder = direction === 'asc' ? oldestBase : newestBase;
   const candidates = await fetchCandidates(tagFilter, direction, CANDIDATE_CAP, includeNsfw);
-  const reordered = applyReorder(sort, candidates, seed);
+  const reordered = await applyReorder(sort, candidates, seed);
   return sliceCandidateWindowWithBaseTail({
     reordered,
     tagFilter,
@@ -231,11 +233,23 @@ async function sliceCandidateWindowWithBaseTail(params: {
   return windowRows.concat(tailRows);
 }
 
-function applyReorder(sort: SortMode, candidates: Candidate[], seed: string): Image[] {
+async function applyReorder(
+  sort: SortMode,
+  candidates: Candidate[],
+  seed: string
+): Promise<Image[]> {
   switch (sort) {
     case 'drifting':
-    case 'ancient-drift':
-      return drift(candidates);
+    case 'ancient-drift': {
+      // Attention bias is opt-in PER MODE: only the drift family consumes it,
+      // so every other sort stays exactly as before. ancient-drift is included
+      // because it runs the identical MMR reorder (just oldest-first); nudging
+      // a beloved old image a few slots earlier there is on-theme. The map is
+      // loaded here and passed as an argument so reorder.ts stays pure.
+      const raw = await getDecayedAttentionMap(candidates.map((c) => c.image.id));
+      const attention = normalizeAttention(raw);
+      return drift(candidates, { attention });
+    }
     case 'clumped':
       return clump(candidates);
     case 'anti-clumped':
