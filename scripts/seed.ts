@@ -516,7 +516,7 @@ async function main() {
         // Re-activate on reseed in case an owner toggled active=false and
         // we re-introduced the same card text; if you want to drop a card
         // permanently, remove it from CONSTRAINT_CARDS and run a manual
-        // DELETE -- reseeding won't ressurect a deleted row.
+        // DELETE -- reseeding won't resurrect a deleted row.
         set: { active: true }
       });
   }
