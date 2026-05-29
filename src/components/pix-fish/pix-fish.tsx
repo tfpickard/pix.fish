@@ -74,7 +74,11 @@ export function PixFish() {
       >
         <div
           onClick={onClick}
-          className="pointer-events-auto cursor-pointer"
+          className={
+            state.behavior === 'hiding'
+              ? 'pointer-events-none'
+              : 'pointer-events-auto cursor-pointer'
+          }
           style={{
             width: 72,
             height: 43,
