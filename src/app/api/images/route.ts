@@ -235,6 +235,12 @@ export async function POST(req: Request) {
     );
   }
 
+  // feat/hud: the entropy recompute (surprisal + collection temperature) is
+  // enqueued at the END of enrichment (src/lib/enrichment-persist.ts), once the
+  // new image's caption embedding actually exists. Enqueuing it here would run
+  // before enrich.image produced the vector, so the recompute would miss the
+  // very image that triggered it. Do NOT re-add an enqueue at upload time.
+
   return NextResponse.json({ image: row, status: 'queued' }, { status: 202 });
 }
 

@@ -5,6 +5,7 @@ import { NavBar } from '@/components/nav-bar';
 import { Providers } from '@/components/providers';
 import { SiteFooter } from '@/components/site-footer';
 import { JsonLd } from '@/components/json-ld';
+import { TemperatureHud } from '@/components/temperature-hud';
 import { SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION } from '@/lib/site';
 import { buildWebSiteLd } from '@/lib/seo/jsonld';
 import './globals.css';
@@ -94,6 +95,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <main className="mx-auto w-full max-w-6xl px-4 pb-12">{children}</main>
           <SiteFooter />
         </Providers>
+        {/* feat/hud: fixed-position, dismissible overlay. Outside <main> and
+            <Providers> so it never affects document flow (zero layout shift).
+            Renders nothing until an entropy.recompute has recorded a reading. */}
+        <TemperatureHud />
         <JsonLd data={buildWebSiteLd()} />
         <Analytics />
       </body>

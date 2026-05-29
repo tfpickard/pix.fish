@@ -3,6 +3,7 @@ import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
 import { getEmbedder, type AiConfigMap, type UserProviderKeys } from '@/lib/ai';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
+import { enqueueJob } from '@/lib/db/queries/jobs';
 import { uniquifySlug, pushSlugToHistory } from '@/lib/db/queries/slugs';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { slugify } from '@/lib/slug';
@@ -192,6 +193,7 @@ export async function persistEnrichment(args: {
   // sort) still works. A failure here leaves the image eligible for
   // scripts/backfill-embeddings.ts.
   const embedder = getEmbedder(cfg, userKeys);
+  let embedded = false;
   if (embedder) {
     try {
       const vec = await embedder.embed(slugSourceText);
@@ -202,12 +204,28 @@ export async function persistEnrichment(args: {
         provider: embedder.name,
         model: embedder.model
       });
+      embedded = true;
       // A new caption vector shifts the gallery centroid the surprise engine
       // pushes away from. Drop the cache so the next /surprise read recomputes
       // it -- best effort and post-commit, never blocking the upload.
       invalidateGalleryCentroid();
     } catch (err) {
       console.error('embedding generation failed for image', imageId, err);
+    }
+  }
+
+  // feat/hud: recompute surprisal + collection temperature now that this
+  // image's caption embedding exists. Enqueued here (not at upload time) so the
+  // recompute sees the new vector -- enqueuing from the upload route fired
+  // before enrich.image produced the embedding, so the fresh image was always
+  // missed. Only worth doing if we actually wrote a vector; an un-embedded row
+  // changes neither the corpus centroid nor its dispersion. Best-effort: a
+  // failed enqueue must never fail enrichment (compute-entropy.ts self-heals).
+  if (embedded) {
+    try {
+      await enqueueJob({ type: 'entropy.recompute', payload: {} });
+    } catch (err) {
+      console.error('failed to enqueue entropy.recompute for image', imageId, err);
     }
   }
 

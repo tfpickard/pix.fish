@@ -13,6 +13,9 @@ export const PROMPT_KEYS = [
   'caption',
   'description',
   'tags',
+  // feat/hud: dedicated nudity classifier prompt for the batch NSFW scan.
+  // Seeded by scripts/seed.ts; pinned to Haiku in src/lib/ai/nsfwClassifier.ts.
+  'nsfw',
   'breed',
   'depart',
   'antibreed',
