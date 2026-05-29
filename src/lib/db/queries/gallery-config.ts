@@ -24,11 +24,16 @@ export type GalleryDefaults = {
   // an exact-direction match. 0.30 is sane for OpenAI text-embedding-3-
   // small caption embeddings on the current corpus; tune as you go.
   searchSimilarityThreshold: number;
+  // When true, guest comments are inserted as 'approved' (skipping the
+  // moderation queue) instead of the default 'pending'. Signed-in users
+  // always skip moderation regardless of this flag.
+  autoApproveComments: boolean;
 };
 
 const KEY_DEFAULT_SORT = 'default_sort';
 const KEY_DEFAULT_SHUFFLE = 'default_shuffle_period';
 const KEY_SEARCH_SIM_THRESHOLD = 'search_similarity_threshold';
+const KEY_AUTO_APPROVE_COMMENTS = 'auto_approve_comments';
 
 function parseThreshold(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SEARCH_SIM_THRESHOLD;
@@ -53,13 +58,15 @@ export async function getGalleryDefaults(ownerId: string): Promise<GalleryDefaul
     return {
       defaultSort: isSortMode(rawSort) ? rawSort : DEFAULT_SORT,
       defaultShufflePeriod: isShufflePeriod(rawPeriod) ? rawPeriod : DEFAULT_SHUFFLE_PERIOD,
-      searchSimilarityThreshold: parseThreshold(byKey.get(KEY_SEARCH_SIM_THRESHOLD))
+      searchSimilarityThreshold: parseThreshold(byKey.get(KEY_SEARCH_SIM_THRESHOLD)),
+      autoApproveComments: byKey.get(KEY_AUTO_APPROVE_COMMENTS) === 'true'
     };
   } catch {
     return {
       defaultSort: DEFAULT_SORT,
       defaultShufflePeriod: DEFAULT_SHUFFLE_PERIOD,
-      searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD
+      searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD,
+      autoApproveComments: false
     };
   }
 }
@@ -81,5 +88,6 @@ export async function setGalleryDefault(
 export const GALLERY_KEYS = {
   defaultSort: KEY_DEFAULT_SORT,
   defaultShufflePeriod: KEY_DEFAULT_SHUFFLE,
-  searchSimilarityThreshold: KEY_SEARCH_SIM_THRESHOLD
+  searchSimilarityThreshold: KEY_SEARCH_SIM_THRESHOLD,
+  autoApproveComments: KEY_AUTO_APPROVE_COMMENTS
 } as const;

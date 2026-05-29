@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { addComment, listApprovedComments } from '@/lib/db/queries/comments';
+import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import { getSiteAdminId } from '@/lib/db/queries/users';
 import { hashIp, getRequestIp, getRequestGeo } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
 import { emit } from '@/lib/webhooks/emit';
@@ -59,7 +61,13 @@ export async function POST(req: Request, ctx: { params: { slug: string } }) {
   const session = await auth();
   const userId = session?.user?.id ?? null;
   const isUser = !!userId;
-  const status = isUser ? 'approved' : 'pending';
+  // Guests default to the moderation queue ('pending') unless the owner has
+  // flipped the site-wide auto-approve toggle in /admin/gallery. Soft-fails
+  // to the safe default (moderated) if the config read throws.
+  const autoApprove = await getGalleryDefaults(getSiteAdminId())
+    .then((d) => d.autoApproveComments)
+    .catch(() => false);
+  const status = isUser || autoApprove ? 'approved' : 'pending';
   const persistedAuthorName = isUser ? null : authorName || null;
   const geo = isUser
     ? { city: null, region: null, country: null }
