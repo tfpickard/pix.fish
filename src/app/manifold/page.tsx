@@ -4,7 +4,7 @@ import { db } from '@/lib/db/client';
 import { images, users } from '@/lib/db/schema';
 import { latestManifold } from '@/lib/db/queries/manifold';
 import { countCaptionEmbeddings } from '@/lib/db/queries/embeddings';
-import { readShowNsfwCookie } from '@/lib/nsfw';
+import { readNsfwMode } from '@/lib/nsfw';
 import { ManifoldSceneClient } from '@/components/manifold-scene-client';
 import { MANIFOLD_SUBSAMPLE_CAP } from '@/lib/jobs/handlers/manifoldRecompute';
 
@@ -22,20 +22,24 @@ export const metadata: Metadata = {
 };
 
 export default async function ManifoldPage() {
-  const [row, totalEmbedded, showNsfw] = await Promise.all([
+  const [row, totalEmbedded, nsfwMode] = await Promise.all([
     latestManifold(),
     countCaptionEmbeddings().catch(() => 0),
-    readShowNsfwCookie()
+    readNsfwMode()
   ]);
 
   type Pt = { imageId: number; x: number; y: number; z: number };
   const points: Pt[] = (row?.points as Pt[] | null) ?? [];
   const ids = points.map((p) => p.imageId);
 
-  // Apply the same NSFW visibility predicate used by the public gallery: omit
-  // hidden images before sending blobUrls to the client. Opted-out visitors
-  // never receive URLs of NSFW images.
-  const nsfwFilter = showNsfw ? undefined : eq(images.isNsfw, false);
+  // Apply the same NSFW visibility predicate used by the public gallery.
+  // 'only' restricts to NSFW points; 'include' shows all; 'hide' strips NSFW.
+  const nsfwFilter =
+    nsfwMode === 'only'
+      ? eq(images.isNsfw, true)
+      : nsfwMode === 'include'
+        ? undefined
+        : eq(images.isNsfw, false);
 
   const metaRows =
     ids.length > 0

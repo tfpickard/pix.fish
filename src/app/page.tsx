@@ -3,7 +3,7 @@ import { listImages, getOwnerHandlesForImages, countImages } from '@/lib/db/quer
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
-import { readShowNsfwCookie } from '@/lib/nsfw';
+import { readNsfwMode } from '@/lib/nsfw';
 import { HAIKUS } from '@/lib/haikus';
 import { pickOne } from '@/lib/random';
 import { InfiniteImageGrid } from '@/components/infinite-image-grid';
@@ -47,7 +47,7 @@ export default async function HomePage({ searchParams }: PageProps) {
   }));
   const effectiveSort = isSortMode(searchParams.sort) ? searchParams.sort : defaults.defaultSort;
 
-  const includeNsfw = await readShowNsfwCookie();
+  const nsfwMode = await readNsfwMode();
 
   // Fail soft: if Postgres isn't reachable, still render the shell with empty
   // data rather than crashing the whole page. Makes local dev less painful
@@ -65,16 +65,16 @@ export default async function HomePage({ searchParams }: PageProps) {
       tags: activeTags,
       sort: effectiveSort,
       seed: searchParams.seed,
-      includeNsfw
+      nsfwMode
     }),
     listImages({
       limit: 30,
       tags: activeTags,
       sort: effectiveSort,
       seed: searchParams.seed,
-      includeNsfw
+      nsfwMode
     }),
-    countImages(activeTags, { includeNsfw }),
+    countImages(activeTags, { nsfwMode }),
     tagCloud(64)
   ]);
   const images = imagesRes.status === 'fulfilled' ? imagesRes.value : [];

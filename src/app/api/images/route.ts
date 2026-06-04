@@ -10,7 +10,7 @@ import { addLineageEdges, resolveOwnedImageIdsBySlugs } from '@/lib/db/queries/l
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
-import { parseIntParam, resolveIncludeNsfw } from '@/lib/http-params';
+import { parseIntParam, resolveNsfwMode } from '@/lib/http-params';
 import { isSortMode, type SortMode } from '@/lib/sort/types';
 
 export const runtime = 'nodejs';
@@ -56,9 +56,9 @@ export async function GET(req: Request) {
   const seed = url.searchParams.get('seed') ?? undefined;
   // The query param overrides the cookie -- lets clients force include
   // (e.g. signed-in admin tooling) without flipping the visitor cookie.
-  const includeNsfw = await resolveIncludeNsfw(url.searchParams.get('include_nsfw'));
+  const nsfwMode = await resolveNsfwMode(url.searchParams.get('include_nsfw'));
 
-  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed, includeNsfw });
+  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed, nsfwMode });
   return NextResponse.json({ images: rows });
 }
 

@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../client';
 import { embeddings } from '../schema';
+import type { NsfwMode } from '@/lib/nsfw';
 
 export type EmbeddingKind = 'image' | 'caption' | 'combined';
 
@@ -70,17 +71,24 @@ export async function countCaptionEmbeddings(): Promise<number> {
 // farthest set only as LLM context, not as a final answer.
 export async function searchByVector(
   vec: number[],
-  opts: { limit?: number; kind?: EmbeddingKind; order?: 'nearest' | 'farthest' } = {}
+  opts: { limit?: number; kind?: EmbeddingKind; order?: 'nearest' | 'farthest'; nsfwMode?: NsfwMode } = {}
 ): Promise<VectorMatch[]> {
   assertVector(vec);
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 24), 1), 100);
   const kind = opts.kind ?? 'caption';
+  const nsfwMode = opts.nsfwMode ?? 'hide';
   const vecLiteral = `[${vec.join(',')}]`;
   const direction = opts.order === 'farthest' ? sql`DESC` : sql`ASC`;
+  const nsfwClause =
+    nsfwMode === 'only' ? sql`AND i.is_nsfw = true` :
+    nsfwMode === 'include' ? sql`` :
+    sql`AND i.is_nsfw = false`;
   const res = await db.execute<{ image_id: number; distance: number }>(sql`
-    SELECT image_id, vec <=> ${vecLiteral}::vector AS distance
-    FROM embeddings
-    WHERE kind = ${kind}
+    SELECT e.image_id, e.vec <=> ${vecLiteral}::vector AS distance
+    FROM embeddings e
+    JOIN images i ON i.id = e.image_id
+    WHERE e.kind = ${kind}
+    ${nsfwClause}
     ORDER BY distance ${direction}
     LIMIT ${limit}
   `);

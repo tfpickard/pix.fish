@@ -45,6 +45,11 @@ export function ImageCard({ image, similarity }: Props) {
           trigger navigation if nested inside the anchor. */}
       <Link href={`/${image.slug}`} className="block">
         <div className="relative w-full" style={{ aspectRatio: aspect }}>
+          {image.isNsfw ? (
+            <span className="absolute left-2 top-2 z-10 rounded-sm border border-rose-700/70 bg-ink-950/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-rose-600">
+              nsfw
+            </span>
+          ) : null}
           {image.width && image.height ? (
             <Image
               src={image.blobUrl}

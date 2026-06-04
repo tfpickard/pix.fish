@@ -3,7 +3,9 @@
 // /api/u/[handle]/images, /api/color/[hex]/images) don't drift on
 // pagination/NSFW resolution.
 
-import { readShowNsfwCookie } from '@/lib/nsfw';
+import { readNsfwMode, type NsfwMode } from '@/lib/nsfw';
+
+export type { NsfwMode };
 
 export function parseIntParam(raw: string | null, fallback: number): number {
   if (raw === null) return fallback;
@@ -11,11 +13,18 @@ export function parseIntParam(raw: string | null, fallback: number): number {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-// Query-string override beats the cookie. Mirrors the previous inline
-// resolution that lived in three route handlers: explicit ?include_nsfw=1
-// (or =true) forces inclusion regardless of the visitor cookie; absent
-// query falls back to the cookie default (off).
+// Query-string ?include_nsfw= override beats the cookie.
+//   '1' or 'true'  -> 'include'
+//   'only'         -> 'only'
+//   absent / other -> read the visitor cookie
+export async function resolveNsfwMode(raw: string | null): Promise<NsfwMode> {
+  if (raw === '1' || raw === 'true') return 'include';
+  if (raw === 'only') return 'only';
+  return readNsfwMode();
+}
+
+// Backward-compat alias for routes not yet migrated.
 export async function resolveIncludeNsfw(raw: string | null): Promise<boolean> {
-  if (raw === '1' || raw === 'true') return true;
-  return readShowNsfwCookie();
+  const mode = await resolveNsfwMode(raw);
+  return mode !== 'hide';
 }

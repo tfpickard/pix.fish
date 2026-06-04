@@ -142,7 +142,8 @@ export async function breedFromImageIds(opts: {
   if (newEmbedding) {
     const rawNeighbors = await searchByVector(newEmbedding, {
       limit: OUTPUT_NEIGHBORS + OUTPUT_NEIGHBORS_OVERSHOOT,
-      kind: 'caption'
+      kind: 'caption',
+      nsfwMode: 'include'
     });
     neighborImageIds = rawNeighbors
       .map((m) => m.imageId)
@@ -206,7 +207,8 @@ async function prepareCentroidMode(
   const rawMatches = await searchByVector(centroid, {
     limit: AVOID_LIST_SIZE + SEARCH_OVERSHOOT,
     kind: 'caption',
-    order: mode === 'antibreed' ? 'farthest' : 'nearest'
+    order: mode === 'antibreed' ? 'farthest' : 'nearest',
+    nsfwMode: 'include'
   });
   const contextNeighborIds = rawMatches
     .map((m) => m.imageId)
@@ -277,7 +279,8 @@ async function prepareSubtract(imageIds: number[]): Promise<SeedPrep> {
   const sourceSet = new Set<number>([anchorId, ...subtractIds]);
   const rawMatches = await searchByVector(seedVec, {
     limit: AVOID_LIST_SIZE + SEARCH_OVERSHOOT,
-    kind: 'caption'
+    kind: 'caption',
+    nsfwMode: 'include'
   });
   const contextNeighborIds = rawMatches
     .map((m) => m.imageId)

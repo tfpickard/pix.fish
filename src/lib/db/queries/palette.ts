@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../client';
 import { hydrateImages, type ImageWithRelations } from './images';
 import { images } from '../schema';
+import type { NsfwMode } from '@/lib/nsfw';
 
 // "Close enough" similarity for our 5-color palettes uses RGB Euclidean
 // distance, not CIELAB ΔE: dominant palette swatches already cluster
@@ -32,9 +33,15 @@ export function normalizeHex(input: string): string | null {
 // NSFW preference -- without this, NSFW rows would slip past the
 // site-wide hide gate (they're filtered everywhere else by query, not
 // by CSS, so the URL never reaches a default-hide visitor).
+function nsfwClause(mode: NsfwMode) {
+  if (mode === 'hide') return sql`AND i.is_nsfw = false`;
+  if (mode === 'only') return sql`AND i.is_nsfw = true`;
+  return sql``;
+}
+
 export async function listImagesByPaletteHex(
   hex: string,
-  opts: { limit?: number; offset?: number; includeNsfw?: boolean } = {}
+  opts: { limit?: number; offset?: number; nsfwMode?: NsfwMode } = {}
 ): Promise<ImageWithRelations[]> {
   const target = hexToRgb(hex);
   if (!target) return [];
@@ -42,7 +49,7 @@ export async function listImagesByPaletteHex(
   const offset = Math.max(0, opts.offset ?? 0);
   const [tr, tg, tb] = target;
   const t2 = RGB_THRESHOLD * RGB_THRESHOLD;
-  const includeNsfw = opts.includeNsfw === true;
+  const nsfw = nsfwClause(opts.nsfwMode ?? 'hide');
 
   // Postgres-side filter: unnest the palette array and compare the parsed
   // RGB to the target. Returns at most one row per image (best match) and
@@ -66,7 +73,7 @@ export async function listImagesByPaletteHex(
       FROM images i, unnest(i.palette) AS c
       WHERE i.palette IS NOT NULL
         AND c ~ '^#[0-9a-fA-F]{6}$'
-        ${includeNsfw ? sql`` : sql`AND i.is_nsfw = false`}
+        ${nsfw}
       GROUP BY i.id
     )
     SELECT id FROM candidates
@@ -97,13 +104,13 @@ export async function listImagesByPaletteHex(
 // pass the squared-distance threshold.
 export async function countImagesByPaletteHex(
   hex: string,
-  opts: { includeNsfw?: boolean } = {}
+  opts: { nsfwMode?: NsfwMode } = {}
 ): Promise<number> {
   const target = hexToRgb(hex);
   if (!target) return 0;
   const [tr, tg, tb] = target;
   const t2 = RGB_THRESHOLD * RGB_THRESHOLD;
-  const includeNsfw = opts.includeNsfw === true;
+  const nsfw = nsfwClause(opts.nsfwMode ?? 'hide');
   const result = await db.execute<{ count: number }>(sql`
     WITH candidates AS (
       SELECT
@@ -121,7 +128,7 @@ export async function countImagesByPaletteHex(
       FROM images i, unnest(i.palette) AS c
       WHERE i.palette IS NOT NULL
         AND c ~ '^#[0-9a-fA-F]{6}$'
-        ${includeNsfw ? sql`` : sql`AND i.is_nsfw = false`}
+        ${nsfw}
       GROUP BY i.id
     )
     SELECT count(*)::int AS count FROM candidates WHERE dist2 <= ${t2}

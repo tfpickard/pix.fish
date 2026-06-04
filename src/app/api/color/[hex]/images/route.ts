@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { listImagesByPaletteHex, normalizeHex } from '@/lib/db/queries/palette';
-import { parseIntParam, resolveIncludeNsfw } from '@/lib/http-params';
+import { parseIntParam, resolveNsfwMode } from '@/lib/http-params';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -14,7 +14,7 @@ export async function GET(
   const url = new URL(req.url);
   const limit = parseIntParam(url.searchParams.get('limit'), 24);
   const offset = parseIntParam(url.searchParams.get('offset'), 0);
-  const includeNsfw = await resolveIncludeNsfw(url.searchParams.get('include_nsfw'));
+  const nsfwMode = await resolveNsfwMode(url.searchParams.get('include_nsfw'));
 
   const raw = decodeURIComponent(params.hex);
   const normalized = normalizeHex(raw.startsWith('#') ? raw : `#${raw}`);
@@ -23,7 +23,7 @@ export async function GET(
   const images = await listImagesByPaletteHex(normalized, {
     limit,
     offset,
-    includeNsfw
+    nsfwMode
   }).catch(() => []);
   return NextResponse.json({ images });
 }

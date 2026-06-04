@@ -3,10 +3,10 @@ import Link from 'next/link';
 import { eq, inArray, asc } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, captions, users } from '@/lib/db/schema';
-import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw } from '@/lib/db/queries/knn';
+import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw, getEdgesForNodesNsfwOnly } from '@/lib/db/queries/knn';
 import { getCaptionVector } from '@/lib/db/queries/embeddings';
 import { findPath } from '@/lib/knn';
-import { readShowNsfwCookie } from '@/lib/nsfw';
+import { readNsfwMode } from '@/lib/nsfw';
 import { PathFilmstrip } from '@/components/path-filmstrip';
 import type { PathNode } from '@/lib/knn-path-types';
 
@@ -21,10 +21,10 @@ export const metadata: Metadata = {
 };
 
 type PageProps = {
-  searchParams: { a?: string; b?: string };
+  searchParams: Promise<{ a?: string; b?: string }>;
 };
 
-type SlimImage = { id: number; slug: string; blobUrl: string };
+type SlimImage = { id: number; slug: string; blobUrl: string; isNsfw: boolean };
 
 // Resolve a raw search-param value to a slim image record. Accepts slugs
 // (preferred -- human-readable) or numeric IDs (backwards compat so
@@ -32,7 +32,7 @@ type SlimImage = { id: number; slug: string; blobUrl: string };
 async function resolveEndpoint(raw: string): Promise<SlimImage | null> {
   if (!raw) return null;
   const [bySlug] = await db
-    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl })
+    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl, isNsfw: images.isNsfw })
     .from(images)
     .where(eq(images.slug, raw))
     .orderBy(asc(images.id))
@@ -41,7 +41,7 @@ async function resolveEndpoint(raw: string): Promise<SlimImage | null> {
   const num = parseInt(raw, 10);
   if (!Number.isInteger(num) || num <= 0) return null;
   const [byId] = await db
-    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl })
+    .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl, isNsfw: images.isNsfw })
     .from(images)
     .where(eq(images.id, num))
     .limit(1);
@@ -108,7 +108,7 @@ type PathOutcome =
   | { status: 'missing-embedding' }
   | { status: 'bad-ids' };
 
-async function resolvePath(a: number, b: number, includeNsfw: boolean): Promise<PathOutcome> {
+async function resolvePath(a: number, b: number, nsfwMode: 'hide' | 'include' | 'only'): Promise<PathOutcome> {
   if (a === b) return { status: 'same-node' };
 
   // Verify both images exist before running Dijkstra.
@@ -126,10 +126,12 @@ async function resolvePath(a: number, b: number, includeNsfw: boolean): Promise<
   const [vecA, vecB] = await Promise.all([getCaptionVector(a), getCaptionVector(b)]);
   if (!vecA || !vecB) return { status: 'missing-embedding' };
 
-  // Route Dijkstra through a filtered edge loader when the visitor has not
-  // opted in to NSFW content. This excludes NSFW nodes from both the search
-  // and the reconstructed path rather than just hiding them post-hoc.
-  const edgeLoader = includeNsfw ? getEdgesForNodes : getEdgesForNodesExcludingNsfw;
+  // Select the edge loader that matches the visitor's NSFW mode. This excludes
+  // SFW or NSFW nodes from both the search and the reconstructed path.
+  const edgeLoader =
+    nsfwMode === 'only' ? getEdgesForNodesNsfwOnly :
+    nsfwMode === 'include' ? getEdgesForNodes :
+    getEdgesForNodesExcludingNsfw;
 
   const result = await findPath(a, b, edgeLoader);
   if (!result.found) {
@@ -141,15 +143,14 @@ async function resolvePath(a: number, b: number, includeNsfw: boolean): Promise<
 }
 
 export default async function ConnectPage({ searchParams }: PageProps) {
-  const rawA = searchParams.a ?? '';
-  const rawB = searchParams.b ?? '';
+  const { a: rawA = '', b: rawB = '' } = await searchParams;
 
   // Resolve slugs (or fallback numeric IDs) to slim image records in parallel.
-  const [imgA, imgB, edgeCount, includeNsfw] = await Promise.all([
+  const [imgA, imgB, edgeCount, nsfwMode] = await Promise.all([
     resolveEndpoint(rawA),
     resolveEndpoint(rawB),
     countKnnEdges().catch(() => 0),
-    readShowNsfwCookie()
+    readNsfwMode()
   ]);
 
   const hasValidParams = !!(imgA && imgB);
@@ -157,7 +158,7 @@ export default async function ConnectPage({ searchParams }: PageProps) {
 
   let outcome: PathOutcome | null = null;
   if (hasValidParams && graphReady) {
-    outcome = await resolvePath(imgA.id, imgB.id, includeNsfw).catch((err) => {
+    outcome = await resolvePath(imgA.id, imgB.id, nsfwMode).catch((err) => {
       console.error('/connect: resolvePath error', err);
       return null;
     });
@@ -193,7 +194,7 @@ export default async function ConnectPage({ searchParams }: PageProps) {
           <label htmlFor="a" className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
             image A
           </label>
-          {imgA ? (
+          {imgA && (nsfwMode !== 'only' || imgA.isNsfw) ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={imgA.blobUrl}
@@ -226,7 +227,7 @@ export default async function ConnectPage({ searchParams }: PageProps) {
           <label htmlFor="b" className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
             image B
           </label>
-          {imgB ? (
+          {imgB && (nsfwMode !== 'only' || imgB.isNsfw) ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={imgB.blobUrl}

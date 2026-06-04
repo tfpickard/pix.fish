@@ -44,14 +44,15 @@ export async function GET() {
   const farMatches = await searchByVector(centroid, {
     order: 'farthest',
     limit: FAR_REFERENCES,
-    kind: 'caption'
+    kind: 'caption',
+    nsfwMode: 'include'
   });
   const farRows = await getImagesByIdsOrdered(farMatches.map((m) => m.imageId));
   const farHydrated = await hydrateImages(farRows);
 
   // Motif sample: a slice of the gallery's actual captions so the model can
   // infer recurring motifs to invert.
-  const sampleImages = await listImages({ limit: MOTIF_SAMPLE, sort: 'newest', includeNsfw: true });
+  const sampleImages = await listImages({ limit: MOTIF_SAMPLE, sort: 'newest', nsfwMode: 'include' });
 
   const prompt = await resolvePrompt('surprise', {
     far_neighbor_captions: formatCaptionsForPrompt(farHydrated),

@@ -6,28 +6,37 @@ import { useRouter } from 'next/navigation';
 
 const COOKIE = 'pf_show_nsfw';
 
-function readCookie(): boolean {
-  if (typeof document === 'undefined') return false;
+type NsfwMode = 'hide' | 'include' | 'only';
+
+function readCookieMode(): NsfwMode {
+  if (typeof document === 'undefined') return 'hide';
   const m = document.cookie.match(new RegExp(`(?:^|; )${COOKIE}=([^;]*)`));
-  return m?.[1] === 'true';
+  const val = m?.[1];
+  if (val === 'true') return 'include';
+  if (val === 'only') return 'only';
+  return 'hide';
 }
 
-// Tiny visitor-facing toggle that flips the SHOW_NSFW_COOKIE on the
-// server, then refreshes the current page so the next render filters
-// rows server-side. Keeping the filter at the query layer (not CSS blur)
-// means a default-hide visitor never receives the URL of an NSFW image
-// over the wire.
+const MODE_CONFIG: Record<NsfwMode, { label: string; nextLabel: string; icon: typeof Eye; className: string }> = {
+  hide:    { label: 'nsfw hidden',  nextLabel: 'show nsfw',    icon: EyeOff, className: 'text-ink-500' },
+  include: { label: 'nsfw visible', nextLabel: 'nsfw only',    icon: Eye,    className: 'text-ink-400' },
+  only:    { label: 'nsfw only',    nextLabel: 'hide nsfw',    icon: Eye,    className: 'text-rose-600' },
+};
+
+// Cycles the visitor NSFW preference through three states:
+//   hide -> include -> only -> hide
+// Each click calls the server to advance the cookie, then refreshes so
+// the query layer re-filters rows server-side.
 export function NsfwToggle() {
-  const [showing, setShowing] = useState(false);
+  const [mode, setMode] = useState<NsfwMode>('hide');
   const [pending, start] = useTransition();
   const router = useRouter();
 
   useEffect(() => {
-    setShowing(readCookie());
+    setMode(readCookieMode());
   }, []);
 
-  const label = showing ? 'hide nsfw' : 'show nsfw';
-  const Icon = showing ? Eye : EyeOff;
+  const { label, nextLabel, icon: Icon, className } = MODE_CONFIG[mode];
 
   return (
     <button
@@ -36,16 +45,15 @@ export function NsfwToggle() {
         start(async () => {
           const res = await fetch('/api/nsfw-toggle', { method: 'POST' });
           if (!res.ok) return;
-          const data = (await res.json()) as { showNsfw: boolean };
-          setShowing(data.showNsfw);
+          const data = (await res.json()) as { nsfwMode: NsfwMode };
+          setMode(data.nsfwMode);
           router.refresh();
         });
       }}
-      className="text-ink-500 transition-colors hover:text-ink-100 disabled:opacity-50"
+      className={`transition-colors hover:text-ink-100 disabled:opacity-50 ${className}`}
       disabled={pending}
-      aria-pressed={showing}
-      aria-label={label}
-      title={label}
+      aria-label={nextLabel}
+      title={`${label} -- click to ${nextLabel}`}
     >
       <Icon size={14} strokeWidth={1.75} />
     </button>

@@ -8,6 +8,7 @@ import {
 } from '@/lib/db/queries/gallery-config';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import { getSiteAdminId } from '@/lib/db/queries/users';
+import { readNsfwMode } from '@/lib/nsfw';
 import { ImageGrid } from '@/components/image-grid';
 
 export const dynamic = 'force-dynamic';
@@ -25,11 +26,12 @@ export const metadata: Metadata = {
 };
 
 type PageProps = {
-  searchParams: { q?: string };
+  searchParams: Promise<{ q?: string }>;
 };
 
 export default async function SearchPage({ searchParams }: PageProps) {
-  const q = (searchParams.q ?? '').trim();
+  const { q: rawQ } = await searchParams;
+  const q = (rawQ ?? '').trim();
 
   if (!q) {
     return (
@@ -54,12 +56,15 @@ export default async function SearchPage({ searchParams }: PageProps) {
   let rankedCount = 0;
   let failed = false;
   try {
-    const cfg = await loadAiConfig();
-    const adminKeys = await loadUserProviderKeys(getSiteAdminId());
+    const [cfg, adminKeys, nsfwMode] = await Promise.all([
+      loadAiConfig(),
+      loadUserProviderKeys(getSiteAdminId()),
+      readNsfwMode()
+    ]);
     const embedder = getEmbedder(cfg, adminKeys);
     if (!embedder) throw new Error('embedder unavailable');
     const vec = await embedder.embed(q);
-    const matches = await searchByVector(vec, { limit: 60, kind: 'caption' });
+    const matches = await searchByVector(vec, { limit: 60, kind: 'caption', nsfwMode });
     totalScored = matches.length;
     // Cosine distance is in [0, 2] (0 = identical, 2 = opposite), so the
     // similarity = 1 - distance is in [-1, 1]. Clamp to [0, 1] for both
