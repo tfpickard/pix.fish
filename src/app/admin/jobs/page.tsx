@@ -27,6 +27,8 @@ export default function AdminJobsPage() {
   const [counts, setCounts] = useState<Counts[]>([]);
   const [recent, setRecent] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const [requeuing, setRequeuing] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   function load() {
     fetch('/api/admin/jobs')
@@ -39,6 +41,35 @@ export default function AdminJobsPage() {
       .catch(() => setLoading(false));
   }
 
+  // Flip failed jobs back to pending; the cron drain picks them up within a
+  // minute. Pass {} to retry everything, { type } to retry one job type, or
+  // { id } for a single row.
+  async function requeue(body: { id?: number; type?: string }) {
+    setRequeuing(true);
+    setNotice(null);
+    try {
+      const res = await fetch('/api/admin/jobs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'requeue failed');
+      const n = data.requeued ?? 0;
+      setNotice(n === 0 ? 'no failed jobs to requeue' : `requeued ${n} job${n === 1 ? '' : 's'}`);
+      load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'requeue failed');
+    } finally {
+      setRequeuing(false);
+    }
+  }
+
+  // Total failed across all types -- drives the "retry all" button.
+  const failedTotal = counts
+    .filter((c) => c.status === 'failed')
+    .reduce((sum, c) => sum + c.count, 0);
+
   useEffect(() => {
     load();
     const iv = setInterval(load, 5000);
@@ -48,9 +79,22 @@ export default function AdminJobsPage() {
   return (
     <div className="max-w-3xl space-y-6">
       <h1 className="font-display text-3xl text-ink-100">jobs</h1>
-      <p className="font-mono text-xs text-ink-500">
-        background queue. auto-refreshes every 5s.
-      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="font-mono text-xs text-ink-500">
+          background queue. auto-refreshes every 5s.
+        </p>
+        {failedTotal > 0 ? (
+          <button
+            type="button"
+            onClick={() => requeue({})}
+            disabled={requeuing}
+            className="rounded border border-destructive px-2 py-1 font-mono text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            {requeuing ? 'requeuing...' : `retry all failed (${failedTotal})`}
+          </button>
+        ) : null}
+        {notice ? <span className="font-mono text-xs text-secondary">{notice}</span> : null}
+      </div>
 
       <section>
         <h2 className="font-mono text-xs text-ink-500 mb-2">summary</h2>
@@ -66,6 +110,16 @@ export default function AdminJobsPage() {
                 <p className={statusClass(c.status)}>
                   {c.status}: {c.count}
                 </p>
+                {c.status === 'failed' && c.count > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => requeue({ type: c.type })}
+                    disabled={requeuing}
+                    className="mt-1 text-secondary hover:underline disabled:opacity-50"
+                  >
+                    retry
+                  </button>
+                ) : null}
               </div>
             ))}
           </div>
@@ -84,6 +138,16 @@ export default function AdminJobsPage() {
                 <span className="text-ink-500">
                   {r.attempts}/{r.maxAttempts}
                 </span>
+                {r.status === 'failed' ? (
+                  <button
+                    type="button"
+                    onClick={() => requeue({ id: r.id })}
+                    disabled={requeuing}
+                    className="text-secondary hover:underline disabled:opacity-50"
+                  >
+                    retry
+                  </button>
+                ) : null}
                 <span className="ml-auto text-ink-500">{new Date(r.createdAt).toLocaleString()}</span>
               </div>
               {r.lastError ? <p className="mt-1 text-destructive">{r.lastError}</p> : null}

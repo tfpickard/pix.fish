@@ -135,6 +135,38 @@ export async function rescheduleJob(id: number, runAt: Date, err: string): Promi
   return row?.attempts ?? 0;
 }
 
+// Flip failed rows back to 'pending' so the next cron tick reclaims them.
+// Resetting `attempts` to 0 is load-bearing: the worker computes the backoff
+// from the pre-increment attempt count and promotes back to 'failed' the moment
+// it hits maxAttempts, so a row left at its exhausted count would fail again on
+// the first try. Clearing the lease/error/timestamps gives the job a clean slate
+// -- the use case is a credit top-up after enrich jobs died on "balance too low".
+// Optional filters narrow to a single id or job type; with neither, every
+// 'failed' row is requeued. Returns the number of rows requeued.
+export async function requeueFailedJobs(filter?: {
+  id?: number;
+  type?: string;
+}): Promise<number> {
+  const conds = [eq(jobs.status, 'failed')];
+  if (filter?.id !== undefined) conds.push(eq(jobs.id, filter.id));
+  if (filter?.type !== undefined) conds.push(eq(jobs.type, filter.type));
+  const res = await db
+    .update(jobs)
+    .set({
+      status: 'pending',
+      attempts: 0,
+      runAt: new Date(),
+      lockedBy: null,
+      lockedAt: null,
+      startedAt: null,
+      finishedAt: null,
+      lastError: null
+    })
+    .where(and(...conds))
+    .returning({ id: jobs.id });
+  return res.length;
+}
+
 export async function jobsOverview(limit = 50): Promise<{
   counts: { type: string; status: string; count: number }[];
   recent: Job[];
