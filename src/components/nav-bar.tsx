@@ -14,7 +14,14 @@ export async function NavBar() {
   return (
     <header className="sticky top-0 z-40 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
       <div className="relative mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
-        <Link href="/" className="flex shrink-0 items-center gap-2 font-fungal text-2xl leading-none">
+        {/* prefetch disabled: every nav target is `force-dynamic` (page.tsx,
+            map, connect, manifold, search, about, feed), so a speculative
+            prefetch caches nothing reusable. Under Next 14.2's default
+            `staleTimes.dynamic: 0`, an in-viewport <Link> to such a route
+            re-prefetches on a loop -- each `?_rsc=` request cancels the prior
+            (the `--` GET / storm in the Vercel logs). Keep prefetch={false} on
+            every nav link until these routes stop being force-dynamic. */}
+        <Link href="/" prefetch={false} className="flex shrink-0 items-center gap-2 font-fungal text-2xl leading-none">
           <Image
             src="/logo-dark.png"
             alt=""

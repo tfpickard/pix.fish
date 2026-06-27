@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test": "bun test tests/",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:seed": "bun scripts/seed.ts"
@@ -37,6 +38,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "serwist": "^9.5.7",
+    "sharp": "^0.33.5",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "three": "0.169.0",

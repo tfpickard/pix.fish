@@ -223,12 +223,17 @@ export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   // appears in the gallery.
   await db.delete(images).where(eq(images.id, img.id));
 
-  // Best-effort blob cleanup. `del` accepts the pathname or full URL. We store
-  // the pathname in blob_key. A missing-blob 404 is fine; log and move on.
+  // Best-effort blob cleanup: the original plus any generated WebP derivatives,
+  // so deleting an image doesn't orphan its `.w*.webp` objects. `del` accepts
+  // pathnames or full URLs (we store the original's pathname in blob_key and the
+  // derivatives' URLs in `derivatives`) and a single call takes an array. The
+  // URLs come from the in-memory row captured before the delete above. A
+  // missing-blob 404 is fine; log and move on.
+  const blobTargets = [img.blobKey, ...(img.derivatives ?? []).map((d) => d.url)];
   try {
-    await del(img.blobKey);
+    await del(blobTargets);
   } catch (err) {
-    console.error('blob delete failed for image', img.id, img.blobKey, err);
+    console.error('blob delete failed for image', img.id, err);
   }
 
   return new NextResponse(null, { status: 204 });

@@ -17,7 +17,14 @@ const nextConfig = {
     ]
   },
   experimental: {
-    serverActions: { bodySizeLimit: '20mb' }
+    serverActions: { bodySizeLimit: '20mb' },
+    // Next 14.2 defaults `staleTimes.dynamic` to 0, which makes a prefetched
+    // dynamic route stale the instant it lands -- any in-viewport <Link> to a
+    // `force-dynamic` page then re-prefetches in a loop. We already set
+    // prefetch={false} on the nav links (the observed `--` GET / storm), this
+    // is defense-in-depth so any other dynamic <Link> (image cards, etc) caches
+    // its prefetch for 30s instead of churning.
+    staleTimes: { dynamic: 30, static: 180 }
   }
 };
 

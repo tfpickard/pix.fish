@@ -1,9 +1,9 @@
 'use client';
 
 import { useMemo } from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
+import { buildSrcSet, largestDerivativeUrl } from '@/lib/images/derivatives';
 import { CardEngagement } from './card-engagement';
 
 type Props = {
@@ -28,6 +28,14 @@ export function ImageCard({ image, similarity }: Props) {
   }, [image.id, image.captions]);
   const tags = image.tags.slice(0, 5);
   const aspect = image.width && image.height ? image.width / image.height : 1;
+  // Serve the small precomputed WebP derivatives, never the full-res original.
+  // srcSet + sizes let the browser pick the right width for the tile and DPR;
+  // when a row has no derivatives yet (legacy / not-yet-processed) we fall back
+  // to the original so nothing breaks. Plain <img> on purpose: it bypasses the
+  // Next/Vercel image optimizer so we serve the precomputed file directly
+  // instead of paying to re-transform the original at request time.
+  const srcSet = buildSrcSet(image.derivatives);
+  const imgSrc = largestDerivativeUrl(image.derivatives) ?? image.blobUrl;
   const similarityLabel =
     typeof similarity === 'number' && Number.isFinite(similarity)
       ? `${Math.round(Math.max(0, Math.min(1, similarity)) * 100)}%`
@@ -50,26 +58,17 @@ export function ImageCard({ image, similarity }: Props) {
               nsfw
             </span>
           ) : null}
-          {image.width && image.height ? (
-            <Image
-              src={image.blobUrl}
-              alt={caption || image.slug}
-              width={image.width}
-              height={image.height}
-              // object-contain preserves the original aspect so a portrait and
-              // a landscape both show uncropped; the parent's aspectRatio is
-              // computed from the image itself so there's no letterboxing in
-              // practice.
-              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
-              sizes="(min-width: 1024px) 640px, 100vw"
-            />
-          ) : (
-            <img
-              src={image.blobUrl}
-              alt={caption || image.slug}
-              className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
-            />
-          )}
+          {/* object-contain preserves the original aspect so a portrait and a
+              landscape both show uncropped. Below-the-fold tiles load lazily. */}
+          <img
+            src={imgSrc}
+            srcSet={srcSet ?? undefined}
+            sizes={srcSet ? '(min-width: 1024px) 640px, 100vw' : undefined}
+            alt={caption || image.slug}
+            loading="lazy"
+            decoding="async"
+            className={`h-full w-full object-contain transition-[transform,filter] duration-300 group-hover:scale-[1.01]${image.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
+          />
         </div>
         <div className="space-y-2 p-3">
           {caption ? (

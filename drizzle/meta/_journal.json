@@ -50,6 +50,13 @@
       "when": 1780041778198,
       "tag": "0006_careful_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782564169131,
+      "tag": "0007_jazzy_xorn",
+      "breakpoints": true
     }
   ]
 }

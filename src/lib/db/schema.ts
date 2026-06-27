@@ -13,6 +13,7 @@ import {
   index,
   vector
 } from 'drizzle-orm/pg-core';
+import type { ImageDerivatives } from '@/lib/images/derivatives';
 
 // ----------------------------------------------------------------------------
 // Phase 1 tables
@@ -73,7 +74,12 @@ export const images = pgTable(
     archivedAt: timestamp('archived_at', { withTimezone: true }),
     // feat/basement: basement rows are gated server-side (mirrors the NSFW gate);
     // never served unless the unlock flag is present.
-    basement: boolean('basement').notNull().default(false)
+    basement: boolean('basement').notNull().default(false),
+    // Precomputed WebP derivatives ([{ w, url }], ascending by width) generated
+    // offline by scripts/generate-derivatives.ts. Null == not yet processed;
+    // consumers fall back to the original blobUrl. Additive and best-effort: the
+    // grid serves the small derivative so it never ships the full-res original.
+    derivatives: jsonb('derivatives').$type<ImageDerivatives>()
   },
   (t) => ({
     uploadedAtIdx: index('images_uploaded_at_idx').on(t.uploadedAt),
