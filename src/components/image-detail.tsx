@@ -1,5 +1,4 @@
 import type { Metadata } from 'next';
-import Image from 'next/image';
 import Link from 'next/link';
 import { auth, canEdit } from '@/lib/auth';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
@@ -29,6 +28,11 @@ import {
   pickSlugCaption
 } from '@/lib/seo/image-meta';
 import { absoluteUrl } from '@/lib/site';
+import {
+  buildSrcSet,
+  largestDerivativeUrl,
+  smallestDerivativeUrl
+} from '@/lib/images/derivatives';
 
 // Canonical URL for an image. Phase D moves the canonical from /<slug> to
 // /u/<handle>/<slug> so search engines pick up the per-user namespace; the
@@ -96,12 +100,13 @@ function NeighborGrid({ images }: { images: ImageWithRelations[] }) {
           href={`/${img.slug}`}
           className="group relative block aspect-square overflow-hidden rounded border border-ink-800/60 bg-ink-900/30"
         >
-          <Image
-            src={img.blobUrl}
+          {/* Tiny navigation affordance: the smallest derivative is plenty. */}
+          <img
+            src={smallestDerivativeUrl(img.derivatives) ?? img.blobUrl}
             alt={img.captions[0]?.text ?? img.slug}
-            fill
-            sizes="(min-width: 640px) 208px, 45vw"
-            className={`object-cover transition-[transform,filter] duration-200 group-hover:scale-[1.03]${img.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
+            loading="lazy"
+            decoding="async"
+            className={`absolute inset-0 h-full w-full object-cover transition-[transform,filter] duration-200 group-hover:scale-[1.03]${img.isNsfw ? ' [filter:blur(2px)] group-hover:[filter:blur(0px)]' : ''}`}
           />
         </Link>
       ))}
@@ -174,36 +179,40 @@ export async function ImageDetail({
         })}
       />
       <div className="relative mx-auto max-w-4xl">
-        {/* width/height are unknown for most rows -- the upload pipeline
-            doesn't probe dimensions (per CLAUDE.md: "image-meta.ts does not
-            probe dimensions"). Use next/image's `width=0 height=0` + `sizes`
-            pattern: it routes through the optimizer (so the URL is fetched
-            server-side and re-served same-origin, sidestepping any
-            client-side cross-origin gotchas) and lets CSS size the rendered
-            element to the image's natural aspect once it loads. When
-            dimensions ARE known, pass them so layout stabilizes faster. */}
-        {img.width && img.height ? (
-          <Image
-            src={img.blobUrl}
-            alt={caption || img.slug}
-            width={img.width}
-            height={img.height}
-            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
-            priority
-          />
-        ) : (
-          <Image
-            src={img.blobUrl}
-            alt={caption || img.slug}
-            width={0}
-            height={0}
-            sizes="(min-width: 1024px) 1024px, 100vw"
-            className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
-            priority
-          />
-        )}
+        {/* Detail view shows the largest precomputed WebP derivative for a fast
+            first paint (not the raw original). The original loads only on
+            demand via the "view full resolution" link below. Plain <img> +
+            srcSet bypasses the Vercel optimizer so we serve the precomputed
+            file directly. When a row has no derivatives yet, fall back to the
+            original blobUrl. height is unknown for most rows (the pipeline
+            doesn't probe dimensions), so CSS sizes the element to the image's
+            natural aspect once it loads. */}
+        <img
+          src={largestDerivativeUrl(img.derivatives) ?? img.blobUrl}
+          srcSet={buildSrcSet(img.derivatives) ?? undefined}
+          sizes={img.derivatives ? '(min-width: 1024px) 1024px, 100vw' : undefined}
+          alt={caption || img.slug}
+          decoding="async"
+          className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
+        />
         <PaletteEdgeBand colors={img.palette} />
       </div>
+
+      {/* Full resolution is opt-in: the original only loads when the visitor
+          clicks through. Hidden when there are no derivatives (the image above
+          already is the original). */}
+      {img.derivatives && largestDerivativeUrl(img.derivatives) !== img.blobUrl ? (
+        <div className="-mt-4 text-center">
+          <a
+            href={img.blobUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-mono text-xs text-ink-500 underline-offset-4 hover:text-ink-200 hover:underline"
+          >
+            view full resolution
+          </a>
+        </div>
+      ) : null}
 
       {captionVector ? <EmbeddingViz vector={captionVector} /> : null}
 
