@@ -1,13 +1,15 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { eq, inArray, asc } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, captions, users } from '@/lib/db/schema';
 import { countKnnEdges, getEdgesForNodes, getEdgesForNodesExcludingNsfw, getEdgesForNodesNsfwOnly } from '@/lib/db/queries/knn';
-import { getCaptionVector } from '@/lib/db/queries/embeddings';
+import { getCaptionVector, getRandomCaptionImageSlugs } from '@/lib/db/queries/embeddings';
 import { findPath } from '@/lib/knn';
 import { readNsfwMode } from '@/lib/nsfw';
 import { PathFilmstrip } from '@/components/path-filmstrip';
+import { JourneyPlayer } from '@/components/journey-player';
 import type { PathNode } from '@/lib/knn-path-types';
 
 export const dynamic = 'force-dynamic';
@@ -21,7 +23,7 @@ export const metadata: Metadata = {
 };
 
 type PageProps = {
-  searchParams: Promise<{ a?: string; b?: string }>;
+  searchParams: Promise<{ a?: string; b?: string; surprise?: string }>;
 };
 
 type SlimImage = { id: number; slug: string; blobUrl: string; isNsfw: boolean };
@@ -143,7 +145,20 @@ async function resolvePath(a: number, b: number, nsfwMode: 'hide' | 'include' | 
 }
 
 export default async function ConnectPage({ searchParams }: PageProps) {
-  const { a: rawA = '', b: rawB = '' } = await searchParams;
+  const { a: rawA = '', b: rawB = '', surprise } = await searchParams;
+
+  // "surprise me": grab two random graph nodes (caption-embedded, gated to the
+  // visitor's NSFW mode) and redirect to a normal shareable a/b URL, so the
+  // whole path render below is reused untouched. Falls through to the empty
+  // form when the gallery has fewer than two embedded images. redirect() throws
+  // its control-flow signal, so it stays outside the catch.
+  if (surprise === '1' && !rawA && !rawB) {
+    const seedMode = await readNsfwMode();
+    const seeds = await getRandomCaptionImageSlugs(2, seedMode).catch(() => [] as string[]);
+    if (seeds.length >= 2) {
+      redirect(`/connect?a=${encodeURIComponent(seeds[0]!)}&b=${encodeURIComponent(seeds[1]!)}`);
+    }
+  }
 
   // Resolve slugs (or fallback numeric IDs) to slim image records in parallel.
   const [imgA, imgB, edgeCount, nsfwMode] = await Promise.all([
@@ -170,7 +185,8 @@ export default async function ConnectPage({ searchParams }: PageProps) {
         <h1 className="font-fungal-lite text-3xl text-ink-100">connect</h1>
         <p className="font-mono text-xs text-ink-500">
           find the shortest path between two images through the semantic similarity graph. paste
-          a slug from any image page into each field below.
+          a slug from any image page into each field below, or hit &ldquo;surprise me&rdquo; to
+          start from a random pair -- then play the journey.
         </p>
       </section>
 
@@ -260,6 +276,15 @@ export default async function ConnectPage({ searchParams }: PageProps) {
           >
             find path
           </button>
+          {graphReady ? (
+            <Link
+              href="/connect?surprise=1"
+              prefetch={false}
+              className="font-mono text-xs text-primary/80 hover:text-primary"
+            >
+              surprise me &#10022;
+            </Link>
+          ) : null}
           {hasValidParams || rawA || rawB ? (
             <Link href="/connect" className="font-mono text-xs text-ink-500 hover:text-ink-300">
               clear
@@ -276,7 +301,10 @@ export default async function ConnectPage({ searchParams }: PageProps) {
               could not resolve path -- server error.
             </p>
           ) : outcome.status === 'found' ? (
-            <PathFilmstrip path={outcome.nodes} totalDist={outcome.totalDist} />
+            <div className="space-y-5">
+              <JourneyPlayer path={outcome.nodes} totalDist={outcome.totalDist} />
+              <PathFilmstrip path={outcome.nodes} totalDist={outcome.totalDist} />
+            </div>
           ) : outcome.status === 'same-node' ? (
             <p className="font-mono text-xs text-ink-400">
               A and B are the same image -- pick two different ones.
