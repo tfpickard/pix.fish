@@ -95,6 +95,30 @@ export async function searchByVector(
   return res.rows.map((r) => ({ imageId: Number(r.image_id), distance: Number(r.distance) }));
 }
 
+// Random image slugs drawn from the caption-embedded set -- i.e. the actual
+// nodes of the kNN graph -- so a "surprise me" pair is almost always
+// connectable. Gated by the visitor's NSFW mode so the same is_nsfw rule that
+// scopes the path search also scopes which images we hand back as a seed.
+export async function getRandomCaptionImageSlugs(
+  count: number,
+  nsfwMode: NsfwMode = 'hide'
+): Promise<string[]> {
+  const limit = Math.min(Math.max(Math.trunc(count), 1), 10);
+  const nsfwClause =
+    nsfwMode === 'only' ? sql`AND i.is_nsfw = true` :
+    nsfwMode === 'include' ? sql`` :
+    sql`AND i.is_nsfw = false`;
+  const res = await db.execute<{ slug: string }>(sql`
+    SELECT i.slug
+    FROM embeddings e
+    JOIN images i ON i.id = e.image_id
+    WHERE e.kind = 'caption' ${nsfwClause}
+    ORDER BY random()
+    LIMIT ${limit}
+  `);
+  return res.rows.map((r) => r.slug);
+}
+
 // Finds the nearest neighbors to the given image by embedding distance. Uses a
 // self-join so the source vector stays in Postgres -- no round trip to fetch
 // and then re-send it. Returns empty if the source image has no embedding of
