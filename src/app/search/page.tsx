@@ -55,7 +55,16 @@ export default async function SearchPage({ searchParams }: PageProps) {
             <p className="font-mono text-xs text-ink-500">or start from one of these:</p>
             <div className="flex flex-wrap gap-1">
               {suggestions.map((tag) => (
-                <Link key={tag} href={`/search?q=${encodeURIComponent(tag)}`} className="chip">
+                // prefetch={false}: each target is a force-dynamic semantic
+                // search (an embedding API call + a vector query). Letting Next
+                // prefetch all 14 on viewport entry would fire that work -- and
+                // burn AI quota -- for results nobody asked for.
+                <Link
+                  key={tag}
+                  href={`/search?q=${encodeURIComponent(tag)}`}
+                  prefetch={false}
+                  className="chip"
+                >
                   {tag}
                 </Link>
               ))}
