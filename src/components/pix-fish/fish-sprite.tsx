@@ -142,9 +142,11 @@ function FishSpriteImpl({
         </defs>
       )}
 
-      {/* Morph group -- the brain writes scale/squash/skew here each frame. No
-          `transform` key in JSX so the imperative writes are never clobbered. */}
-      <g ref={morphGroupRef} style={{ willChange: 'transform' }}>
+      {/* Morph group -- the brain writes scale/squash/skew to the SVG `transform`
+          ATTRIBUTE here each frame (not CSS style.transform, which is unreliable
+          on WebKit/iOS). No `transform` in JSX so the imperative writes survive
+          re-renders. */}
+      <g ref={morphGroupRef}>
         {/* Body -- path d is interpolated between the 5 variants */}
         <path d={bodyPath} filter={warpEnabled ? `url(#${WARP_FILTER_ID})` : undefined} />
 

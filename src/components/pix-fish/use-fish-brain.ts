@@ -176,7 +176,7 @@ export function useFishBrain({
   // resetMorph -- pin the morph at neutral (scale 1, no warp). Used for
   // prefers-reduced-motion and to seed nodes the moment they attach.
   const resetMorph = useCallback(() => {
-    if (morphGroupRef.current) morphGroupRef.current.style.transform = '';
+    if (morphGroupRef.current) morphGroupRef.current.removeAttribute('transform');
     if (warpRef.current) warpRef.current.setAttribute('scale', '0');
   }, []);
 
@@ -399,7 +399,7 @@ export function useFishBrain({
 
       const morph = deriveMorph(sm, NUM_FISH_VARIANTS, cfg);
       if (morphGroupRef.current) {
-        morphGroupRef.current.style.transform = morphTransform(morph);
+        morphGroupRef.current.setAttribute('transform', morphTransform(morph));
       }
       if (cfg.warpAmount > 0 && warpRef.current) {
         warpRef.current.setAttribute('scale', morph.warp.toFixed(3));
@@ -548,13 +548,10 @@ export function useFishBrain({
   // Seed the morph nodes to neutral the moment they attach so there's no
   // first-frame flash before the rAF loop takes over (and so they're neutral
   // under prefers-reduced-motion, where the loop never runs).
-  const setMorphGroupRef = useCallback(
-    (el: SVGGElement | null) => {
-      morphGroupRef.current = el;
-      if (el) el.style.transform = '';
-    },
-    []
-  );
+  const setMorphGroupRef = useCallback((el: SVGGElement | null) => {
+    morphGroupRef.current = el;
+    if (el) el.removeAttribute('transform');
+  }, []);
 
   const setWarpRef = useCallback((el: SVGFEDisplacementMapElement | null) => {
     warpRef.current = el;

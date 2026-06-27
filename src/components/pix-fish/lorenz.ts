@@ -147,11 +147,17 @@ export const MORPH_ORIGIN_X = 55;
 export const MORPH_ORIGIN_Y = 32.5;
 
 // Build the inner-<g> transform string for the given outputs.
+//
+// This is written to the SVG `transform` ATTRIBUTE (not CSS `style.transform`):
+// unitless, user-space values, space-separated. CSS transforms on SVG elements
+// are unreliable on WebKit/iOS Safari -- they render in the wrong place or not
+// at all -- whereas the presentation attribute is universally supported. Hence
+// no `px`/`deg` units here.
 export function morphTransform(out: MorphOutputs): string {
   return (
-    `translate(${MORPH_ORIGIN_X}px, ${MORPH_ORIGIN_Y}px) ` +
-    `scale(${out.scaleX.toFixed(4)}, ${out.scaleY.toFixed(4)}) ` +
-    `skewX(${out.skewDeg.toFixed(3)}deg) ` +
-    `translate(${-MORPH_ORIGIN_X}px, ${-MORPH_ORIGIN_Y}px)`
+    `translate(${MORPH_ORIGIN_X} ${MORPH_ORIGIN_Y}) ` +
+    `scale(${out.scaleX.toFixed(4)} ${out.scaleY.toFixed(4)}) ` +
+    `skewX(${out.skewDeg.toFixed(3)}) ` +
+    `translate(${-MORPH_ORIGIN_X} ${-MORPH_ORIGIN_Y})`
   );
 }
