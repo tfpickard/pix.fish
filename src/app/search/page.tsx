@@ -42,7 +42,11 @@ export default async function SearchPage({ searchParams }: PageProps) {
     // Best-effort -- a DB hiccup just falls back to the bare prompt.
     let suggestions: string[] = [];
     try {
-      suggestions = (await tagCloud(14)).map((t) => t.tag);
+      // Scope suggestions to the visitor's NSFW mode -- the same gate the
+      // search they launch uses -- so a tag that lives only on NSFW images
+      // can't leak its label or send an opted-out visitor to an empty search.
+      const nsfwMode = await readNsfwMode();
+      suggestions = (await tagCloud(14, nsfwMode)).map((t) => t.tag);
     } catch {
       suggestions = [];
     }
