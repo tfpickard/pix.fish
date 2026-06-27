@@ -34,7 +34,9 @@ export function PixFish() {
     writeFishDismissed(false);
   }, []);
 
-  const { state, setContainerRef, startle } = useFishBrain({ paused: !mounted || dismissed });
+  const { state, setContainerRef, setMorphGroupRef, setWarpRef, startle } = useFishBrain({
+    paused: !mounted || dismissed
+  });
 
   const onClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -91,6 +93,8 @@ export function PixFish() {
             mouthState={state.mouthState}
             morphProgress={state.morphProgress}
             width={72}
+            morphGroupRef={setMorphGroupRef}
+            warpRef={setWarpRef}
           />
         </div>
       </div>

@@ -1,6 +1,12 @@
 'use client';
 
 import { memo } from 'react';
+import {
+  WARP_AMOUNT,
+  WARP_BASE_FREQUENCY,
+  WARP_FILTER_ID,
+  WARP_OCTAVES
+} from './lorenz';
 
 // Five body outlines traced from the five reference line drawings. All share
 // the exact same SVG command structure (M + 13×Q + Z = 54 numbers) so we can
@@ -68,9 +74,25 @@ interface FishSpriteProps {
   mouthState: MouthState;
   morphProgress: number;
   width?: number;
+  // Ref-setters wired by the brain hook so its rAF loop can mutate the morph
+  // group's transform and the warp filter's displacement scale imperatively,
+  // without re-rendering. Stable identities keep this component's memo intact.
+  morphGroupRef?: (el: SVGGElement | null) => void;
+  warpRef?: (el: SVGFEDisplacementMapElement | null) => void;
 }
 
-function FishSpriteImpl({ eyeState, mouthState, morphProgress, width = 72 }: FishSpriteProps) {
+// Whether the organic outline warp is enabled. At 0 we omit the filter entirely
+// so the zero-warp configuration pays no filter cost (pure squash/stretch).
+const WARP_ENABLED = WARP_AMOUNT > 0;
+
+function FishSpriteImpl({
+  eyeState,
+  mouthState,
+  morphProgress,
+  width = 72,
+  morphGroupRef,
+  warpRef
+}: FishSpriteProps) {
   const height = (width * 65) / 110;
   const bodyPath = buildBodyPath(morphProgress);
 
@@ -87,28 +109,66 @@ function FishSpriteImpl({ eyeState, mouthState, morphProgress, width = 72 }: Fis
       aria-hidden="true"
       style={{ display: 'block', overflow: 'visible' }}
     >
-      {/* Body -- path d is interpolated between the 5 variants */}
-      <path d={bodyPath} />
+      {WARP_ENABLED && (
+        <defs>
+          {/* Organic outline warp. feTurbulence is static; the brain breathes
+              the displacement `scale` from the attractor each frame, so the
+              outline deforms without a perceptible loop. Region is generous and
+              in user space so displacement up to the ceiling isn't clipped. */}
+          <filter
+            id={WARP_FILTER_ID}
+            filterUnits="userSpaceOnUse"
+            x={-20}
+            y={-20}
+            width={150}
+            height={105}
+          >
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency={WARP_BASE_FREQUENCY}
+              numOctaves={WARP_OCTAVES}
+              result="noise"
+            />
+            {/* No `scale` attribute here -- it's set only imperatively, so the
+                throttled morph re-render can't reset it. */}
+            <feDisplacementMap
+              ref={warpRef}
+              in="SourceGraphic"
+              in2="noise"
+              xChannelSelector="R"
+              yChannelSelector="G"
+            />
+          </filter>
+        </defs>
+      )}
 
-      {/* Eye */}
-      {eyeState === 'open' && (
-        <circle cx="24" cy="28" r="2.2" fill="currentColor" stroke="none" />
-      )}
-      {eyeState === 'half' && (
-        <path d="M 21.5 28.5 Q 24 27, 26.5 28.5" strokeWidth={2.4} />
-      )}
-      {eyeState === 'closed' && <path d="M 21 29 L 27 29" strokeWidth={2.4} />}
+      {/* Morph group -- the brain writes scale/squash/skew here each frame. No
+          `transform` key in JSX so the imperative writes are never clobbered. */}
+      <g ref={morphGroupRef} style={{ willChange: 'transform' }}>
+        {/* Body -- path d is interpolated between the 5 variants */}
+        <path d={bodyPath} filter={WARP_ENABLED ? `url(#${WARP_FILTER_ID})` : undefined} />
 
-      {/* Mouth */}
-      {mouthState === 'smile' && (
-        <path d="M 10 38 Q 14 43, 18 39" strokeWidth={2.2} />
-      )}
-      {mouthState === 'o' && (
-        <circle cx="13" cy="40" r="2.2" fill="none" strokeWidth={2} />
-      )}
-      {mouthState === 'flat' && <path d="M 10 40 L 17 40" strokeWidth={2.2} />}
+        {/* Eye */}
+        {eyeState === 'open' && (
+          <circle cx="24" cy="28" r="2.2" fill="currentColor" stroke="none" />
+        )}
+        {eyeState === 'half' && (
+          <path d="M 21.5 28.5 Q 24 27, 26.5 28.5" strokeWidth={2.4} />
+        )}
+        {eyeState === 'closed' && <path d="M 21 29 L 27 29" strokeWidth={2.4} />}
 
-      {/* Ground shadow -- subtle arc under the fish like in the reference drawings */}
+        {/* Mouth */}
+        {mouthState === 'smile' && (
+          <path d="M 10 38 Q 14 43, 18 39" strokeWidth={2.2} />
+        )}
+        {mouthState === 'o' && (
+          <circle cx="13" cy="40" r="2.2" fill="none" strokeWidth={2} />
+        )}
+        {mouthState === 'flat' && <path d="M 10 40 L 17 40" strokeWidth={2.2} />}
+      </g>
+
+      {/* Ground shadow -- subtle arc under the fish like in the reference
+          drawings. Stays outside the morph group so it doesn't scale/skew. */}
       <path d="M 22 58 Q 52 62, 80 57" strokeWidth={2} opacity={0.25} />
     </svg>
   );
