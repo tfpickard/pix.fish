@@ -6,13 +6,19 @@
 // bounded-but-nonperiodic state, so the morph never repeats. That is the whole
 // point of driving the shape and size from it.
 //
-// This module owns the math, the tunable constants, and the pure mapping from
-// attractor state to render outputs. The brain hook advances it once per frame
-// inside the existing rAF loop and writes the outputs to the DOM via refs; no
-// second rAF, no per-frame React re-render.
+// This module owns the math and the pure mapping from attractor state to render
+// outputs. The aesthetic tunables (speed, smoothing, scale band, squash, skew,
+// warp) are NOT constants here -- they come from a FishMorphConfig, edited at
+// /admin/fish (see src/lib/fish/config.ts). The brain hook advances the
+// attractor once per frame inside the existing rAF loop, smooths it, and writes
+// deriveMorph()'s outputs to the DOM via refs; no second rAF, no per-frame
+// React re-render.
+
+import type { FishMorphConfig } from '@/lib/fish/config';
 
 // ---------------------------------------------------------------------------
-// Tunables -- adjust these to taste.
+// Fixed constants -- these define the attractor and its normalization, not the
+// look, so they are not exposed as tunables.
 // ---------------------------------------------------------------------------
 
 // Classic chaotic regime.
@@ -20,41 +26,13 @@ const SIGMA = 10;
 const RHO = 28;
 const BETA = 8 / 3;
 
-// Effective integration step per 60fps frame. Small => a lazy, hypnotic drift
-// rather than a twitch. Scaled by the real frame dt at call time so high-refresh
-// displays don't morph faster (see clamp in the brain's tick).
-export const LORENZ_SPEED = 0.0042;
-
-// Exponential-moving-average factor applied to each attractor dimension so every
-// mapped output transitions silkily and "slowly" actually reads as slow.
-export const SMOOTHING = 0.06;
-
-// Size: uniform scale band. The fish breathes between these.
-export const SCALE_MIN = 0.85;
-export const SCALE_MAX = 1.15;
-
-// Squash/stretch magnitude. scaleX *= (1 + SQUASH_AMOUNT*a), scaleY *= (1 - ...),
-// so area is roughly preserved.
-export const SQUASH_AMOUNT = 0.3;
-
-// Lean, in degrees.
-export const SKEW_AMOUNT = 12;
-
-// Organic outline warp: the feDisplacementMap `scale`. Set to 0 to cleanly
-// disable the SVG filter entirely (pure squash/stretch fallback). The dorsal
-// notch and tail are thin, so peaks above ~10 start to look spiky rather than
-// organic.
-export const WARP_AMOUNT = 9;
-
-// feTurbulence params for the warp filter. Higher frequency => more, smaller
-// wiggles that read as a deforming outline rather than a smooth bulge.
+// The SVG warp filter id. There is exactly one mascot mounted globally, so a
+// constant id is safe.
 export const WARP_FILTER_ID = 'pix-fish-warp';
-export const WARP_BASE_FREQUENCY = 0.025;
-export const WARP_OCTAVES = 2;
 
-// Normalization ranges. The classic regime keeps z roughly in [Z_MIN, Z_MAX] and
-// x,y within +/- XY_RANGE. Outputs are clamped so an occasional excursion can
-// never push the morph past its band.
+// Normalization ranges. The classic regime keeps z roughly in [Z_MIN, Z_MAX]
+// and x,y within +/- XY_RANGE. Outputs are clamped so an occasional excursion
+// can never push the morph past its band.
 const Z_MIN = 5;
 const Z_MAX = 45;
 const XY_RANGE = 20;
@@ -137,24 +115,25 @@ export interface MorphOutputs {
   morphProgress: number;
 }
 
-// Pure mapping from the (already smoothed) attractor state to render outputs.
-// With three chaotic dimensions and several outputs some sharing is unavoidable;
-// the most prominent effect (size) gets a dedicated dimension. Re-point the
-// sources here to retune which dimension drives which effect.
-export function deriveMorph(smoothed: LorenzState, variants: number): MorphOutputs {
-  const size = lerp(SCALE_MIN, SCALE_MAX, norm01(smoothed.z, Z_MIN, Z_MAX));
+// Pure mapping from the (already smoothed) attractor state to render outputs,
+// using the live config. Size rides z; the outline deformation (variant
+// morphProgress + warp) rides the orbital excursion |x|, which swings nearly
+// full-range every orbit on a rhythm independent of the z size breath -- so the
+// silhouette visibly morphs even while the size is steady. Squash/skew add
+// signed asymmetry from x/y.
+export function deriveMorph(
+  smoothed: LorenzState,
+  variants: number,
+  cfg: FishMorphConfig
+): MorphOutputs {
+  const size = lerp(cfg.scaleMin, cfg.scaleMax, norm01(smoothed.z, Z_MIN, Z_MAX));
   const a = norm11(smoothed.x, XY_RANGE);
-  // The outline deformation rides the orbital excursion |x|, which swings nearly
-  // full-range every orbit on a rhythm independent of the z size breath -- so the
-  // silhouette visibly morphs (through all variants) and the warp band breathes
-  // even while the size is steady. Size stays on z; squash/skew add signed
-  // asymmetry from x/y.
   const shape = norm01(Math.abs(smoothed.x), X_ABS_MIN, X_ABS_MAX);
   return {
-    scaleX: size * (1 + SQUASH_AMOUNT * a),
-    scaleY: size * (1 - SQUASH_AMOUNT * a),
-    skewDeg: SKEW_AMOUNT * norm11(smoothed.y, XY_RANGE),
-    warp: lerp(0, WARP_AMOUNT, shape),
+    scaleX: size * (1 + cfg.squashAmount * a),
+    scaleY: size * (1 - cfg.squashAmount * a),
+    skewDeg: cfg.skewAmount * norm11(smoothed.y, XY_RANGE),
+    warp: lerp(0, cfg.warpAmount, shape),
     // Keep strictly below `variants`: buildBodyPath wraps via `% n`, so exactly
     // `variants` would snap to variant 0 instead of blending from the last one.
     morphProgress: Math.min(shape * variants, variants - 1e-3)

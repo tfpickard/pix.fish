@@ -1,12 +1,8 @@
 'use client';
 
 import { memo } from 'react';
-import {
-  WARP_AMOUNT,
-  WARP_BASE_FREQUENCY,
-  WARP_FILTER_ID,
-  WARP_OCTAVES
-} from './lorenz';
+import { WARP_FILTER_ID } from './lorenz';
+import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/config';
 
 // Five body outlines traced from the five reference line drawings. All share
 // the exact same SVG command structure (M + 13×Q + Z = 54 numbers) so we can
@@ -79,11 +75,11 @@ interface FishSpriteProps {
   // without re-rendering. Stable identities keep this component's memo intact.
   morphGroupRef?: (el: SVGGElement | null) => void;
   warpRef?: (el: SVGFEDisplacementMapElement | null) => void;
+  // Live morph config; only the warp filter params are read here (the transform
+  // is written imperatively by the brain). Defaults keep the sprite renderable
+  // before the config has loaded.
+  config?: FishMorphConfig;
 }
-
-// Whether the organic outline warp is enabled. At 0 we omit the filter entirely
-// so the zero-warp configuration pays no filter cost (pure squash/stretch).
-const WARP_ENABLED = WARP_AMOUNT > 0;
 
 function FishSpriteImpl({
   eyeState,
@@ -91,10 +87,14 @@ function FishSpriteImpl({
   morphProgress,
   width = 72,
   morphGroupRef,
-  warpRef
+  warpRef,
+  config = DEFAULT_FISH_MORPH_CONFIG
 }: FishSpriteProps) {
   const height = (width * 65) / 110;
   const bodyPath = buildBodyPath(morphProgress);
+  // At warpAmount 0 we omit the filter entirely so the zero-warp configuration
+  // pays no filter cost (pure squash/stretch fallback).
+  const warpEnabled = config.warpAmount > 0;
 
   return (
     <svg
@@ -109,7 +109,7 @@ function FishSpriteImpl({
       aria-hidden="true"
       style={{ display: 'block', overflow: 'visible' }}
     >
-      {WARP_ENABLED && (
+      {warpEnabled && (
         <defs>
           {/* Organic outline warp. feTurbulence is static; the brain breathes
               the displacement `scale` from the attractor each frame, so the
@@ -125,8 +125,8 @@ function FishSpriteImpl({
           >
             <feTurbulence
               type="fractalNoise"
-              baseFrequency={WARP_BASE_FREQUENCY}
-              numOctaves={WARP_OCTAVES}
+              baseFrequency={config.warpBaseFrequency}
+              numOctaves={config.warpOctaves}
               result="noise"
             />
             {/* No `scale` attribute here -- it's set only imperatively, so the
@@ -146,7 +146,7 @@ function FishSpriteImpl({
           `transform` key in JSX so the imperative writes are never clobbered. */}
       <g ref={morphGroupRef} style={{ willChange: 'transform' }}>
         {/* Body -- path d is interpolated between the 5 variants */}
-        <path d={bodyPath} filter={WARP_ENABLED ? `url(#${WARP_FILTER_ID})` : undefined} />
+        <path d={bodyPath} filter={warpEnabled ? `url(#${WARP_FILTER_ID})` : undefined} />
 
         {/* Eye */}
         {eyeState === 'open' && (

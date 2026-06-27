@@ -4,16 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { pickHideTarget, pickPerchTarget } from './dom-targets';
 import { NUM_FISH_VARIANTS } from './fish-sprite';
 import type { EyeState, MouthState } from './fish-sprite';
-import {
-  deriveMorph,
-  LORENZ_SPEED,
-  lorenzStep,
-  morphTransform,
-  seedLorenz,
-  SMOOTHING,
-  WARP_AMOUNT,
-  type LorenzState
-} from './lorenz';
+import { deriveMorph, lorenzStep, morphTransform, seedLorenz, type LorenzState } from './lorenz';
+import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/config';
 
 // The brain. A single requestAnimationFrame loop drives a probabilistic
 // state machine. Position, velocity, and time are kept in refs so the RAF
@@ -114,6 +106,9 @@ function clamp(v: number, lo: number, hi: number): number {
 
 interface BrainOptions {
   paused: boolean;
+  // Live morph tunables (from /admin/fish). Read through a ref in the rAF loop
+  // so edits take effect without restarting the loop.
+  config?: FishMorphConfig;
 }
 
 interface BrainAPI {
@@ -124,7 +119,10 @@ interface BrainAPI {
   startle: (clickX: number, clickY: number) => void;
 }
 
-export function useFishBrain({ paused }: BrainOptions): BrainAPI {
+export function useFishBrain({
+  paused,
+  config = DEFAULT_FISH_MORPH_CONFIG
+}: BrainOptions): BrainAPI {
   const [state, setState] = useState<FishBrainState>({
     behavior: 'wandering',
     eyeState: 'open',
@@ -145,6 +143,10 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
   reducedMotionRef.current = reducedMotion;
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  // Live config read inside the rAF loop. A ref (not a tick dep) so admin edits
+  // apply on the next frame without re-keying the animation effect.
+  const configRef = useRef(config);
+  configRef.current = config;
 
   const posRef = useRef({ x: 80, y: 80 });
   const targetRef = useRef({ x: 80, y: 80 });
@@ -382,23 +384,24 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
       // The step is scaled by the real frame dt (normalized to 60fps and
       // clamped) so the morph runs at the same pace on high-refresh displays and
       // RK4 stays stable after a background-tab dt spike.
+      const cfg = configRef.current;
       const frameScale = clamp(dt / (1 / 60), 0.25, 4);
-      const raw = lorenzStep(lorenzRef.current, LORENZ_SPEED * frameScale);
+      const raw = lorenzStep(lorenzRef.current, cfg.lorenzSpeed * frameScale);
       lorenzRef.current = raw;
-      // Time-based EMA: SMOOTHING is the alpha per 60fps frame; scaling it by the
-      // same frameScale keeps the effective smoothing time-constant identical
+      // Time-based EMA: cfg.smoothing is the alpha per 60fps frame; scaling it by
+      // the same frameScale keeps the effective smoothing time-constant identical
       // across refresh rates (a 120Hz display would otherwise smooth less).
-      const alpha = 1 - Math.pow(1 - SMOOTHING, frameScale);
+      const alpha = 1 - Math.pow(1 - cfg.smoothing, frameScale);
       const sm = lorenzSmoothRef.current;
       sm.x += alpha * (raw.x - sm.x);
       sm.y += alpha * (raw.y - sm.y);
       sm.z += alpha * (raw.z - sm.z);
 
-      const morph = deriveMorph(sm, NUM_FISH_VARIANTS);
+      const morph = deriveMorph(sm, NUM_FISH_VARIANTS, cfg);
       if (morphGroupRef.current) {
         morphGroupRef.current.style.transform = morphTransform(morph);
       }
-      if (WARP_AMOUNT > 0 && warpRef.current) {
+      if (cfg.warpAmount > 0 && warpRef.current) {
         warpRef.current.setAttribute('scale', morph.warp.toFixed(3));
       }
 

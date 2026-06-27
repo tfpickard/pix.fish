@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { FishSprite } from './fish-sprite';
 import { readFishDismissed, writeFishDismissed } from './prefs';
 import { useFishBrain } from './use-fish-brain';
+import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/config';
 
 // Top-level mascot component. Mounted once in the root layout, outside
 // <main> and the <Providers> tree so it never participates in document
@@ -18,10 +19,26 @@ import { useFishBrain } from './use-fish-brain';
 export function PixFish() {
   const [mounted, setMounted] = useState(false);
   const [dismissed, setDismissed] = useState(true);
+  // Global morph tunables (admin-editable at /admin/fish). Start from defaults
+  // -- which match the committed look -- then reconcile to the live config, so
+  // there's no flash unless an admin has changed it.
+  const [config, setConfig] = useState<FishMorphConfig>(DEFAULT_FISH_MORPH_CONFIG);
 
   useEffect(() => {
     setMounted(true);
     setDismissed(readFishDismissed());
+    let cancelled = false;
+    fetch('/api/fish-config')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.config) setConfig(data.config as FishMorphConfig);
+      })
+      .catch(() => {
+        /* keep defaults on any failure -- the mascot still works */
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const dismiss = useCallback(() => {
@@ -35,7 +52,8 @@ export function PixFish() {
   }, []);
 
   const { state, setContainerRef, setMorphGroupRef, setWarpRef, startle } = useFishBrain({
-    paused: !mounted || dismissed
+    paused: !mounted || dismissed,
+    config
   });
 
   const onClick = useCallback(
@@ -95,6 +113,7 @@ export function PixFish() {
             width={72}
             morphGroupRef={setMorphGroupRef}
             warpRef={setWarpRef}
+            config={config}
           />
         </div>
       </div>
