@@ -36,7 +36,10 @@ export const PROMPT_KEYS = [
   // RAG context are injected at write time (see src/lib/universe/dossier.ts);
   // kept in the DB so the institution's house style is tunable without a
   // redeploy.
-  'dossier'
+  'dossier',
+  // Universe (Phase U2) -- the amendment template. A clerk revisits an existing
+  // case file and files an addendum, often contradicting the prior reading.
+  'dossier_amend'
 ] as const;
 
 export type PromptKey = (typeof PROMPT_KEYS)[number];

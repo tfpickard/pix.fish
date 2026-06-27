@@ -1,4 +1,4 @@
-import { asc, eq, sql } from 'drizzle-orm';
+import { asc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { loreFragments, type LoreFragment, type NewLoreFragment } from '../schema';
 
@@ -54,6 +54,25 @@ export async function countImagesWithLoreFragments(): Promise<number> {
     sql`SELECT count(DISTINCT specimen_image_id)::int AS n FROM lore_fragments`
   );
   return Number(res.rows?.[0]?.n ?? 0);
+}
+
+export type LoreSummary = { imageId: number; fragments: number };
+
+// Fragment counts per image for a set of ids. Used by the map/manifold lore
+// layer to size each specimen's marker by how thick its dossier has grown.
+// Images with no lore are simply absent from the returned map.
+export async function loreSummaryByImageIds(ids: number[]): Promise<Map<number, LoreSummary>> {
+  const out = new Map<number, LoreSummary>();
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({ imageId: loreFragments.specimenImageId, n: sql<number>`count(*)::int` })
+    .from(loreFragments)
+    .where(inArray(loreFragments.specimenImageId, ids))
+    .groupBy(loreFragments.specimenImageId);
+  for (const r of rows) {
+    out.set(r.imageId, { imageId: r.imageId, fragments: Number(r.n) });
+  }
+  return out;
 }
 
 // Rebuild support. DELETE cascades to the fragments' lore embeddings via the

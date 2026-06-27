@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { detectCommunities, type ClusterEdge } from '../src/lib/universe/cluster';
 import { parseDistrictIdentity } from '../src/lib/universe/district';
 import { dedupeKey } from '../src/lib/universe/events';
+import {
+  selectSalientSpecimens,
+  type SpecimenSalienceInput
+} from '../src/lib/universe/salience';
 
 // Pure, infra-free tests in the style of the existing suite (no DB, no server).
 // The DB-bound invariants -- specimens == images, bootstrap idempotency,
@@ -94,5 +98,65 @@ describe('dedupe keys (append-only idempotency contract)', () => {
 
   test('cross-reference keys are directional', () => {
     expect(dedupeKey.crossReference(3, 9)).not.toBe(dedupeKey.crossReference(9, 3));
+  });
+
+  test('amendment keys are per-generation', () => {
+    expect(dedupeKey.amendment(42, 1)).toBe('dossier.amendment:42:1');
+    expect(dedupeKey.amendment(42, 1)).not.toBe(dedupeKey.amendment(42, 2));
+  });
+});
+
+describe('selectSalientSpecimens (evolution-loop target selection)', () => {
+  const NOW = 1_000_000_000_000;
+  const base = (over: Partial<SpecimenSalienceInput> & { imageId: number }): SpecimenSalienceInput => ({
+    fragments: 1,
+    distinctClerks: 1,
+    lastTouchedMs: NOW,
+    ...over
+  });
+
+  test('is deterministic for a fixed seed', () => {
+    const specimens = [base({ imageId: 1 }), base({ imageId: 2, fragments: 5 }), base({ imageId: 3 })];
+    const opts = { count: 2, seed: 7, nowMs: NOW, edges: [] as ClusterEdge[] };
+    expect(selectSalientSpecimens(specimens, opts)).toEqual(selectSalientSpecimens(specimens, opts));
+  });
+
+  test('returns at most `count` picks', () => {
+    const specimens = Array.from({ length: 10 }, (_, i) => base({ imageId: i + 1 }));
+    const picks = selectSalientSpecimens(specimens, { count: 3, seed: 1, nowMs: NOW, edges: [] });
+    expect(picks.length).toBe(3);
+  });
+
+  test('under-documented specimens outrank well-documented ones', () => {
+    const specimens = [base({ imageId: 1, fragments: 1 }), base({ imageId: 2, fragments: 20 })];
+    const picks = selectSalientSpecimens(specimens, {
+      count: 2,
+      seed: 3,
+      nowMs: NOW,
+      edges: [],
+      weights: { coverage: 1, staleness: 0, centrality: 0, tension: 0, walk: 0 }
+    });
+    expect(picks[0]!.imageId).toBe(1);
+    expect(picks[0]!.reasons).toContain('under-documented');
+  });
+
+  test('stale specimens outrank fresh ones', () => {
+    const specimens = [
+      base({ imageId: 1, lastTouchedMs: NOW }),
+      base({ imageId: 2, lastTouchedMs: NOW - 30 * 24 * 60 * 60 * 1000 })
+    ];
+    const picks = selectSalientSpecimens(specimens, {
+      count: 2,
+      seed: 5,
+      nowMs: NOW,
+      edges: [],
+      weights: { coverage: 0, staleness: 1, centrality: 0, tension: 0, walk: 0 }
+    });
+    expect(picks[0]!.imageId).toBe(2);
+    expect(picks[0]!.reasons).toContain('stale');
+  });
+
+  test('empty input yields no picks', () => {
+    expect(selectSalientSpecimens([], { count: 5, seed: 1, nowMs: NOW, edges: [] })).toEqual([]);
   });
 });

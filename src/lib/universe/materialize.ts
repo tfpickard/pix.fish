@@ -4,8 +4,18 @@ import { deleteAllDistricts } from '@/lib/db/queries/districts';
 import { listAllEvents } from '@/lib/db/queries/events';
 import { deleteAllLoreFragments } from '@/lib/db/queries/lore-fragments';
 import { deleteAllSpecimens } from '@/lib/db/queries/specimens';
+import type { UniverseEvent } from '@/lib/db/schema';
 import { buildCoordsMap } from './coords';
 import { applyEvent } from './reduce';
+
+// Apply a single freshly-appended event to the projections, without a full
+// rebuild. Used by the Phase 2 evolution loop so an amendment lands in the
+// specimen/lore_fragment projections immediately. Builds a coords map once per
+// call (two cheap projection reads); fine at the loop's low cadence.
+export async function materializeEvent(ev: UniverseEvent): Promise<void> {
+  const coords = await buildCoordsMap();
+  await applyEvent(ev, { coords });
+}
 
 // Rebuild every projection from the event log alone. This is the documented
 // reconciliation routine: it clears the projection tables (never the events)

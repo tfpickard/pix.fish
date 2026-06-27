@@ -80,4 +80,60 @@ export async function buildDossierPrompt(ctx: DossierContext): Promise<string> {
     .replaceAll('{{cross_references}}', formatCrossReferences(ctx.crossReferences));
 }
 
-export { DEFAULT_DOSSIER_TEMPLATE };
+// ---- amendments (Phase 2) -------------------------------------------------
+
+export type AmendmentContext = DossierContext & {
+  // The current case file the amending clerk is revisiting.
+  existingDossier: string;
+  // Prior fragments already on file (other clerks' readings), so the amending
+  // clerk can engage with -- and contradict -- them by name.
+  priorFragments: { clerk: string; body: string }[];
+};
+
+const DEFAULT_AMEND_TEMPLATE = `You are {{clerk_name}}, a clerk of the {{department}} within an unreliable bureaucratic image archive. The archive strips and reassigns metadata, never deletes a record, and quietly implies it is always watching. A specimen already has a case file on record. You are filing an AMENDMENT to that file -- an addendum in your own hand. You do not get to delete or rewrite what is already there; the prior filings stand. You add to them.
+
+Your voice: {{clerk_voice}}
+Your standing agenda: {{clerk_agenda}}
+
+Write the amendment strictly in character. Engage with what is already on file: you may dispute it, reinterpret it, escalate it, or note what a prior clerk missed. If you disagree with another clerk, say so and say why -- contradiction between departments is expected and must not be smoothed over. Do not restate the existing file; add a new reading. One to three short paragraphs. No markdown headings or bullet points. Do not invent another clerk's name.
+
+DISTRICT:
+{{district_name}} -- {{district_character}}
+
+THE SPECIMEN'S RECORDED CAPTIONS:
+{{image_captions}}
+
+THE CURRENT CASE FILE (most recent reading on record):
+{{existing_dossier}}
+
+PRIOR FILINGS BY OTHER CLERKS (engage with these; contradict if your agenda demands):
+{{prior_fragments}}
+
+NEAREST RECORDS ON FILE:
+{{neighbor_context}}
+
+File your amendment now.`;
+
+function formatPriorFragments(prior: { clerk: string; body: string }[]): string {
+  if (prior.length === 0) return '(no prior filings)';
+  return prior
+    .map((p) => `- ${p.clerk}: ${p.body.trim()}`)
+    .join('\n\n');
+}
+
+export async function buildAmendmentPrompt(ctx: AmendmentContext): Promise<string> {
+  const template = (await getPromptByKey('dossier_amend')) ?? DEFAULT_AMEND_TEMPLATE;
+  return template
+    .replaceAll('{{clerk_name}}', ctx.clerk.name)
+    .replaceAll('{{department}}', ctx.clerk.department)
+    .replaceAll('{{clerk_voice}}', ctx.clerk.voice)
+    .replaceAll('{{clerk_agenda}}', ctx.clerk.agenda)
+    .replaceAll('{{district_name}}', ctx.district.name)
+    .replaceAll('{{district_character}}', ctx.district.character)
+    .replaceAll('{{image_captions}}', formatCaptions(ctx.captions))
+    .replaceAll('{{existing_dossier}}', ctx.existingDossier.trim() || '(none on record)')
+    .replaceAll('{{prior_fragments}}', formatPriorFragments(ctx.priorFragments))
+    .replaceAll('{{neighbor_context}}', formatNeighbors(ctx.neighbors));
+}
+
+export { DEFAULT_DOSSIER_TEMPLATE, DEFAULT_AMEND_TEMPLATE };

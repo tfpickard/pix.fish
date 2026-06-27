@@ -57,6 +57,28 @@ export type CrossReferenceFiledPayload = {
   dist: number;
 };
 
+// A dossier amendment (Phase 2). Same shape as an intake -- a clerk files new
+// dossier text + its embedding -- but it appends to the record rather than
+// founding it. The reducer advances the specimen's current dossier and bumps
+// its generation; prior fragments are never overwritten.
+export type DossierAmendmentPayload = {
+  dossier: string;
+  districtKey: string;
+  embedding: number[] | null;
+  embedProvider: string | null;
+  embedModel: string | null;
+};
+
+// A flagged contradiction (Phase 2). Purely a chronicle/audit artifact: it
+// records that one clerk's filing contradicts another's. It changes no
+// projection -- the contradiction itself lives in the dossier fragments, which
+// are never reconciled.
+export type AuditFlaggedPayload = {
+  note: string;
+  by: string; // clerk slug who flagged / introduced the contradiction
+  contradicts: string | null; // clerk slug being contradicted, if known
+};
+
 // A cited source: where a clerk says a claim came from. Kept loose (a free
 // label plus an optional ref) so clerks can cite captions, neighbors,
 // districts, or other dossiers without a rigid schema.
@@ -76,5 +98,11 @@ export const dedupeKey = {
   district: (key: string) => `district.intake:${key}`,
   specimenIntake: (imageId: number) => `specimen.intake:${imageId}`,
   crossReference: (srcImageId: number, dstImageId: number) =>
-    `cross_reference.filed:${srcImageId}:${dstImageId}`
+    `cross_reference.filed:${srcImageId}:${dstImageId}`,
+  // Amendments are keyed by the generation they produce, so two concurrent
+  // ticks racing on the same specimen can only ever file one amendment for a
+  // given generation -- the second is absorbed by the unique index.
+  amendment: (imageId: number, generation: number) =>
+    `dossier.amendment:${imageId}:${generation}`,
+  audit: (imageId: number, generation: number) => `audit.flagged:${imageId}:${generation}`
 };
