@@ -163,6 +163,12 @@ export async function ImageDetail({
 
   const caption = pickOne(img.captions)?.text ?? '';
   const description = pickOne(img.descriptions)?.text ?? '';
+  // Derive once: `srcSet` is null for an empty/absent derivative set (so we
+  // don't emit `sizes` without a matching srcSet), and `fullRes` is the largest
+  // derivative or null. The "view full resolution" link only makes sense when
+  // that largest is a derivative distinct from the original we'd otherwise show.
+  const detailSrcSet = buildSrcSet(img.derivatives);
+  const detailLargest = largestDerivativeUrl(img.derivatives);
   const uploaded = new Date(img.uploadedAt).toLocaleString('en-US', {
     year: 'numeric',
     month: 'short',
@@ -188,9 +194,12 @@ export async function ImageDetail({
             doesn't probe dimensions), so CSS sizes the element to the image's
             natural aspect once it loads. */}
         <img
-          src={largestDerivativeUrl(img.derivatives) ?? img.blobUrl}
-          srcSet={buildSrcSet(img.derivatives) ?? undefined}
-          sizes={img.derivatives ? '(min-width: 1024px) 1024px, 100vw' : undefined}
+          src={detailLargest ?? img.blobUrl}
+          srcSet={detailSrcSet ?? undefined}
+          sizes={detailSrcSet ? '(min-width: 1024px) 1024px, 100vw' : undefined}
+          // Pass intrinsic dimensions when the row has them so the browser can
+          // reserve the right box and avoid layout shift. Most rows are null.
+          {...(img.width && img.height ? { width: img.width, height: img.height } : {})}
           alt={caption || img.slug}
           decoding="async"
           className={`h-auto w-full rounded-lg border border-ink-800 transition-[filter] duration-300${img.isNsfw ? ' [filter:blur(2px)] hover:[filter:blur(0px)]' : ''}`}
@@ -201,7 +210,7 @@ export async function ImageDetail({
       {/* Full resolution is opt-in: the original only loads when the visitor
           clicks through. Hidden when there are no derivatives (the image above
           already is the original). */}
-      {img.derivatives && largestDerivativeUrl(img.derivatives) !== img.blobUrl ? (
+      {detailLargest && detailLargest !== img.blobUrl ? (
         <div className="-mt-4 text-center">
           <a
             href={img.blobUrl}

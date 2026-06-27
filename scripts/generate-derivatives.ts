@@ -21,7 +21,7 @@
  * Requires POSTGRES_URL and BLOB_READ_WRITE_TOKEN in the environment.
  */
 import { put } from '@vercel/blob';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, isNull } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db } from '../src/lib/db/client';
 import { images } from '../src/lib/db/schema';
@@ -97,28 +97,26 @@ async function processRow(row: {
 }
 
 async function main() {
+  // Filter in SQL so reruns and partial backfills don't pull (and hold in
+  // memory) every row only to skip most in JS. Without --force we only fetch
+  // rows that still need derivatives; with --force we reprocess everything.
   const rows = await db
     .select({
       id: images.id,
       slug: images.slug,
       blobUrl: images.blobUrl,
-      blobKey: images.blobKey,
-      derivatives: images.derivatives
+      blobKey: images.blobKey
     })
     .from(images)
+    .where(force ? undefined : isNull(images.derivatives))
     .orderBy(asc(images.id));
 
   let processed = 0;
-  let skipped = 0;
   let failed = 0;
   let written = 0;
 
   for (const row of rows) {
     if (processed >= limit) break;
-    if (!force && row.derivatives != null) {
-      skipped++;
-      continue;
-    }
     try {
       const n = await processRow(row);
       processed++;
@@ -130,9 +128,7 @@ async function main() {
     }
   }
 
-  console.log(
-    `done: ${processed} processed (${written} files), ${skipped} skipped, ${failed} failed`
-  );
+  console.log(`done: ${processed} processed (${written} files), ${failed} failed`);
 }
 
 main()
