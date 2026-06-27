@@ -20,7 +20,7 @@
  *
  * Requires POSTGRES_URL and BLOB_READ_WRITE_TOKEN in the environment.
  */
-import { put } from '@vercel/blob';
+import { del, put } from '@vercel/blob';
 import { asc, eq, isNull } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db } from '../src/lib/db/client';
@@ -96,6 +96,48 @@ async function processRow(row: {
   return derivatives.length;
 }
 
+// Blob-store host id from a public blob URL ("https://<id>.public.blob...").
+function storeIdFromUrl(url: string): string | null {
+  try {
+    return new URL(url).host.split('.')[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Fail fast on a misconfigured blob token. The common footgun is a
+// BLOB_READ_WRITE_TOKEN for a different store than the one hosting the
+// originals: every original reads fine (public URLs need no token) but every
+// put() fails with "This store does not exist", once per image. One test
+// write up front turns that into a single clear error. `sampleOriginalUrl`
+// lets the message name the store the originals actually live in.
+async function preflightBlobWrite(sampleOriginalUrl: string): Promise<void> {
+  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    throw new Error('BLOB_READ_WRITE_TOKEN is not set');
+  }
+  const probeKey = 'images/.derivatives-preflight';
+  try {
+    const blob = await put(probeKey, 'ok', {
+      access: 'public',
+      addRandomSuffix: false,
+      contentType: 'text/plain'
+    });
+    await del(blob.url).catch(() => {
+      // Best effort: the probe object is tiny; a failed cleanup isn't fatal.
+    });
+  } catch (err) {
+    const originStore = storeIdFromUrl(sampleOriginalUrl);
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `blob write preflight failed: ${detail}. ` +
+        `BLOB_READ_WRITE_TOKEN must be for the store hosting the originals` +
+        (originStore ? ` (store id "${originStore}")` : '') +
+        '. Pull it from the linked Vercel project (vercel env pull) or the' +
+        ' Blob store\'s tokens page.'
+    );
+  }
+}
+
 async function main() {
   // Filter in SQL so reruns and partial backfills don't pull (and hold in
   // memory) every row only to skip most in JS. Without --force we only fetch
@@ -110,6 +152,14 @@ async function main() {
     .from(images)
     .where(force ? undefined : isNull(images.derivatives))
     .orderBy(asc(images.id));
+
+  if (rows.length === 0) {
+    console.log('no images need derivatives');
+    return;
+  }
+
+  // Validate the blob token before churning through sharp on every row.
+  await preflightBlobWrite(rows[0].blobUrl);
 
   let processed = 0;
   let failed = 0;
