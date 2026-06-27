@@ -11,7 +11,10 @@
     "test": "bun test tests/",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:seed": "bun scripts/seed.ts"
+    "db:seed": "bun scripts/seed.ts",
+    "universe:bootstrap": "bun scripts/universe-bootstrap.ts",
+    "universe:rebuild": "bun scripts/universe-rebuild.ts",
+    "universe:verify": "bun scripts/verify-universe.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.35.0",
