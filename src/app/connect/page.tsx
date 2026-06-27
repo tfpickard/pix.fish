@@ -161,12 +161,22 @@ export default async function ConnectPage({ searchParams }: PageProps) {
   }
 
   // Resolve slugs (or fallback numeric IDs) to slim image records in parallel.
-  const [imgA, imgB, edgeCount, nsfwMode] = await Promise.all([
+  const [resolvedA, resolvedB, edgeCount, nsfwMode] = await Promise.all([
     resolveEndpoint(rawA),
     resolveEndpoint(rawB),
     countKnnEdges().catch(() => 0),
     readNsfwMode()
   ]);
+
+  // Gate each endpoint by the visitor's NSFW mode. resolveEndpoint accepts raw
+  // numeric ids, and the path edge loader only filters edge *destinations*, so
+  // without this a hidden image passed as an endpoint would leak its blobUrl --
+  // both via the form thumbnail and as Dijkstra's seed node in the path. Treat
+  // a hidden endpoint as simply "not found" from this visitor's perspective.
+  const endpointVisible = (img: SlimImage | null) =>
+    !!img && (nsfwMode === 'include' ? true : nsfwMode === 'only' ? img.isNsfw : !img.isNsfw);
+  const imgA = endpointVisible(resolvedA) ? resolvedA : null;
+  const imgB = endpointVisible(resolvedB) ? resolvedB : null;
 
   const hasValidParams = !!(imgA && imgB);
   const graphReady = edgeCount > 0;
