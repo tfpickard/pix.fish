@@ -99,6 +99,20 @@ export async function getEdgesForNode(nodeId: number): Promise<KnnNeighbor[]> {
   return rows.map((r) => ({ dstId: r.dstId, dist: r.dist }));
 }
 
+// All image<->image edges, as plain {src,dst,dist}. Used by the universe
+// community detection (districts) which treats the kNN graph as the world's
+// geometry. Scoped to src_type/dst_type='image' so any future lore edges never
+// leak into district clustering.
+export async function listAllImageEdges(): Promise<
+  { src: number; dst: number; dist: number }[]
+> {
+  const rows = await db
+    .select({ src: knnEdges.srcId, dst: knnEdges.dstId, dist: knnEdges.dist })
+    .from(knnEdges)
+    .where(and(eq(knnEdges.srcType, 'image'), eq(knnEdges.dstType, 'image')));
+  return rows.map((r) => ({ src: r.src, dst: r.dst, dist: r.dist }));
+}
+
 // Count of edges currently in the graph. Returned by the admin enqueue
 // route so the caller can confirm that a rebuild actually produced edges.
 export async function countKnnEdges(): Promise<number> {

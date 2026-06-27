@@ -31,7 +31,12 @@ export const PROMPT_KEYS = [
   // Kept in the DB so the owner can tune the generation voice without a
   // redeploy.
   'remix_idiom_gen',
-  'constraint_card_gen'
+  'constraint_card_gen',
+  // Universe (Phase U1) -- the clerk dossier template. Clerk voice/agenda and
+  // RAG context are injected at write time (see src/lib/universe/dossier.ts);
+  // kept in the DB so the institution's house style is tunable without a
+  // redeploy.
+  'dossier'
 ] as const;
 
 export type PromptKey = (typeof PROMPT_KEYS)[number];

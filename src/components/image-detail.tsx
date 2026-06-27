@@ -17,6 +17,13 @@ import { ProvenancePanel } from '@/components/provenance-panel';
 import { ReactionBar } from '@/components/reaction-bar';
 import { SaveToShelf } from '@/components/save-to-shelf';
 import { CommentList } from '@/components/comment-list';
+import { DossierPanel } from '@/components/dossier-panel';
+import { AmendmentHistory } from '@/components/amendment-history';
+import { getSpecimen } from '@/lib/db/queries/specimens';
+import { listLoreFragments } from '@/lib/db/queries/lore-fragments';
+import { listCrossReferences } from '@/lib/db/queries/cross-references';
+import { listClerks } from '@/lib/db/queries/clerks';
+import { getDistrict } from '@/lib/db/queries/districts';
 import { ReportButton } from '@/components/report-button';
 import { SurprisalReadout } from '@/components/surprisal-readout';
 import { JsonLd } from '@/components/json-ld';
@@ -161,6 +168,19 @@ export async function ImageDetail({
     getImageProvenance(img.id).catch(() => [])
   ]);
 
+  // Universe: the specimen's current case file + its amendment history, read
+  // from projections (never by replaying the event log at request time). All
+  // best-effort: an image with no dossier yet simply renders without these.
+  const [specimen, loreFragments, crossRefs, allClerks] = await Promise.all([
+    getSpecimen(img.id).catch(() => null),
+    listLoreFragments(img.id).catch(() => []),
+    listCrossReferences(img.id).catch(() => []),
+    listClerks().catch(() => [])
+  ]);
+  const clerksBySlug = new Map(allClerks.map((c) => [c.slug, c]));
+  const dossierClerk = specimen ? clerksBySlug.get(specimen.clerkSlug) ?? null : null;
+  const district = specimen ? await getDistrict(specimen.districtKey).catch(() => null) : null;
+
   const caption = pickOne(img.captions)?.text ?? '';
   const description = pickOne(img.descriptions)?.text ?? '';
   // Derive once: `srcSet` is null for an empty/absent derivative set (so we
@@ -296,6 +316,19 @@ export async function ImageDetail({
           }
         />
       </div>
+
+      {specimen ? (
+        <DossierPanel
+          specimen={specimen}
+          clerk={dossierClerk}
+          district={district}
+          crossRefs={crossRefs}
+        />
+      ) : null}
+
+      {loreFragments.length > 0 ? (
+        <AmendmentHistory fragments={loreFragments} clerksBySlug={clerksBySlug} />
+      ) : null}
 
       <ProvenancePanel entries={provenance} />
     </article>
