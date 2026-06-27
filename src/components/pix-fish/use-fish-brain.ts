@@ -385,10 +385,14 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
       const frameScale = clamp(dt / (1 / 60), 0.25, 4);
       const raw = lorenzStep(lorenzRef.current, LORENZ_SPEED * frameScale);
       lorenzRef.current = raw;
+      // Time-based EMA: SMOOTHING is the alpha per 60fps frame; scaling it by the
+      // same frameScale keeps the effective smoothing time-constant identical
+      // across refresh rates (a 120Hz display would otherwise smooth less).
+      const alpha = 1 - Math.pow(1 - SMOOTHING, frameScale);
       const sm = lorenzSmoothRef.current;
-      sm.x += SMOOTHING * (raw.x - sm.x);
-      sm.y += SMOOTHING * (raw.y - sm.y);
-      sm.z += SMOOTHING * (raw.z - sm.z);
+      sm.x += alpha * (raw.x - sm.x);
+      sm.y += alpha * (raw.y - sm.y);
+      sm.z += alpha * (raw.z - sm.z);
 
       const morph = deriveMorph(sm, NUM_FISH_VARIANTS);
       if (morphGroupRef.current) {

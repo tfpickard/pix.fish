@@ -35,19 +35,21 @@ export const SCALE_MAX = 1.15;
 
 // Squash/stretch magnitude. scaleX *= (1 + SQUASH_AMOUNT*a), scaleY *= (1 - ...),
 // so area is roughly preserved.
-export const SQUASH_AMOUNT = 0.18;
+export const SQUASH_AMOUNT = 0.3;
 
-// Subtle lean, in degrees.
-export const SKEW_AMOUNT = 6;
+// Lean, in degrees.
+export const SKEW_AMOUNT = 12;
 
 // Organic outline warp: the feDisplacementMap `scale`. Set to 0 to cleanly
 // disable the SVG filter entirely (pure squash/stretch fallback). The dorsal
-// notch is thin, so keep this modest; ~8 is a sane ceiling.
-export const WARP_AMOUNT = 4;
+// notch and tail are thin, so peaks above ~10 start to look spiky rather than
+// organic.
+export const WARP_AMOUNT = 9;
 
-// feTurbulence params for the warp filter. Low frequency => large, smooth lobes.
+// feTurbulence params for the warp filter. Higher frequency => more, smaller
+// wiggles that read as a deforming outline rather than a smooth bulge.
 export const WARP_FILTER_ID = 'pix-fish-warp';
-export const WARP_BASE_FREQUENCY = 0.018;
+export const WARP_BASE_FREQUENCY = 0.025;
 export const WARP_OCTAVES = 2;
 
 // Normalization ranges. The classic regime keeps z roughly in [Z_MIN, Z_MAX] and
@@ -56,6 +58,13 @@ export const WARP_OCTAVES = 2;
 const Z_MIN = 5;
 const Z_MAX = 45;
 const XY_RANGE = 20;
+
+// The orbital excursion |x| swings ~once per orbit between roughly these bounds
+// (the trajectory spirals around a lobe centered near |x| ~ 8.5). Mapping the
+// outline deformation through this band sweeps it nearly full-range every orbit,
+// lobe-independent, on a rhythm distinct from the z-driven size breath.
+const X_ABS_MIN = 2;
+const X_ABS_MAX = 14;
 
 // ---------------------------------------------------------------------------
 // Math
@@ -135,12 +144,20 @@ export interface MorphOutputs {
 export function deriveMorph(smoothed: LorenzState, variants: number): MorphOutputs {
   const size = lerp(SCALE_MIN, SCALE_MAX, norm01(smoothed.z, Z_MIN, Z_MAX));
   const a = norm11(smoothed.x, XY_RANGE);
+  // The outline deformation rides the orbital excursion |x|, which swings nearly
+  // full-range every orbit on a rhythm independent of the z size breath -- so the
+  // silhouette visibly morphs (through all variants) and the warp band breathes
+  // even while the size is steady. Size stays on z; squash/skew add signed
+  // asymmetry from x/y.
+  const shape = norm01(Math.abs(smoothed.x), X_ABS_MIN, X_ABS_MAX);
   return {
     scaleX: size * (1 + SQUASH_AMOUNT * a),
     scaleY: size * (1 - SQUASH_AMOUNT * a),
     skewDeg: SKEW_AMOUNT * norm11(smoothed.y, XY_RANGE),
-    warp: lerp(0, WARP_AMOUNT, norm01(smoothed.x, -XY_RANGE, XY_RANGE)),
-    morphProgress: norm01(smoothed.y, -XY_RANGE, XY_RANGE) * variants
+    warp: lerp(0, WARP_AMOUNT, shape),
+    // Keep strictly below `variants`: buildBodyPath wraps via `% n`, so exactly
+    // `variants` would snap to variant 0 instead of blending from the last one.
+    morphProgress: Math.min(shape * variants, variants - 1e-3)
   };
 }
 
