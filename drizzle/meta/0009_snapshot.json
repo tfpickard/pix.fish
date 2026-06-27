@@ -1,5 +1,5 @@
 {
-  "id": "92f5ef97-6d3d-4f32-8cad-1ca66de35d01",
+  "id": "cb1437b6-04d5-44bd-bc51-f7943969d826",
   "prevId": "ca6bede3-f2c1-4859-b4a4-e17508c865c3",
   "version": "7",
   "dialect": "postgresql",
@@ -1287,7 +1287,7 @@
       "checkConstraints": {
         "embeddings_subject_one_of": {
           "name": "embeddings_subject_one_of",
-          "value": "(image_id IS NOT NULL)::int + (lore_fragment_id IS NOT NULL)::int = 1"
+          "value": "(image_id IS NOT NULL AND lore_fragment_id IS NULL AND subject_type = 'image')\n        OR (image_id IS NULL AND lore_fragment_id IS NOT NULL AND subject_type = 'lore')"
         }
       },
       "isRLSEnabled": false

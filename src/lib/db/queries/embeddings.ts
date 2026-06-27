@@ -42,6 +42,9 @@ export async function upsertEmbedding(params: {
     .onConflictDoUpdate({
       target: [embeddings.imageId, embeddings.kind],
       set: {
+        // Re-assert subjectType on update so a row can never drift out of the
+        // image-only query filters (the CHECK also forbids a mismatch).
+        subjectType: 'image',
         vec: params.vec,
         provider: params.provider,
         model: params.model
@@ -75,6 +78,9 @@ export async function upsertLoreEmbedding(params: {
     .onConflictDoUpdate({
       target: [embeddings.loreFragmentId, embeddings.kind],
       set: {
+        // Re-assert subjectType on update so the lore-only query filters can
+        // never miss this row (the CHECK also forbids a mismatch).
+        subjectType: 'lore',
         vec: params.vec,
         provider: params.provider,
         model: params.model

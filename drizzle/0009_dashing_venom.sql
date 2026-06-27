@@ -81,4 +81,5 @@ CREATE UNIQUE INDEX "lore_fragments_event_uniq" ON "lore_fragments" USING btree 
 ALTER TABLE "embeddings" ADD CONSTRAINT "embeddings_lore_fragment_id_lore_fragments_id_fk" FOREIGN KEY ("lore_fragment_id") REFERENCES "public"."lore_fragments"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "embeddings_lore_kind_uniq" ON "embeddings" USING btree ("lore_fragment_id","kind");--> statement-breakpoint
 CREATE INDEX "embeddings_lore_fragment_id_idx" ON "embeddings" USING btree ("lore_fragment_id");--> statement-breakpoint
-ALTER TABLE "embeddings" ADD CONSTRAINT "embeddings_subject_one_of" CHECK ((image_id IS NOT NULL)::int + (lore_fragment_id IS NOT NULL)::int = 1);
+ALTER TABLE "embeddings" ADD CONSTRAINT "embeddings_subject_one_of" CHECK ((image_id IS NOT NULL AND lore_fragment_id IS NULL AND subject_type = 'image')
+        OR (image_id IS NULL AND lore_fragment_id IS NOT NULL AND subject_type = 'lore'));

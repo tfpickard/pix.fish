@@ -251,11 +251,15 @@ export const embeddings = pgTable(
     loreKindUniq: uniqueIndex('embeddings_lore_kind_uniq').on(t.loreFragmentId, t.kind),
     imageIdx: index('embeddings_image_id_idx').on(t.imageId),
     loreIdx: index('embeddings_lore_fragment_id_idx').on(t.loreFragmentId),
-    // Exactly one subject FK is set. NULLs are distinct in the unique indexes
-    // above, so this CHECK is what actually forbids a row with neither (or both).
+    // Exactly one subject FK is set AND subject_type agrees with it. NULLs are
+    // distinct in the unique indexes above, so this CHECK is what actually
+    // forbids a row with neither/both FKs, and it also rules out a semantically
+    // invalid row like subject_type='lore' with image_id set -- so the
+    // subject_type='image'/'lore' query filters can never miss a row.
     subjectOneOf: check(
       'embeddings_subject_one_of',
-      sql`(image_id IS NOT NULL)::int + (lore_fragment_id IS NOT NULL)::int = 1`
+      sql`(image_id IS NOT NULL AND lore_fragment_id IS NULL AND subject_type = 'image')
+        OR (image_id IS NULL AND lore_fragment_id IS NOT NULL AND subject_type = 'lore')`
     )
   })
 );
