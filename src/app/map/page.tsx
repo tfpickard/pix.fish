@@ -4,6 +4,7 @@ import { db } from '@/lib/db/client';
 import { images } from '@/lib/db/schema';
 import { latestProjection } from '@/lib/db/queries/umap';
 import { countCaptionEmbeddings } from '@/lib/db/queries/embeddings';
+import { loreSummaryByImageIds } from '@/lib/db/queries/lore-fragments';
 import { UmapCanvas } from '@/components/umap-canvas';
 
 export const dynamic = 'force-dynamic';
@@ -38,6 +39,10 @@ export default async function MapPage() {
           .from(images)
           .where(inArray(images.id, ids))
       : [];
+  // Universe lore overlay: fragment counts per pictured specimen (best-effort;
+  // empty before the universe layer is bootstrapped).
+  const loreMap = ids.length > 0 ? await loreSummaryByImageIds(ids).catch(() => new Map()) : new Map();
+  const lore = [...loreMap.values()];
   const stale = row ? row.pointCount < totalEmbedded : totalEmbedded > 0;
 
   return (
@@ -47,7 +52,7 @@ export default async function MapPage() {
         semantic cluster view. each dot is an image; position reflects caption-embedding
         similarity. projected via UMAP.
       </p>
-      <UmapCanvas points={points} images={metaRows} />
+      <UmapCanvas points={points} images={metaRows} lore={lore} />
       {row ? (
         <p className="font-mono text-xs text-ink-500">
           {row.pointCount} of {totalEmbedded} points

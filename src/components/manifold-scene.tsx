@@ -20,9 +20,15 @@ export type ManifoldImage = {
   surprisal: number | null;
 };
 
+// Per-specimen lore summary from the universe layer. Additive + optional: when
+// supplied and toggled on, lore-bearing points are warm-tinted and enlarged so
+// the thickest dossiers stand out in the cloud.
+export type ManifoldLore = { imageId: number; fragments: number };
+
 type Props = {
   points: ManifoldPoint[];
   images: ManifoldImage[];
+  lore?: ManifoldLore[];
 };
 
 // How many points around the camera we eagerly fetch thumbnails for.
@@ -72,11 +78,16 @@ function normalisePoints(raw: ManifoldPoint[]): ManifoldPoint[] {
 type SceneProps = Props & {
   onHover: (point: ManifoldPoint | null) => void;
   onClickPoint: (point: ManifoldPoint) => void;
+  showLore: boolean;
 };
 
-function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
+function ManifoldPoints({ points, images, lore, showLore, onHover, onClickPoint }: SceneProps) {
   const { camera } = useThree();
   const metaById = useMemo(() => new Map(images.map((im) => [im.id, im])), [images]);
+  const loreById = useMemo(
+    () => new Map((lore ?? []).map((l) => [l.imageId, l.fragments])),
+    [lore]
+  );
 
   // Build Float32Arrays once per points change. Three.js BufferGeometry expects
   // flat arrays; hit-testing uses the original `points` array by index.
@@ -93,17 +104,30 @@ function ManifoldPoints({ points, images, onHover, onClickPoint }: SceneProps) {
       pos[i * 3 + 1] = p.y;
       pos[i * 3 + 2] = p.z;
       const meta = metaById.get(p.imageId);
-      const [r, g, b] = meta?.palette?.[0] ? hexToRgb(meta.palette[0]) : ([0.38, 0.70, 0.93] as const);
-      col[i * 3] = r;
-      col[i * 3 + 1] = g;
-      col[i * 3 + 2] = b;
+      let [r, g, b] = meta?.palette?.[0] ? hexToRgb(meta.palette[0]) : ([0.38, 0.70, 0.93] as const);
       // With sizeAttenuation (300/-z) and camera at z=4, size 0.035 -> ~2.6px
       // and 0.11 -> ~8px. Surprisal null (unscored) uses 0.5 to blend in.
       const s = meta?.surprisal ?? 0.5;
-      sz[i] = 0.035 + s * 0.075; // 0.035 (cluster center) to 0.11 (max outlier)
+      let size = 0.035 + s * 0.075; // 0.035 (cluster center) to 0.11 (max outlier)
+
+      // Lore layer: warm-tint and enlarge specimens that carry a dossier, by
+      // how thick the file is. Blend toward amber so it reads as a distinct
+      // layer without a second draw pass.
+      const fragments = showLore ? loreById.get(p.imageId) ?? 0 : 0;
+      if (fragments > 0) {
+        const t = Math.min(1, 0.4 + fragments * 0.2); // blend strength
+        r = r * (1 - t) + 0.98 * t;
+        g = g * (1 - t) + 0.75 * t;
+        b = b * (1 - t) + 0.15 * t;
+        size += Math.min(0.05, fragments * 0.012);
+      }
+      col[i * 3] = r;
+      col[i * 3 + 1] = g;
+      col[i * 3 + 2] = b;
+      sz[i] = size;
     }
     return { positions: pos, colors: col, sizes: sz };
-  }, [points, metaById]);
+  }, [points, metaById, loreById, showLore]);
 
   // Raycaster for hover/click. We do it manually each frame rather than using
   // r3f's onPointerOver because BufferGeometry point hit-testing in r3f fires
@@ -269,8 +293,18 @@ type InnerProps = Props & {
   onClickPoint: (point: ManifoldPoint) => void;
   onThumbsUpdate: (m: Map<number, string>) => void;
   hoveredId: number | null;
+  showLore: boolean;
 };
-function SceneInner({ points, images, onHover, onClickPoint, onThumbsUpdate, hoveredId }: InnerProps) {
+function SceneInner({
+  points,
+  images,
+  lore,
+  showLore,
+  onHover,
+  onClickPoint,
+  onThumbsUpdate,
+  hoveredId
+}: InnerProps) {
   const thumbs = useNearbyThumbs(points, images, hoveredId);
   useEffect(() => {
     onThumbsUpdate(thumbs);
@@ -282,6 +316,8 @@ function SceneInner({ points, images, onHover, onClickPoint, onThumbsUpdate, hov
       <ManifoldPoints
         points={points}
         images={images}
+        lore={lore}
+        showLore={showLore}
         onHover={onHover}
         onClickPoint={onClickPoint}
       />
@@ -299,11 +335,13 @@ function SceneInner({ points, images, onHover, onClickPoint, onThumbsUpdate, hov
 
 // ----- public component (outer wrapper, no Canvas context) -----
 
-export function ManifoldScene({ points, images }: Props) {
+export function ManifoldScene({ points, images, lore }: Props) {
   const router = useRouter();
   const [hovered, setHovered] = useState<ManifoldPoint | null>(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
   const [thumbs, setThumbs] = useState<Map<number, string>>(new Map());
+  const [showLore, setShowLore] = useState(false);
+  const hasLore = (lore?.length ?? 0) > 0;
   const metaById = useMemo(() => new Map(images.map((im) => [im.id, im])), [images]);
 
   const handleHover = useCallback((pt: ManifoldPoint | null) => {
@@ -353,6 +391,8 @@ export function ManifoldScene({ points, images }: Props) {
         <SceneInner
           points={points}
           images={images}
+          lore={lore}
+          showLore={showLore}
           onHover={handleHover}
           onClickPoint={handleClick}
           onThumbsUpdate={handleThumbsUpdate}
@@ -396,8 +436,18 @@ export function ManifoldScene({ points, images }: Props) {
         </div>
       ) : null}
 
-      <div className="pointer-events-none absolute right-2 top-2 font-mono text-[10px] text-ink-500">
-        drag = orbit &middot; scroll = zoom &middot; click = open
+      <div className="absolute right-2 top-2 flex items-center gap-2 font-mono text-[10px] text-ink-500">
+        {hasLore ? (
+          <button
+            type="button"
+            onClick={() => setShowLore((v) => !v)}
+            aria-pressed={showLore}
+            className={`rounded border px-1.5 py-0.5 ${showLore ? 'border-amber-400/70 text-amber-300' : 'border-ink-800 bg-ink-950/80 hover:text-ink-200'}`}
+          >
+            lore
+          </button>
+        ) : null}
+        <span className="pointer-events-none">drag = orbit &middot; scroll = zoom &middot; click = open</span>
       </div>
     </div>
   );

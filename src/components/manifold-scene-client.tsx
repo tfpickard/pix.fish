@@ -6,7 +6,7 @@
 // they must originate from a 'use client' boundary.
 
 import dynamic from 'next/dynamic';
-import type { ManifoldPoint, ManifoldImage } from './manifold-scene';
+import type { ManifoldPoint, ManifoldImage, ManifoldLore } from './manifold-scene';
 
 const ManifoldScene = dynamic(
   () => import('./manifold-scene').then((m) => m.ManifoldScene),
@@ -23,8 +23,9 @@ const ManifoldScene = dynamic(
 type Props = {
   points: ManifoldPoint[];
   images: ManifoldImage[];
+  lore?: ManifoldLore[];
 };
 
-export function ManifoldSceneClient({ points, images }: Props) {
-  return <ManifoldScene points={points} images={images} />;
+export function ManifoldSceneClient({ points, images, lore }: Props) {
+  return <ManifoldScene points={points} images={images} lore={lore} />;
 }
