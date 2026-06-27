@@ -46,14 +46,28 @@ export async function GET(req: Request): Promise<NextResponse<PathResponse | { e
   }
 
   // Verify both images exist before running Dijkstra, so we return a clean
-  // 400 rather than a confusing no-path when the caller passes a bad id.
+  // 400 rather than a confusing no-path when the caller passes a bad id. Pull
+  // isNsfw too so we can gate the endpoints against the visitor's NSFW mode.
   const existCheck = await db
-    .select({ id: images.id })
+    .select({ id: images.id, isNsfw: images.isNsfw })
     .from(images)
     .where(inArray(images.id, [a, b]));
-  const existIds = new Set(existCheck.map((r) => r.id));
-  if (!existIds.has(a) || !existIds.has(b)) {
+  const existById = new Map(existCheck.map((r) => [r.id, r]));
+  if (!existById.has(a) || !existById.has(b)) {
     return NextResponse.json({ error: 'one or both image ids not found' }, { status: 400 });
+  }
+
+  // Gate BOTH endpoints by the visitor's NSFW mode. The edge loader only
+  // filters edge *destinations*, so a hidden image passed as the start node (a)
+  // would otherwise be expanded as Dijkstra's seed and ship its blobUrl to a
+  // hide-mode visitor. The a/b ids are enumerable, so that is a real
+  // content-gating bypass. Requiring both endpoints to be visible under the
+  // mode closes it (and is correct for 'only' mode, where SFW endpoints hide).
+  const nsfwMode = await resolveNsfwMode(searchParams.get('include_nsfw'));
+  const visibleUnderMode = (isNsfw: boolean) =>
+    nsfwMode === 'include' ? true : nsfwMode === 'only' ? isNsfw : !isNsfw;
+  if (!visibleUnderMode(existById.get(a)!.isNsfw) || !visibleUnderMode(existById.get(b)!.isNsfw)) {
+    return NextResponse.json({ found: false, reason: 'no-path' });
   }
 
   // Check both endpoints have a caption embedding before running Dijkstra.
@@ -65,12 +79,8 @@ export async function GET(req: Request): Promise<NextResponse<PathResponse | { e
     return NextResponse.json({ found: false, reason: 'missing-embedding' });
   }
 
-  // Apply the visitor's NSFW preference. Default-hide visitors must not see
-  // NSFW blob URLs in path nodes and must not have paths routed through hidden
-  // images. Passing a filtered edge loader to Dijkstra achieves both: NSFW
-  // nodes have no outgoing edges in the filtered view, so they are never
-  // expanded during search and never appear in the reconstructed path.
-  const nsfwMode = await resolveNsfwMode(searchParams.get('include_nsfw'));
+  // The filtered edge loader keeps intermediate nodes in-scope; combined with
+  // the endpoint gate above, no hidden image can appear in the path.
   const edgeLoader =
     nsfwMode === 'only' ? getEdgesForNodesNsfwOnly :
     nsfwMode === 'include' ? getEdgesForNodes :
@@ -89,7 +99,7 @@ export async function GET(req: Request): Promise<NextResponse<PathResponse | { e
 
   const [imageRows, captionRows] = await Promise.all([
     db
-      .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl, ownerId: images.ownerId })
+      .select({ id: images.id, slug: images.slug, blobUrl: images.blobUrl, ownerId: images.ownerId, isNsfw: images.isNsfw })
       .from(images)
       .where(inArray(images.id, pathIds)),
     db
@@ -98,6 +108,15 @@ export async function GET(req: Request): Promise<NextResponse<PathResponse | { e
       .where(inArray(captions.imageId, pathIds))
       .orderBy(asc(captions.imageId), asc(captions.variant))
   ]);
+
+  // Defense in depth: if any node on the reconstructed path is not visible
+  // under the visitor's NSFW mode, refuse the whole path rather than ship even
+  // one hidden blobUrl. The endpoint gate + filtered loader should already
+  // guarantee this, so it makes the privacy property independent of the
+  // loader's internals instead of merely a comment that asserts it.
+  if (imageRows.some((r) => !visibleUnderMode(r.isNsfw))) {
+    return NextResponse.json({ found: false, reason: 'no-path' });
+  }
 
   // Collect unique ownerIds to fetch handles in one query.
   const ownerIds = [...new Set(imageRows.map((r) => r.ownerId))];
