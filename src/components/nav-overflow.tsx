@@ -69,8 +69,12 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
     <>
       {/* Inline at md+: same flat row as before. */}
       <nav className="hidden items-center gap-4 font-mono text-xs text-ink-400 md:flex">
+        {/* prefetch={false}: these targets are `force-dynamic`, so the whole
+            row sitting in the viewport at the top of every page would otherwise
+            re-prefetch on a loop under Next 14.2's `staleTimes.dynamic: 0`
+            default -- that was the `--` GET / request storm. See nav-bar.tsx. */}
         {items.map((it) => (
-          <Link key={it.href} href={it.href} className="transition-colors hover:text-ink-100">
+          <Link key={it.href} href={it.href} prefetch={false} className="transition-colors hover:text-ink-100">
             {it.label}
           </Link>
         ))}
@@ -107,6 +111,7 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
               <li key={it.href}>
                 <Link
                   href={it.href}
+                  prefetch={false}
                   onClick={() => setOpen(false)}
                   className="block py-1 hover:text-ink-100"
                 >
