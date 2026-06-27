@@ -15,7 +15,6 @@ import type { PathNode } from '@/lib/knn-path-types';
 
 type Props = {
   dailyNumber: number;
-  dateStr: string;
   aId: number;
   bId: number;
   par: number;
@@ -65,6 +64,11 @@ export function DailyGame({
   const [streak, setStreak] = useState<number | null>(null);
   const [solvedToday, setSolvedToday] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareFailed, setShareFailed] = useState(false);
+  // Origin for the shareable link. Falls back to the canonical domain during
+  // SSR / before mount, then matches the actual environment (preview, self-
+  // host) on the client so a copied link points where the player is playing.
+  const [origin, setOrigin] = useState('https://pix.fish');
 
   const moves = feedback.length;
   const lastFb = feedback.length ? feedback[feedback.length - 1]! : null;
@@ -75,6 +79,11 @@ export function DailyGame({
     setStreak(s.streak ?? 0);
     if (s.results?.[dailyNumber] != null) setSolvedToday(true);
   }, [dailyNumber]);
+
+  // Pick up the real origin on the client.
+  useEffect(() => {
+    setOrigin(window.location.origin);
+  }, []);
 
   const target = nodes[bId];
   const cur = nodes[current];
@@ -142,21 +151,25 @@ export function DailyGame({
     setWon(false);
     setGaveUp(false);
     setCopied(false);
+    setShareFailed(false);
   }, [aId]);
 
   const shareText = useMemo(() => {
     const grid = feedback.map(fbEmoji).join('');
     const line = won ? `${moves} moves · par ${par}` : `gave up · par ${par}`;
-    return `the daily #${dailyNumber}\n${line}\n${grid}${won ? '\u{1F3AF}' : ''}\nhttps://pix.fish/daily`;
-  }, [feedback, won, moves, par, dailyNumber]);
+    return `the daily #${dailyNumber}\n${line}\n${grid}${won ? '\u{1F3AF}' : ''}\n${origin}/daily`;
+  }, [feedback, won, moves, par, dailyNumber, origin]);
 
   const share = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(shareText);
       setCopied(true);
+      setShareFailed(false);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      /* clipboard blocked -- the text is shown below for manual copy */
+      // Clipboard blocked/denied (insecure context, permissions): reveal the
+      // text so the player can still select and copy it by hand.
+      setShareFailed(true);
     }
   }, [shareText]);
 
@@ -347,6 +360,18 @@ export function DailyGame({
                 <span className="font-mono text-[11px] text-primary">{'\u{1F525}'} {streak} day streak</span>
               ) : null}
             </div>
+            {shareFailed ? (
+              <div className="mt-3 space-y-1">
+                <p className="font-mono text-[10px] text-ink-500">copy didn&rsquo;t work -- select and copy this:</p>
+                <textarea
+                  readOnly
+                  value={shareText}
+                  rows={4}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="w-full resize-none rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[11px] text-ink-300"
+                />
+              </div>
+            ) : null}
           </div>
 
           {/* Cinematic replay of the optimal A->B path. */}

@@ -70,7 +70,6 @@ export default async function DailyPage() {
   return (
     <DailyGame
       dailyNumber={num}
-      dateStr={dateStr}
       aId={pick.a}
       bId={pick.b}
       par={pick.par}
