@@ -70,13 +70,18 @@ export function JourneyPlayer({ path, totalDist }: Props) {
   const prev = useCallback(() => setCurrent((c) => Math.max(c - 1, 0)), []);
 
   // Lock body scroll while the overlay owns the screen; focus it for keys.
+  // Remember what had focus (the launch button) so we can hand it back on
+  // close -- otherwise keyboard / screen-reader users land at the top of the
+  // tab order instead of where they left off.
   useEffect(() => {
     if (!open) return;
+    const launcher = document.activeElement as HTMLElement | null;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     overlayRef.current?.focus();
     return () => {
       document.body.style.overflow = prevOverflow;
+      launcher?.focus?.();
     };
   }, [open]);
 
@@ -144,6 +149,12 @@ export function JourneyPlayer({ path, totalDist }: Props) {
               is a transform transition that retriggers when current changes. */}
           <div className="relative flex-1 overflow-hidden">
             {path.map((n, idx) => {
+              // Only mount a small window around the current stop. findPath()
+              // has no max length, and each stop is two full-res <img>s, so
+              // mounting the whole path could fire dozens of simultaneous
+              // downloads/decodes. current-1 keeps the outgoing layer alive for
+              // the crossfade; current+1 preloads the next so the fade is ready.
+              if (Math.abs(idx - current) > 1) return null;
               const isCurrent = idx === current;
               const kb = KENBURNS[idx % KENBURNS.length]!;
               return (
