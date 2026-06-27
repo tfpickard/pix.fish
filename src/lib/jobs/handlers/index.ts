@@ -9,6 +9,9 @@ import { entropyRecomputeHandler } from './entropyRecompute';
 import { nsfwScanHandler } from './nsfwScan';
 import { knnRebuildHandler } from './knnRebuild';
 import { manifoldRecomputeHandler } from './manifoldRecompute';
+import { universeTickHandler } from './universeTick';
+import { universeAmendHandler } from './universeAmend';
+import { universeRippleHandler } from './universeRipple';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -41,5 +44,11 @@ export const handlers: Record<string, JobHandler> = {
   'nsfw.scan': nsfwScanHandler,
   // feat/geodesics: build kNN graph over caption embeddings -> knn_edges
   'knn.rebuild': knnRebuildHandler,
-  'manifold.recompute': manifoldRecomputeHandler
+  'manifold.recompute': manifoldRecomputeHandler,
+  // Universe (Phase U2) evolution loop: tick selects salient specimens and
+  // enqueues amendments; amend generates one clerk amendment; ripple nudges a
+  // bounded set of neighbours.
+  'universe.tick': universeTickHandler,
+  'universe.amend': universeAmendHandler,
+  'universe.ripple': universeRippleHandler
 };
