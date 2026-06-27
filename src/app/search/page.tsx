@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { getEmbedder, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { searchByVector } from '@/lib/db/queries/embeddings';
@@ -7,6 +8,7 @@ import {
   getGalleryDefaults
 } from '@/lib/db/queries/gallery-config';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
+import { tagCloud } from '@/lib/db/queries/tags';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { readNsfwMode } from '@/lib/nsfw';
 import { ImageGrid } from '@/components/image-grid';
@@ -34,10 +36,32 @@ export default async function SearchPage({ searchParams }: PageProps) {
   const q = (rawQ ?? '').trim();
 
   if (!q) {
+    // Cold start: a blank box gives a first-timer nothing to grab onto and no
+    // hint that this search reads meaning, not keywords. Surface live popular
+    // tags as one-click semantic queries so the page demonstrates itself.
+    // Best-effort -- a DB hiccup just falls back to the bare prompt.
+    let suggestions: string[] = [];
+    try {
+      suggestions = (await tagCloud(14)).map((t) => t.tag);
+    } catch {
+      suggestions = [];
+    }
     return (
       <div className="space-y-6 pt-8">
         <h1 className="font-fungal-lite text-3xl text-ink-100">search</h1>
         <p className="font-mono text-xs text-ink-500">enter a query above to search semantically.</p>
+        {suggestions.length > 0 ? (
+          <div className="space-y-2">
+            <p className="font-mono text-xs text-ink-500">or start from one of these:</p>
+            <div className="flex flex-wrap gap-1">
+              {suggestions.map((tag) => (
+                <Link key={tag} href={`/search?q=${encodeURIComponent(tag)}`} className="chip">
+                  {tag}
+                </Link>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   }
