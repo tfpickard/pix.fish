@@ -1,6 +1,9 @@
 import { relations, sql } from 'drizzle-orm';
 import {
+  bigint,
+  bigserial,
   boolean,
+  check,
   doublePrecision,
   integer,
   jsonb,
@@ -213,18 +216,30 @@ export const providerKeys = pgTable(
 // Phase 2 tables
 // ----------------------------------------------------------------------------
 
-// Embeddings live in pgvector. Phase 2 writes only `kind='caption'` (text
+// Embeddings live in pgvector. Phase 2 writes `kind='caption'` for images (text
 // embedding of the slug-source caption via OpenAI text-embedding-3-small, 1536
 // dims). `image` and `combined` kinds are reserved for later phases that add
-// CLIP or multimodal models. Unique on (image_id, kind) so reprocessing
-// overwrites cleanly via onConflictDoUpdate.
+// CLIP or multimodal models.
+//
+// Universe (Phase U1) generalizes this into a node-type-aware store: a row
+// belongs to exactly one subject -- an image (`subject_type='image'`,
+// `image_id` set) or a lore fragment (`subject_type='lore'`,
+// `lore_fragment_id` set). This lets clerk-authored dossiers co-locate in the
+// same vector space as the images and become searchable through the same
+// pgvector path, without forking a parallel embedding store. The CHECK keeps
+// exactly one subject FK populated; the two unique indexes keep reprocessing
+// idempotent per subject via onConflictDoUpdate.
 export const embeddings = pgTable(
   'embeddings',
   {
     id: serial('id').primaryKey(),
-    imageId: integer('image_id')
-      .notNull()
-      .references(() => images.id, { onDelete: 'cascade' }),
+    // Nullable now that a row may instead point at a lore fragment. Existing
+    // image rows keep image_id set and back-fill subject_type='image'.
+    imageId: integer('image_id').references(() => images.id, { onDelete: 'cascade' }),
+    loreFragmentId: integer('lore_fragment_id').references(() => loreFragments.id, {
+      onDelete: 'cascade'
+    }),
+    subjectType: text('subject_type').notNull().default('image'), // 'image' | 'lore'
     kind: text('kind').notNull(), // 'image' | 'caption' | 'combined'
     provider: text('provider'),
     model: text('model'),
@@ -233,7 +248,15 @@ export const embeddings = pgTable(
   },
   (t) => ({
     imageKindUniq: uniqueIndex('embeddings_image_kind_uniq').on(t.imageId, t.kind),
-    imageIdx: index('embeddings_image_id_idx').on(t.imageId)
+    loreKindUniq: uniqueIndex('embeddings_lore_kind_uniq').on(t.loreFragmentId, t.kind),
+    imageIdx: index('embeddings_image_id_idx').on(t.imageId),
+    loreIdx: index('embeddings_lore_fragment_id_idx').on(t.loreFragmentId),
+    // Exactly one subject FK is set. NULLs are distinct in the unique indexes
+    // above, so this CHECK is what actually forbids a row with neither (or both).
+    subjectOneOf: check(
+      'embeddings_subject_one_of',
+      sql`(image_id IS NOT NULL)::int + (lore_fragment_id IS NOT NULL)::int = 1`
+    )
   })
 );
 
@@ -712,6 +735,14 @@ export const manifoldProjections = pgTable(
 
 // feat/geodesics: kNN graph over caption embeddings. One row per directed edge;
 // dist is the cosine-distance weight. Unique on (src,dst) so rebuilds upsert.
+//
+// Universe (Phase U1) adds src_type/dst_type as a forward-compatible seam so
+// the graph can hold lore<->image / lore<->lore edges in Phase 2 (the ripple
+// loop). Both default to 'image', so every existing row and every existing
+// image-only caller (findPath, getEdgesForNodes*, /api/path, /connect) keeps
+// behaving exactly as before. The image FK on src_id/dst_id is intentionally
+// retained for Phase 1 -- relaxing it for a polymorphic id space is Phase 2
+// work and is not needed until lore edges are actually written.
 export const knnEdges = pgTable(
   'knn_edges',
   {
@@ -722,6 +753,8 @@ export const knnEdges = pgTable(
     dstId: integer('dst_id')
       .notNull()
       .references(() => images.id, { onDelete: 'cascade' }),
+    srcType: text('src_type').notNull().default('image'), // 'image' | 'lore'
+    dstType: text('dst_type').notNull().default('image'), // 'image' | 'lore'
     dist: real('dist').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
@@ -742,6 +775,143 @@ export const imageAttention = pgTable('image_attention', {
 });
 
 // === end Gate-0 contract tables ============================================
+
+// ----------------------------------------------------------------------------
+// Universe (Phase U1): event-sourced canon + projections
+// ----------------------------------------------------------------------------
+//
+// The institution from /about, made to do its job. `events` is the single
+// append-only source of truth: rows are only ever inserted, never updated or
+// deleted (never-delete is both the fiction and the architecture). Everything
+// below `events` is a projection -- a derived cache that is fully rebuildable
+// by replaying the log in id order (see scripts/universe-rebuild.ts). The
+// reducers live in src/lib/universe/reduce.ts.
+//
+// Idempotency rests entirely on `dedupe_key`: the bootstrap script refuses to
+// file an event whose key already exists, so re-running it adds nothing.
+
+// Append-only canon. `payload` carries the event-type-specific body (including
+// the dossier text and -- for specimen.intake -- the caption embedding vector,
+// so a rebuild can re-populate the embeddings table without any API calls).
+// `citations` is the list of sources the authoring clerk cited.
+export const events = pgTable(
+  'events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    type: text('type').notNull(), // 'clerk.commissioned' | 'district.intake' | 'specimen.intake' | 'cross_reference.filed' | (Phase 2: 'dossier.amendment' | 'audit.flagged' | ...)
+    subjectType: text('subject_type').notNull(), // 'clerk' | 'district' | 'specimen' | 'cross_reference'
+    subjectId: text('subject_id').notNull(), // stable string id of the subject (image id, district key, clerk slug, ...)
+    authorClerk: text('author_clerk'), // clerk slug who authored; null for system/seed events
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    citations: jsonb('citations').$type<unknown[]>().notNull().default([]),
+    dedupeKey: text('dedupe_key'), // idempotency guard, e.g. 'specimen.intake:<imageId>'
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    subjectIdx: index('events_subject_idx').on(t.subjectType, t.subjectId),
+    typeIdx: index('events_type_idx').on(t.type),
+    dedupeUniq: uniqueIndex('events_dedupe_key_uniq').on(t.dedupeKey)
+  })
+);
+
+// PROJECTION. The clerk roster. Seeded as data via clerk.commissioned events
+// (so it is rebuildable from the log). Voice + agenda are injected into the
+// generation prompt at write time; nothing about a clerk is hardcoded in app
+// logic. Agendas are written to conflict, so different clerks disagree.
+export const clerks = pgTable('clerks', {
+  slug: text('slug').primaryKey(),
+  name: text('name').notNull(),
+  department: text('department').notNull(),
+  voice: text('voice').notNull(),
+  agenda: text('agenda').notNull(),
+  commissionedAt: timestamp('commissioned_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// PROJECTION. Districts derived from the caption-embedding geometry (community
+// detection over the kNN graph). `character` is synthesized from the captions
+// nearest the cluster. `memberImageIds` records membership at intake; the
+// district a specimen was filed under is immutable.
+export const districts = pgTable('districts', {
+  key: text('key').primaryKey(), // stable cluster key, e.g. 'district-3'
+  name: text('name').notNull(),
+  character: text('character').notNull(),
+  size: integer('size').notNull().default(0),
+  memberImageIds: jsonb('member_image_ids').$type<number[]>().notNull().default([]),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// PROJECTION. One specimen per image. `currentDossier` is the latest case-file
+// text; `districtKey` is the district-at-intake (immutable). `generation`
+// increments as Phase 2 amendments land. Read by the detail page; never
+// reconstructed by replaying the log at request time.
+export const specimens = pgTable('specimens', {
+  imageId: integer('image_id')
+    .primaryKey()
+    .references(() => images.id, { onDelete: 'cascade' }),
+  clerkSlug: text('clerk_slug').notNull(),
+  districtKey: text('district_key').notNull(),
+  currentDossier: text('current_dossier').notNull(),
+  citations: jsonb('citations').$type<unknown[]>().notNull().default([]),
+  intakeEventId: bigint('intake_event_id', { mode: 'number' }).notNull(),
+  generation: integer('generation').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// PROJECTION. Directed cross-references between specimens, materialized from
+// cross_reference.filed events (which were derived from the image kNN graph at
+// intake). Distinct from knn_edges: this is the canon's record of which
+// specimens the archive has formally linked.
+export const crossReferences = pgTable(
+  'cross_references',
+  {
+    id: serial('id').primaryKey(),
+    srcImageId: integer('src_image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    dstImageId: integer('dst_image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    dist: real('dist'),
+    kind: text('kind').notNull().default('knn'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    srcIdx: index('cross_references_src_idx').on(t.srcImageId),
+    srcDstKindUniq: uniqueIndex('cross_references_src_dst_kind_uniq').on(
+      t.srcImageId,
+      t.dstImageId,
+      t.kind
+    )
+  })
+);
+
+// PROJECTION. The individual signed fragments that make up dossiers. One row
+// per filed fragment (Phase 1 files one 'intake' fragment per specimen; Phase
+// 2 amendments append more, never replacing). Each fragment is embedded (a
+// matching embeddings row with subject_type='lore') and carries coords
+// inherited from its parent image's latest UMAP/manifold projection.
+export const loreFragments = pgTable(
+  'lore_fragments',
+  {
+    id: serial('id').primaryKey(),
+    specimenImageId: integer('specimen_image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    eventId: bigint('event_id', { mode: 'number' }).notNull(),
+    clerkSlug: text('clerk_slug').notNull(),
+    kind: text('kind').notNull().default('intake'), // 'intake' | 'amendment'
+    body: text('body').notNull(),
+    sources: jsonb('sources').$type<unknown[]>().notNull().default([]),
+    x: real('x'),
+    y: real('y'),
+    z: real('z'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    specimenIdx: index('lore_fragments_specimen_idx').on(t.specimenImageId, t.createdAt),
+    eventUniq: uniqueIndex('lore_fragments_event_uniq').on(t.eventId)
+  })
+);
 
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
@@ -857,3 +1027,16 @@ export type RemixIdiom = typeof remixIdioms.$inferSelect;
 export type NewRemixIdiom = typeof remixIdioms.$inferInsert;
 export type ImageLineageEdge = typeof imageLineage.$inferSelect;
 export type NewImageLineageEdge = typeof imageLineage.$inferInsert;
+// Universe (Phase U1) types
+export type UniverseEvent = typeof events.$inferSelect;
+export type NewUniverseEvent = typeof events.$inferInsert;
+export type Clerk = typeof clerks.$inferSelect;
+export type NewClerk = typeof clerks.$inferInsert;
+export type District = typeof districts.$inferSelect;
+export type NewDistrict = typeof districts.$inferInsert;
+export type Specimen = typeof specimens.$inferSelect;
+export type NewSpecimen = typeof specimens.$inferInsert;
+export type CrossReference = typeof crossReferences.$inferSelect;
+export type NewCrossReference = typeof crossReferences.$inferInsert;
+export type LoreFragment = typeof loreFragments.$inferSelect;
+export type NewLoreFragment = typeof loreFragments.$inferInsert;
