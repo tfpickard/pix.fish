@@ -2,6 +2,7 @@ import type { Job } from '@/lib/db/schema';
 import { webhookDeliverHandler } from './webhookDeliver';
 import { reprocessImageHandler } from './reprocessImage';
 import { enrichImageHandler } from './enrichImage';
+import { deriveImageHandler } from './deriveImage';
 import { umapRecomputeHandler } from './umapRecompute';
 import { backupExportHandler } from './backupExport';
 import { entropyRecomputeHandler } from './entropyRecompute';
@@ -31,6 +32,9 @@ export const handlers: Record<string, JobHandler> = {
   'webhook.deliver': webhookDeliverHandler,
   'reprocess.image': reprocessImageHandler,
   'enrich.image': enrichImageHandler,
+  // Generate WebP derivatives for a newly enriched image (enqueued by
+  // enrich.image) so new uploads get small tiles without a manual backfill.
+  'derive.image': deriveImageHandler,
   'umap.recompute': umapRecomputeHandler,
   'backup.export': backupExportHandler,
   'entropy.recompute': entropyRecomputeHandler,

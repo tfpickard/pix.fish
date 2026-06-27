@@ -6,6 +6,7 @@ import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { enrichImage } from '@/lib/enrichment';
 import { persistEnrichment } from '@/lib/enrichment-persist';
+import { enqueueJob } from '@/lib/db/queries/jobs';
 
 // Providers prefer the blob URL; pass an empty buffer to avoid round-tripping
 // the original file through Postgres just to hand it back out to Anthropic.
@@ -63,4 +64,15 @@ export async function enrichImageHandler(job: Job): Promise<void> {
     cfg,
     userKeys
   });
+
+  // Generate WebP derivatives in a separate job rather than inline: the sharp
+  // resize + 4 blob uploads would eat into this handler's timeout (already 50s
+  // for 3 vision calls), and the captions-exist guard above would skip them on
+  // a retry. Best-effort -- a failed enqueue must not fail the enrichment that
+  // already committed.
+  try {
+    await enqueueJob({ type: 'derive.image', payload: { imageId: img.id }, maxAttempts: 3 });
+  } catch (err) {
+    console.error('enrichImage: failed to enqueue derive.image for', img.id, err);
+  }
 }
