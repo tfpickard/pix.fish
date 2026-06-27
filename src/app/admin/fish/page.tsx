@@ -16,18 +16,33 @@ export default function AdminFishPage() {
   const [config, setConfig] = useState<FishMorphConfig>(DEFAULT_FISH_MORPH_CONFIG);
   const [loading, setLoading] = useState(true);
   const [dirty, setDirty] = useState(false);
-  const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle');
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  // Turn a non-OK response into an accurate message: 403 is the only "not an
+  // admin" case; anything else (e.g. a 503 when the fish_config table is
+  // missing) carries the server's own explanation.
+  async function messageFor(res: Response): Promise<string> {
+    if (res.status === 403) return 'not authorized -- are you a site admin?';
+    const body = await res.json().catch(() => null);
+    return body?.error ?? `request failed (${res.status})`;
+  }
 
   useEffect(() => {
     fetch('/api/admin/fish-config')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-      .then((data) => {
+      .then(async (r) => {
+        if (!r.ok) {
+          setError(await messageFor(r));
+          setLoading(false);
+          return;
+        }
+        const data = await r.json();
         if (data?.config) setConfig({ ...DEFAULT_FISH_MORPH_CONFIG, ...data.config });
         setLoading(false);
       })
       .catch(() => {
-        setStatus('error');
+        setError('could not reach the server');
         setLoading(false);
       });
   }, []);
@@ -35,7 +50,8 @@ export default function AdminFishPage() {
   function set(key: keyof FishMorphConfig, value: number) {
     setConfig((c) => ({ ...c, [key]: value }));
     setDirty(true);
-    setStatus('idle');
+    setSaved(false);
+    setError(null);
   }
 
   function save() {
@@ -49,10 +65,11 @@ export default function AdminFishPage() {
         const data = await res.json();
         if (data?.config) setConfig({ ...DEFAULT_FISH_MORPH_CONFIG, ...data.config });
         setDirty(false);
-        setStatus('saved');
-        setTimeout(() => setStatus('idle'), 2000);
+        setError(null);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
       } else {
-        setStatus('error');
+        setError(await messageFor(res));
       }
     });
   }
@@ -120,17 +137,16 @@ export default function AdminFishPage() {
               onClick={() => {
                 setConfig(DEFAULT_FISH_MORPH_CONFIG);
                 setDirty(true);
-                setStatus('idle');
+                setSaved(false);
+                setError(null);
               }}
               disabled={isPending}
               className="rounded border border-ink-800 px-4 py-1.5 font-mono text-xs text-ink-400 hover:text-ink-100 disabled:opacity-50"
             >
               reset to defaults
             </button>
-            {status === 'saved' && <span className="font-mono text-xs text-primary">saved</span>}
-            {status === 'error' && (
-              <span className="font-mono text-xs text-red-400">error -- are you an admin?</span>
-            )}
+            {saved && <span className="font-mono text-xs text-primary">saved</span>}
+            {error && <span className="font-mono text-xs text-red-400">{error}</span>}
           </div>
         </div>
       )}

@@ -38,7 +38,17 @@ export async function PUT(req: Request) {
     if (incoming === undefined) continue;
     fields[spec.field] = String(clampParam(spec, incoming));
   }
-  await setFishConfigFields(fields);
+
+  try {
+    await setFishConfigFields(fields);
+  } catch {
+    // The likeliest cause is a missing fish_config table (migration 0007 not
+    // applied to this database). Reads fall back to defaults, but writes can't.
+    return NextResponse.json(
+      { error: 'could not save -- the fish_config table is missing; apply the latest db migration' },
+      { status: 503 }
+    );
+  }
 
   const config = await getFishMorphConfig();
   return NextResponse.json({ config });
