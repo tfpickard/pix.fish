@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { pickHideTarget, pickPerchTarget } from './dom-targets';
 import { NUM_FISH_VARIANTS } from './fish-sprite';
 import type { EyeState, MouthState } from './fish-sprite';
+import { deriveMorph, lorenzStep, morphTransform, seedLorenz, type LorenzState } from './lorenz';
+import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/config';
 
 // The brain. A single requestAnimationFrame loop drives a probabilistic
 // state machine. Position, velocity, and time are kept in refs so the RAF
@@ -104,15 +106,23 @@ function clamp(v: number, lo: number, hi: number): number {
 
 interface BrainOptions {
   paused: boolean;
+  // Live morph tunables (from /admin/fish). Read through a ref in the rAF loop
+  // so edits take effect without restarting the loop.
+  config?: FishMorphConfig;
 }
 
 interface BrainAPI {
   state: FishBrainState;
   setContainerRef: (el: HTMLDivElement | null) => void;
+  setMorphGroupRef: (el: SVGGElement | null) => void;
+  setWarpRef: (el: SVGFEDisplacementMapElement | null) => void;
   startle: (clickX: number, clickY: number) => void;
 }
 
-export function useFishBrain({ paused }: BrainOptions): BrainAPI {
+export function useFishBrain({
+  paused,
+  config = DEFAULT_FISH_MORPH_CONFIG
+}: BrainOptions): BrainAPI {
   const [state, setState] = useState<FishBrainState>({
     behavior: 'wandering',
     eyeState: 'open',
@@ -133,6 +143,10 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
   reducedMotionRef.current = reducedMotion;
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  // Live config read inside the rAF loop. A ref (not a tick dep) so admin edits
+  // apply on the next frame without re-keying the animation effect.
+  const configRef = useRef(config);
+  configRef.current = config;
 
   const posRef = useRef({ x: 80, y: 80 });
   const targetRef = useRef({ x: 80, y: 80 });
@@ -148,6 +162,23 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
   // to ~16fps so React doesn't rerender every frame.
   const morphProgressRef = useRef(0);
   const lastMorphUpdateRef = useRef(0);
+
+  // Lorenz attractor driving shape + size. The raw state is integrated each
+  // frame; lorenzSmoothRef is its per-dimension EMA so every mapped output
+  // transitions silkily. The two SVG nodes are mutated imperatively (no
+  // re-render): the inner <g> gets the scale/squash/skew transform, and the
+  // feDisplacementMap gets the warp `scale`.
+  const lorenzRef = useRef<LorenzState>(seedLorenz());
+  const lorenzSmoothRef = useRef<LorenzState>(seedLorenz());
+  const morphGroupRef = useRef<SVGGElement | null>(null);
+  const warpRef = useRef<SVGFEDisplacementMapElement | null>(null);
+
+  // resetMorph -- pin the morph at neutral (scale 1, no warp). Used for
+  // prefers-reduced-motion and to seed nodes the moment they attach.
+  const resetMorph = useCallback(() => {
+    if (morphGroupRef.current) morphGroupRef.current.removeAttribute('transform');
+    if (warpRef.current) warpRef.current.setAttribute('scale', '0');
+  }, []);
 
   // commitTransform -- writes position + facing-driven z-index hints to the
   // DOM without rerendering React.
@@ -349,13 +380,35 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
 
       commitTransform();
 
-      // Morph advance -- rate scales with speed so the fish morphs faster
-      // when darting (startled) and barely at all when napping.
-      // Range: ~0.08/s (nap) to ~1.2/s (startled). One full 5-variant cycle
-      // takes ~12s wandering, ~60s napping.
-      const morphRate = Math.max(0.08, speedRef.current * 0.005);
-      morphProgressRef.current =
-        (morphProgressRef.current + morphRate * dt) % NUM_FISH_VARIANTS;
+      // Advance the Lorenz attractor and drive the fish's shape + size from it.
+      // The step is scaled by the real frame dt (normalized to 60fps and
+      // clamped) so the morph runs at the same pace on high-refresh displays and
+      // RK4 stays stable after a background-tab dt spike.
+      const cfg = configRef.current;
+      const frameScale = clamp(dt / (1 / 60), 0.25, 4);
+      const raw = lorenzStep(lorenzRef.current, cfg.lorenzSpeed * frameScale);
+      lorenzRef.current = raw;
+      // Time-based EMA: cfg.smoothing is the alpha per 60fps frame; scaling it by
+      // the same frameScale keeps the effective smoothing time-constant identical
+      // across refresh rates (a 120Hz display would otherwise smooth less).
+      const alpha = 1 - Math.pow(1 - cfg.smoothing, frameScale);
+      const sm = lorenzSmoothRef.current;
+      sm.x += alpha * (raw.x - sm.x);
+      sm.y += alpha * (raw.y - sm.y);
+      sm.z += alpha * (raw.z - sm.z);
+
+      const morph = deriveMorph(sm, NUM_FISH_VARIANTS, cfg);
+      if (morphGroupRef.current) {
+        morphGroupRef.current.setAttribute('transform', morphTransform(morph));
+      }
+      if (cfg.warpAmount > 0 && warpRef.current) {
+        warpRef.current.setAttribute('scale', morph.warp.toFixed(3));
+      }
+
+      // The base body-path variant is now driven by the attractor too, so even
+      // the outline never cycles. Only its source changed -- the React state
+      // push stays throttled to ~16fps (the one pre-existing re-render path).
+      morphProgressRef.current = morph.morphProgress;
       if (now - lastMorphUpdateRef.current >= 60) {
         lastMorphUpdateRef.current = now;
         const mp = morphProgressRef.current;
@@ -390,6 +443,10 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
         el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
         el.style.zIndex = '30';
       }
+      // Freeze the morph at neutral -- scale 1, no warp -- per prefers-reduced-
+      // motion. The rAF never starts in this branch, so the attractor never
+      // advances; this also pins it if reduced-motion is toggled on mid-session.
+      resetMorph();
       setState((s) => ({ ...s, behavior: 'napping', mouthState: 'flat', eyeState: 'open' }));
 
       // Blink cadence: ~every 5-8s, three-phase (open -> half -> closed -> open).
@@ -429,7 +486,7 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
     });
 
     return () => cancelAnimationFrame(raf);
-  }, [paused, reducedMotion, tick, pickWanderTarget]);
+  }, [paused, reducedMotion, tick, pickWanderTarget, resetMorph]);
 
   // Cursor tracking + reduced-motion change listener. The MQL listener
   // writes to React state (not just the ref) so the RAF effect re-keys and
@@ -488,5 +545,18 @@ export function useFishBrain({ paused }: BrainOptions): BrainAPI {
     }
   }, []);
 
-  return { state, setContainerRef, startle };
+  // Seed the morph nodes to neutral the moment they attach so there's no
+  // first-frame flash before the rAF loop takes over (and so they're neutral
+  // under prefers-reduced-motion, where the loop never runs).
+  const setMorphGroupRef = useCallback((el: SVGGElement | null) => {
+    morphGroupRef.current = el;
+    if (el) el.removeAttribute('transform');
+  }, []);
+
+  const setWarpRef = useCallback((el: SVGFEDisplacementMapElement | null) => {
+    warpRef.current = el;
+    if (el) el.setAttribute('scale', '0');
+  }, []);
+
+  return { state, setContainerRef, setMorphGroupRef, setWarpRef, startle };
 }

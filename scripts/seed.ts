@@ -9,6 +9,7 @@ import {
   aboutFields,
   aiConfig,
   constraintCards,
+  fishConfig,
   galleryConfig,
   prompts,
   remixIdioms,
@@ -16,6 +17,7 @@ import {
   users
 } from '../src/lib/db/schema';
 import { defaultAiConfig } from '../src/lib/ai/config';
+import { DEFAULT_FISH_MORPH_CONFIG, fishConfigToFields } from '../src/lib/fish/config';
 import { DEFAULT_SHUFFLE_PERIOD, DEFAULT_SORT } from '../src/lib/sort/types';
 import { sql } from 'drizzle-orm';
 
@@ -721,6 +723,19 @@ async function main() {
         set: { updatedAt: sql`ai_config.updated_at` }
       });
     console.log(`  - ensured ai_config["${field}"] (default ${provider}/${model})`);
+  }
+
+  console.log('Seeding fish_config...');
+  for (const [field, value] of Object.entries(fishConfigToFields(DEFAULT_FISH_MORPH_CONFIG))) {
+    await db
+      .insert(fishConfig)
+      .values({ field, value })
+      .onConflictDoUpdate({
+        target: fishConfig.field,
+        // Only fill in rows that are missing; do not overwrite admin edits.
+        set: { updatedAt: sql`fish_config.updated_at` }
+      });
+    console.log(`  - ensured fish_config["${field}"] (default ${value})`);
   }
 
   console.log(`Seeding tag_taxonomy (${TAXONOMY.length} tags)...`);

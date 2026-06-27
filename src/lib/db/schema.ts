@@ -372,6 +372,18 @@ export const aiConfig = pgTable('ai_config', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
+// Tunables for the pix-fish mascot's Lorenz-driven shape + size morph. Global
+// (site-wide, not per-owner): the mascot renders the same for every visitor.
+// Key/value singleton -- one row per parameter, value stored as text and parsed
+// at read time. Editable at /admin/fish; see src/lib/fish/config.ts for the
+// authoritative parameter list and defaults.
+export const fishConfig = pgTable('fish_config', {
+  id: serial('id').primaryKey(),
+  field: text('field').notNull().unique(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
 // Outbound webhook subscriptions. `secret` is shown once at creation so the
 // owner can record it; rotation is delete+recreate until usage warrants a
 // real rotation UI. Per-user: each user manages outbound webhooks for
@@ -808,6 +820,8 @@ export type ProviderKey = typeof providerKeys.$inferSelect;
 export type NewProviderKey = typeof providerKeys.$inferInsert;
 export type AiConfig = typeof aiConfig.$inferSelect;
 export type NewAiConfig = typeof aiConfig.$inferInsert;
+export type FishConfig = typeof fishConfig.$inferSelect;
+export type NewFishConfig = typeof fishConfig.$inferInsert;
 export type Webhook = typeof webhooks.$inferSelect;
 export type NewWebhook = typeof webhooks.$inferInsert;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
