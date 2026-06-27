@@ -70,6 +70,20 @@ async function processRow(row: {
   const original = Buffer.from(await res.arrayBuffer());
 
   const meta = await sharp(original).metadata();
+
+  // Animated originals (GIF / animated WebP): a plain sharp() pipeline decodes
+  // only the first frame, so a derivative would be a still. Since the gallery
+  // now prefers derivatives over the original, that would silently freeze
+  // animated images. Skip them -- record an empty set so the row is marked
+  // processed (not retried every run) and every consumer falls back to the
+  // original, which keeps animating. (Generating animated WebP derivatives is a
+  // possible future enhancement; it needs sharp({ animated: true }) and care
+  // around per-frame resizing cost.)
+  if ((meta.pages ?? 1) > 1) {
+    await db.update(images).set({ derivatives: [] }).where(eq(images.id, row.id));
+    return 0;
+  }
+
   const widths = targetWidths(meta.width);
 
   // Dedupe by the ACTUAL output width (withoutEnlargement can collapse two
@@ -87,6 +101,10 @@ async function processRow(row: {
       access: 'public',
       contentType: 'image/webp',
       addRandomSuffix: false
+      // Stable keys: --force and partial-failure repairs re-put the same path.
+      // @vercel/blob 0.27.x overwrites an existing key by default (it has no
+      // allowOverwrite option). If this dep is ever upgraded to v1+, which
+      // rejects overwrites by default, add `allowOverwrite: true` here.
     });
     byWidth.set(info.width, { w: info.width, url: blob.url });
   }
@@ -121,6 +139,8 @@ async function preflightBlobWrite(sampleOriginalUrl: string): Promise<void> {
       access: 'public',
       addRandomSuffix: false,
       contentType: 'text/plain'
+      // Fixed probe key; @vercel/blob 0.27.x overwrites by default, so a prior
+      // run's probe object doesn't conflict (see the note in processRow).
     });
     await del(blob.url).catch(() => {
       // Best effort: the probe object is tiny; a failed cleanup isn't fatal.
