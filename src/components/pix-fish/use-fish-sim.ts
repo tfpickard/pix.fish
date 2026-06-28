@@ -469,16 +469,19 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     (r: EntityRuntime, others: EntityRuntime[], dt: number, now: number, reduced: boolean) => {
       const b = bounds();
 
-      if (reduced) {
+      if (r.emigrating) {
+        // Heading out for good; ignore social forces, edges, and reduced-motion.
+        // Emigrants must clear the screen promptly -- they're already excluded from
+        // event selection, so a slow exit would leave stale fish rendered while the
+        // tank refills, potentially exceeding POP_MAX for reduced-motion users.
+        seekTarget(r, dt, MAX_SPEED);
+      } else if (reduced) {
         // Essentially parked: drift at 4% of normal speed so the fish stay nearly
         // still (honoring prefers-reduced-motion) while avoiding a fully frozen layout.
         seekTarget(r, dt, MAX_SPEED * 0.04);
         if (Math.hypot(r.target.x - r.pos.x, r.target.y - r.pos.y) < WANDER_RETARGET_DIST) {
           r.target = pickWanderTarget();
         }
-      } else if (r.emigrating) {
-        // Heading out for good; ignore social forces and edges.
-        seekTarget(r, dt, MAX_SPEED);
       } else if (r.behavior === 'wandering') {
         const accel = computeSteering({ self: r, others, bounds: b, wanderTarget: r.target });
         r.vel.x += accel.x * dt;
