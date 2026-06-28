@@ -72,6 +72,11 @@ export function PisciChatWidget() {
   const bubblesRef = useRef<Bubble[]>([]);
   const idRef = useRef(0);
   const ghostsRef = useRef(0);
+  // Bumped on every close. An in-flight turn captures the value before its await
+  // and bails if it changed -- so a reply that lands after the visitor dismissed
+  // the panel is dropped instead of reviving the widget (no late bubble, no
+  // re-armed silence timer firing hidden ghost requests).
+  const turnSeqRef = useRef(0);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [avatarOk, setAvatarOk] = useState(true);
@@ -117,12 +122,15 @@ export function PisciChatWidget() {
       const state = fsmRef.current;
       if (state.beat === 'DORMANT') return;
       ghostsRef.current += 1;
+      const seq = turnSeqRef.current;
       const next = advance(state, { type: 'ghost' });
       const result = await renderTurn({
         state: next,
         seed: seedRef.current as PersonaSeed,
         history: bubblesRef.current.map(({ role, content }) => ({ role, content }))
       });
+      // Closed while the ghost reply was in flight: drop it.
+      if (turnSeqRef.current !== seq) return;
       setFsm(result.source === 'llm' ? noteLlmUsed(next) : next);
       pushBubble('assistant', result.text);
       armSilence();
@@ -202,6 +210,7 @@ export function PisciChatWidget() {
     // The mask trips on the first reply and walks one beat forward per reply.
     const next = advance(fsmRef.current, { type: 'reply' });
     setSending(true);
+    const seq = turnSeqRef.current;
     const history = [
       ...bubblesRef.current.map(({ role, content }) => ({ role, content })),
       { role: 'user' as const, content: text }
@@ -214,6 +223,13 @@ export function PisciChatWidget() {
       // the widget -- fall back to a canned on-beat line.
       result = { text: pickCanned(next.beat, seedRef.current), source: 'canned' as const };
     }
+    // Visitor closed the panel while the reply was in flight: drop it. Don't
+    // append into a closed panel, don't commit the beat, don't arm silence (which
+    // would fire hidden ghost requests after dismissal).
+    if (turnSeqRef.current !== seq) {
+      setSending(false);
+      return;
+    }
     setFsm(result.source === 'llm' ? noteLlmUsed(next) : next);
     pushBubble('assistant', result.text);
     setSending(false);
@@ -224,6 +240,8 @@ export function PisciChatWidget() {
   // exactly once (if the conversation had already tripped), then stays closed.
   const handleClose = useCallback(() => {
     clearSilence();
+    // Invalidate any in-flight turn so its late reply can't revive the widget.
+    turnSeqRef.current += 1;
     setOpen(false);
     setFsm((prev) => advance(prev, { type: 'close' }));
 

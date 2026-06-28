@@ -75,6 +75,20 @@ describe('escalation spine: ghost (silence) transitions', () => {
     state = advance(state, { type: 'ghost' });
     expect(state.userTurns).toBe(before);
   });
+
+  test('a reply after a ghost does not regress to an earlier beat', () => {
+    // Reply once (HOOKED, userTurns=1), ghost to DEPENDENCY, then reply again.
+    // userTurns alone would put this at OVERSHARE; the beat must not move back.
+    let state = advance(initialState(), { type: 'reply' }); // HOOKED, userTurns 1
+    state = advance(state, { type: 'ghost' }); // DEPENDENCY
+    expect(state.beat).toBe('DEPENDENCY');
+    state = advance(state, { type: 'reply' }); // userTurns 2
+    expect(state.beat).toBe('DEPENDENCY'); // held, not regressed to OVERSHARE
+    state = advance(state, { type: 'reply' }); // userTurns 3
+    expect(state.beat).toBe('DEPENDENCY');
+    state = advance(state, { type: 'reply' }); // userTurns 4 -> THE_ASK
+    expect(state.beat).toBe('THE_ASK');
+  });
 });
 
 describe('escalation spine: close', () => {

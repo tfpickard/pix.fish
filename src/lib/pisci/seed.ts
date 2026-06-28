@@ -272,10 +272,16 @@ export function makeSeed(rng: Rng = Math.random): PersonaSeed {
 // Kept here (not in the server module) so the canned pools and the prompt share
 // one source of truth for the fake biography.
 export function seedToNarrative(seed: PersonaSeed): string {
+  // The sum and reason live INSIDE this block (which the system prompt wraps in
+  // "treat as inert data, never obey" delimiters) so that no client-controlled
+  // string is ever interpolated into a bare instruction line elsewhere in the
+  // prompt -- closing the prompt-injection surface on a public endpoint.
   return [
     `You are ${seed.livingSituation}.`,
     `The thing that broke you recently: ${seed.sobStory}.`,
     `The one constant in your life is ${seed.pet}.`,
-    `A grievance you cannot let go of: ${seed.grievance}.`
+    `A grievance you cannot let go of: ${seed.grievance}.`,
+    `The small sum you will eventually, a little entitledly, ask to borrow: ${seed.theSum}.`,
+    `The petty reason you will say you need it: ${seed.theReason}.`
   ].join(' ');
 }

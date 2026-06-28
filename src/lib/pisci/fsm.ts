@@ -46,7 +46,12 @@ export function advance(state: FsmState, event: FsmEvent): FsmState {
 function onReply(state: FsmState): FsmState {
   const userTurns = state.userTurns + 1;
   // userTurns 1 -> HOOKED (index 0), 2 -> OVERSHARE, ... 4 -> THE_ASK, 5+ -> SPIRAL.
-  const idx = Math.min(userTurns - 1, REPLY_PROGRESSION.length - 1);
+  const fromTurns = Math.min(userTurns - 1, REPLY_PROGRESSION.length - 1);
+  // Never regress. A ghost (silence) can push the beat ahead of the reply count
+  // -- e.g. to DEPENDENCY while userTurns is still 1 -- so the next reply must not
+  // fall back to an earlier beat. Take the further of the two positions.
+  const fromBeat = REPLY_PROGRESSION.indexOf(state.beat); // -1 while DORMANT
+  const idx = Math.max(fromTurns, fromBeat);
   return { ...state, beat: REPLY_PROGRESSION[idx], userTurns };
 }
 
