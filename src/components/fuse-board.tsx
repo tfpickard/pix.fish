@@ -159,20 +159,47 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
     setRenderError('');
     setRenderUrl('');
     const myGen = renderGenRef.current;
+    const superseded = () => myGen !== renderGenRef.current; // a new pairing happened
+    const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
     try {
+      // Enqueue the background render; the route returns a job id immediately.
       const res = await fetch('/api/fuse/render', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ a: aId, b: bId })
       });
-      const data = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
-      // A new pairing since this render started -- drop the now-stale result so it
-      // can't show under the current pair.
-      if (myGen !== renderGenRef.current) return;
-      if (res.ok && data.url) setRenderUrl(data.url);
-      else setRenderError(data.error || `render failed (${res.status})`);
+      const data = (await res.json().catch(() => ({}))) as { jobId?: number; error?: string };
+      if (superseded()) return;
+      if (!res.ok || !data.jobId) {
+        setRenderError(data.error || `render failed (${res.status})`);
+        return;
+      }
+      // Poll the job until it finishes. The render runs in the cron drain, so the
+      // first paint can take a minute or two.
+      const deadline = Date.now() + 240_000; // give up polling after ~4 min
+      while (Date.now() < deadline) {
+        await sleep(3000);
+        if (superseded()) return;
+        const pres = await fetch(`/api/fuse/render?job=${data.jobId}`);
+        const pdata = (await pres.json().catch(() => ({}))) as {
+          status?: string;
+          url?: string | null;
+          error?: string | null;
+        };
+        if (superseded()) return;
+        if (pdata.status === 'done' && pdata.url) {
+          setRenderUrl(pdata.url);
+          return;
+        }
+        if (pdata.status === 'failed') {
+          setRenderError(pdata.error || 'render failed');
+          return;
+        }
+        // pending / processing -> keep polling
+      }
+      setRenderError('still rendering -- check /admin/jobs for the result');
     } catch {
-      if (myGen === renderGenRef.current) setRenderError('render failed -- network error');
+      if (!superseded()) setRenderError('render failed -- network error');
     } finally {
       renderingRef.current = false;
       setRendering(false);
@@ -275,6 +302,11 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
                   >
                     {rendering ? 'rendering with gpt-image-2...' : 'render for real (gpt-image-2)'}
                   </button>
+                  {rendering && !renderUrl && !renderError ? (
+                    <p className="font-mono text-[10px] text-ink-500">
+                      queued -- generation runs in the background; this can take a minute or two.
+                    </p>
+                  ) : null}
                   {renderError ? <p className="font-mono text-[10px] text-rose-300">{renderError}</p> : null}
                   {renderUrl ? (
                     <a

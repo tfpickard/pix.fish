@@ -12,6 +12,7 @@ import { manifoldRecomputeHandler } from './manifoldRecompute';
 import { universeTickHandler } from './universeTick';
 import { universeAmendHandler } from './universeAmend';
 import { universeRippleHandler } from './universeRipple';
+import { fuseRenderHandler } from './fuseRender';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -50,5 +51,8 @@ export const handlers: Record<string, JobHandler> = {
   // bounded set of neighbours.
   'universe.tick': universeTickHandler,
   'universe.amend': universeAmendHandler,
-  'universe.ripple': universeRippleHandler
+  'universe.ripple': universeRippleHandler,
+  // Admin-only /fuse "render for real": gpt-image-2 generation off the request
+  // path. Enqueued with maxAttempts: 1 (each attempt is a paid generation).
+  'fuse.render': fuseRenderHandler
 };

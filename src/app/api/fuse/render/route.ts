@@ -1,36 +1,32 @@
 import { NextResponse } from 'next/server';
-import { put } from '@vercel/blob';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { readNsfwMode } from '@/lib/nsfw';
 import { activeFuseIds } from '@/lib/db/queries/fuse';
-import { hydrateNodes } from '@/lib/db/queries/daily';
-import { compositePrompt, COMPOSITE_PROMPT_MODEL } from '@/lib/fuse/composite-prompt';
-import { getImageGenerator } from '@/lib/ai/imagegen';
+import { enqueueJob, getJob } from '@/lib/db/queries/jobs';
 import { hashIp, getRequestIp } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-// Image generation is slow; give it room under the Vercel function ceiling.
-export const maxDuration = 60;
 
-// Live render of a /fuse pairing via OpenAI's image-2 model. ADMIN-ONLY: only
-// the owner can spend on (paid) generation. The /fuse "render for real" button
-// is hidden for everyone else, but THIS gate (isSiteAdmin) is the real one --
-// a non-admin can't trigger a render even by forging the request.
-//
-// The composite prompt is built server-side from the two parents' captions
-// (never trust a client-supplied prompt), generated with gpt-image-2, and stored
-// to Vercel Blob. It deliberately does NOT add a gallery row -- this is a render
-// preview of the imagined blend, not a new specimen in the corpus.
-export async function POST(req: Request): Promise<NextResponse> {
+// Admin-only live render of a /fuse pairing via OpenAI's image-2 model, run as a
+// BACKGROUND JOB so the slow (paid) generation never blocks or times out the
+// request: POST enqueues and returns a job id immediately; the worker (cron
+// drain) runs the gpt-image-2 generation + Blob upload (see handlers/fuseRender);
+// the client polls GET ?job=<id> for the result. Only the owner can spend on a
+// render -- isSiteAdmin is the authoritative gate on both verbs.
+
+async function requireAdmin(): Promise<NextResponse | null> {
   const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: 'sign in required' }, { status: 401 });
-  }
-  if (!isSiteAdmin(session)) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
-  }
+  if (!session?.user) return NextResponse.json({ error: 'sign in required' }, { status: 401 });
+  if (!isSiteAdmin(session)) return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  return null;
+}
+
+// POST { a, b } -> enqueue a fuse.render job. Returns { jobId, status: 'queued' }.
+export async function POST(req: Request): Promise<NextResponse> {
+  const denied = await requireAdmin();
+  if (denied) return denied;
 
   let body: { a?: unknown; b?: unknown };
   try {
@@ -44,7 +40,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'two distinct image ids required' }, { status: 400 });
   }
 
-  // Even admin-only, bound accidental rapid-fire (each render is a paid call).
+  // Bound accidental rapid-fire enqueues (each job is a paid generation).
   const ipHash = hashIp(getRequestIp(req));
   if (!rateLimit(`fuserender:${ipHash}`, 20, 60_000)) {
     return NextResponse.json({ error: 'rate limited' }, { status: 429 });
@@ -56,43 +52,29 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'unfusable ids' }, { status: 422 });
   }
 
-  const meta = await hydrateNodes([a, b]);
-  const na = meta.get(a);
-  const nb = meta.get(b);
-  if (!na || !nb) {
-    return NextResponse.json({ error: 'unfusable ids' }, { status: 422 });
-  }
-  const prompt = compositePrompt(na.caption, nb.caption);
+  // maxAttempts: 1 -- each attempt is a paid generation, so a timeout/failure
+  // must not silently retry and re-bill.
+  const job = await enqueueJob({ type: 'fuse.render', payload: { a, b }, maxAttempts: 1 });
+  return NextResponse.json({ jobId: job.id, status: 'queued' }, { status: 202 });
+}
 
-  // Explicitly the image-2 model the prompt is written for, independent of the
-  // global imagegen config that drives the alive flow.
-  const generator = getImageGenerator({ provider: 'openai', model: COMPOSITE_PROMPT_MODEL });
-  if (generator.name === 'stub') {
-    return NextResponse.json(
-      { error: 'image generation is not configured (set OPENAI_API_KEY)' },
-      { status: 503 }
-    );
-  }
+// GET ?job=<id> -> poll a fuse.render job's status + result.
+export async function GET(req: Request): Promise<NextResponse> {
+  const denied = await requireAdmin();
+  if (denied) return denied;
 
-  let generated;
-  try {
-    generated = await generator.generate({ prompt, width: 1024, height: 1024 });
-  } catch (err) {
-    console.error('fuse render: generation failed', err);
-    return NextResponse.json({ error: 'generation failed' }, { status: 502 });
+  const id = Number(new URL(req.url).searchParams.get('job'));
+  if (!Number.isInteger(id) || id <= 0) {
+    return NextResponse.json({ error: 'job id required' }, { status: 400 });
   }
-
-  let blob;
-  try {
-    blob = await put(`fuse-renders/${a}-${b}.png`, generated.bytes, {
-      access: 'public',
-      addRandomSuffix: true,
-      contentType: generated.mime
-    });
-  } catch (err) {
-    console.error('fuse render: blob upload failed', err);
-    return NextResponse.json({ error: 'blob upload failed' }, { status: 502 });
+  const job = await getJob(id);
+  if (!job || job.type !== 'fuse.render') {
+    return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
-
-  return NextResponse.json({ url: blob.url, prompt, model: generated.model });
+  const payload = (job.payload ?? {}) as { url?: string };
+  return NextResponse.json({
+    status: job.status, // pending | processing | done | failed
+    url: payload.url ?? null,
+    error: job.lastError ?? null
+  });
 }

@@ -88,6 +88,22 @@ export async function claimJobs(lockId: string, limit: number): Promise<Job[]> {
   return res.rows.map(normalizeJob);
 }
 
+// Read one job by id. Used by the /fuse render poll to report status + result.
+export async function getJob(id: number): Promise<Job | null> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1);
+  return row ?? null;
+}
+
+// Overwrite a job's payload. A handler uses this to stash its result (e.g. the
+// rendered blob URL) on the job so a poll endpoint can hand it back; the worker
+// then marks the job done.
+export async function updateJobPayload(id: number, payload: unknown): Promise<void> {
+  await db
+    .update(jobs)
+    .set({ payload: payload as Job['payload'] })
+    .where(eq(jobs.id, id));
+}
+
 export async function markJobDone(id: number): Promise<void> {
   await db
     .update(jobs)
