@@ -24,15 +24,12 @@ export const POP_MAX = 9;
 export const POP_MEAN = 4.5;
 export const POP_SIGMA = 1.3;
 
-// How many fish to seed the tank with on first mount.
-export const INITIAL_POP = 4;
-
 // ---------------------------------------------------------------------------
-// Event clock -- one scheduler, mean cadence 3-6 min.
+// Event clock -- one scheduler. The live cadence is admin-tunable
+// (FishMorphConfig.eventIntervalMin/Max, in seconds); only the DEBUG fast-mode
+// override lives here. Initial population is seeded from the target (popMean).
 // ---------------------------------------------------------------------------
 
-export const EVENT_INTERVAL_MIN = 180_000; // 3 min
-export const EVENT_INTERVAL_MAX = 360_000; // 6 min
 export const EVENT_INTERVAL_MIN_FAST = 5_000;
 export const EVENT_INTERVAL_MAX_FAST = 10_000;
 
@@ -161,6 +158,41 @@ export const PREDATION_OVERLAP = 120;
 // The predator's baseSize grows by this factor after a meal, capped.
 export const PREDATION_GROWTH = 1.12;
 export const PREDATION_MAX_BASESIZE = 1.9;
+
+// ---------------------------------------------------------------------------
+// Fighting -- two close fish scuffle; the loser shrinks and flees, or (with
+// FishMorphConfig.fightLethalChance, and only while count > popMin) dies.
+// ---------------------------------------------------------------------------
+
+// Two fish must be within this many px to pick a fight.
+export const FIGHT_PROXIMITY = 150;
+// How long the lunge/scuffle plays before it resolves (ms).
+export const FIGHT_DURATION = 1200;
+// Lunge speed toward the opponent (px/s) and the random jitter that makes the
+// clash read as a scuffle rather than a clean charge (px/s).
+export const FIGHT_LUNGE_SPEED = 150;
+export const FIGHT_JITTER = 140;
+// The loser shrinks by this factor (winner grows by the inverse-ish), bounded.
+export const FIGHT_LOSER_SHRINK = 0.88;
+export const FIGHT_WINNER_GROWTH = 1.06;
+export const FIGHT_MIN_BASESIZE = 0.6;
+// A winner rests this long before it can be picked for another removal event.
+export const FIGHT_WINNER_COOLDOWN = 8_000;
+
+// ---------------------------------------------------------------------------
+// Natural / lethal death by sinking -- the fish rolls, drifts to the bottom of
+// the page under a gentle gravity, fading as it goes, then despawns.
+// ---------------------------------------------------------------------------
+
+// Downward acceleration (px/s^2) and the horizontal damping applied each frame.
+export const SINK_GRAVITY = 130;
+export const SINK_DRIFT_DAMP = 0.97;
+// Full fade happens over this long (ms); a hard cap guards a fish that somehow
+// never clears the bottom edge.
+export const SINK_FADE_MS = 2600;
+export const SINK_MAX_MS = 6000;
+// How far the corpse tilts (deg) by the time it has fully faded.
+export const SINK_TILT_DEG = 165;
 
 // ---------------------------------------------------------------------------
 // Emigration -- permanent departure off-page.

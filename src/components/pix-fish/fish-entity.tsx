@@ -76,12 +76,22 @@ function FishEntityImpl({ view, warpEnabled, config, register, unregister, onSca
   );
 
   // Enter/exit animation lives on the life layer so it never fights the sim's
-  // translate (container) or facing flip (facing layer).
+  // translate (container) or facing flip (facing layer). 'burst' pops outward
+  // fast; 'chomp' implodes; 'sink' was already faded to nothing by the sim as it
+  // drifted down, so this just holds at zero; 'emigrate' is a soft shrink.
+  const exitStyle: CSSProperties =
+    exitKind === 'burst'
+      ? { opacity: 0, transform: 'scale(1.9)', transitionDuration: '260ms' }
+      : exitKind === 'chomp'
+        ? { opacity: 0, transform: 'scale(0.15)' }
+        : exitKind === 'sink'
+          ? { opacity: 0, transform: 'scale(1)' }
+          : { opacity: 0, transform: 'scale(0.85)' };
   const lifeStyle: CSSProperties =
     phase === 'entering'
       ? { opacity: 0, transform: 'scale(0.5)' }
       : phase === 'exiting'
-        ? { opacity: 0, transform: exitKind === 'chomp' ? 'scale(0.15)' : 'scale(0.85)' }
+        ? exitStyle
         : { opacity: 1, transform: 'scale(1)' };
 
   return (

@@ -23,7 +23,11 @@ export type Behavior =
   | 'excursion'
   | 'startled';
 
-export type ExitKind = 'chomp' | 'emigrate' | 'natural';
+// How a fish leaves: 'chomp' (eaten), 'emigrate' (swims off-page for good),
+// 'sink' (natural/lethal death drifting to the bottom -- the descent is sim
+// driven, so by the time this exit fires the fish has already faded), or
+// 'burst' (natural/lethal death that pops/explodes).
+export type ExitKind = 'chomp' | 'emigrate' | 'sink' | 'burst';
 
 export interface EntityView {
   id: number;
@@ -77,6 +81,20 @@ export interface EntityRuntime {
   reproCooldownUntil: number;
   postMealUntil: number;
   emigrating: boolean;
+
+  // Natural / lethal death: while `dying` the fish is sim-driven downward and
+  // faded out (a 'sink' death); `deathStartAt` stamps the descent so the loop
+  // can fade and then despawn it. Burst deaths skip this and exit immediately.
+  dying: boolean;
+  deathStartAt: number;
+
+  // Fighting: while `fightingUntil` is in the future the fish lunges at
+  // `fightOpponent`. On resolution the `fightLoser` shrinks and flees (or dies
+  // if `fightLethal`); the winner grows a touch.
+  fightingUntil: number;
+  fightOpponent: number;
+  fightLoser: boolean;
+  fightLethal: boolean;
 
   // Behavior machine (preserved from the single-fish brain).
   behavior: Behavior;
