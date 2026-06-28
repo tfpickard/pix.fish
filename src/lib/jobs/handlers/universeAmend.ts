@@ -5,7 +5,7 @@ import { listClerks } from '@/lib/db/queries/clerks';
 import { getDistrict } from '@/lib/db/queries/districts';
 import { getNeighborsByImageId } from '@/lib/db/queries/embeddings';
 import { appendEvent } from '@/lib/db/queries/events';
-import { isImageArchived } from '@/lib/db/queries/images';
+import { imageRefsByIds, isImageArchived } from '@/lib/db/queries/images';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { listLoreFragments } from '@/lib/db/queries/lore-fragments';
 import { getSpecimen } from '@/lib/db/queries/specimens';
@@ -62,10 +62,20 @@ export async function universeAmendHandler(job: Job): Promise<void> {
   };
 
   // Neighbour RAG: nearest specimens' captions + their current dossiers.
-  const near = await getNeighborsByImageId(imageId, { limit: 5, kind: 'caption', order: 'nearest' }).catch(
+  // Filter out NSFW and archived neighbours first: their captions/dossiers
+  // would otherwise be folded into a visible specimen's amendment (and its
+  // public chronicle excerpt), leaking hidden content.
+  const near = await getNeighborsByImageId(imageId, { limit: 8, kind: 'caption', order: 'nearest' }).catch(
     () => []
   );
-  const neighborIds = near.map((n) => n.imageId);
+  const neighborRefs = await imageRefsByIds(near.map((n) => n.imageId)).catch(() => new Map());
+  const neighborIds = near
+    .map((n) => n.imageId)
+    .filter((id) => {
+      const ref = neighborRefs.get(id);
+      return ref && !ref.isNsfw && !ref.archived;
+    })
+    .slice(0, 5);
   const snippets = await firstCaptionsByImageIds(neighborIds);
   const neighbors = await Promise.all(
     neighborIds.map(async (id) => {
@@ -146,11 +156,13 @@ export async function universeAmendHandler(job: Job): Promise<void> {
   await materializeSpecimen(imageId);
 
   // If this amendment contradicts a prior clerk, file an audit flag for the
-  // chronicle. Dedupe-keyed on the same nonce, so it is safe to (re)attempt on
-  // a retry. It is a pure event-log artifact (the reducer ignores it); the
-  // contradiction itself lives, unreconciled, in the fragments.
+  // chronicle. Gated on `inserted` so it is only filed by the attempt that
+  // actually authored the amendment -- a retry that hit the dedupe key could
+  // have recomputed a different `amender` and would mis-attribute the
+  // contradiction. It is a pure event-log artifact (the reducer ignores it);
+  // the contradiction itself lives, unreconciled, in the fragments.
   const contradicted = fragments.map((f) => f.clerkSlug).find((s) => s !== amender.slug) ?? null;
-  if (contradicted) {
+  if (inserted && contradicted) {
     const audit: AuditFlaggedPayload = {
       note: `${amender.name} files against ${clerkName.get(contradicted) ?? contradicted}'s reading`,
       by: amender.slug,

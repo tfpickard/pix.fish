@@ -37,6 +37,7 @@ export async function loadChronicleEntries(
 
   const visible = (ref: ImageRef | undefined): boolean => {
     if (!ref) return false; // specimen with no resolvable image -> drop
+    if (ref.archived) return false; // soft-deleted; out of public circulation
     if (nsfwMode === 'include') return true;
     if (nsfwMode === 'only') return ref.isNsfw;
     return !ref.isNsfw; // 'hide'

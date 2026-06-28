@@ -49,6 +49,17 @@ export async function countLoreFragmentsForImage(imageId: number): Promise<numbe
   return Number(res.rows?.[0]?.n ?? 0);
 }
 
+// Count of amendment fragments for a specimen. The reducer derives the
+// specimen's generation from this (rather than a read-modify-write of
+// generation), so concurrent or repeated materializations converge to the same
+// value instead of drifting above the canon event count.
+export async function countAmendmentFragments(imageId: number): Promise<number> {
+  const res = await db.execute<{ n: number }>(
+    sql`SELECT count(*)::int AS n FROM lore_fragments WHERE specimen_image_id = ${imageId} AND kind = 'amendment'`
+  );
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
 export async function countImagesWithLoreFragments(): Promise<number> {
   const res = await db.execute<{ n: number }>(
     sql`SELECT count(DISTINCT specimen_image_id)::int AS n FROM lore_fragments`

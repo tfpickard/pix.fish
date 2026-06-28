@@ -688,20 +688,34 @@ export async function isImageArchived(imageId: number): Promise<boolean> {
   return Boolean(row?.archivedAt);
 }
 
-export type ImageRef = { slug: string; handle: string; isNsfw: boolean };
+export type ImageRef = { slug: string; handle: string; isNsfw: boolean; archived: boolean };
 
-// Slim per-image refs (slug + owner handle + NSFW flag) for a set of ids.
-// Used by the chronicle to build canonical /u/<handle>/<slug> links and to
-// apply the same NSFW visibility rule the public gallery uses.
+// Slim per-image refs (slug + owner handle + NSFW + archived flags) for a set
+// of ids. Used by the chronicle to build canonical /u/<handle>/<slug> links and
+// to apply the same NSFW + archived visibility rules the public gallery uses,
+// and by the evolution loop to drop hidden neighbours from amendment RAG.
 export async function imageRefsByIds(ids: number[]): Promise<Map<number, ImageRef>> {
   const out = new Map<number, ImageRef>();
   if (ids.length === 0) return out;
   const rows = await db
-    .select({ id: images.id, slug: images.slug, handle: users.handle, isNsfw: images.isNsfw })
+    .select({
+      id: images.id,
+      slug: images.slug,
+      handle: users.handle,
+      isNsfw: images.isNsfw,
+      archivedAt: images.archivedAt
+    })
     .from(images)
     .innerJoin(users, eq(users.id, images.ownerId))
     .where(inArray(images.id, ids));
-  for (const r of rows) out.set(r.id, { slug: r.slug, handle: r.handle, isNsfw: r.isNsfw });
+  for (const r of rows) {
+    out.set(r.id, {
+      slug: r.slug,
+      handle: r.handle,
+      isNsfw: r.isNsfw,
+      archived: Boolean(r.archivedAt)
+    });
+  }
   return out;
 }
 

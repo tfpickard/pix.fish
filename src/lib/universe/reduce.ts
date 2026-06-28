@@ -3,7 +3,7 @@ import { upsertClerk } from '@/lib/db/queries/clerks';
 import { upsertCrossReference } from '@/lib/db/queries/cross-references';
 import { upsertDistrict } from '@/lib/db/queries/districts';
 import { upsertLoreEmbedding } from '@/lib/db/queries/embeddings';
-import { upsertLoreFragment } from '@/lib/db/queries/lore-fragments';
+import { countAmendmentFragments, upsertLoreFragment } from '@/lib/db/queries/lore-fragments';
 import { getSpecimen, upsertSpecimen } from '@/lib/db/queries/specimens';
 import { coordsFor, type CoordsMap } from './coords';
 import {
@@ -106,9 +106,10 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
     }
 
     case EVENT_TYPE.DossierAmendment: {
-      // Reserved for Phase 2 (autonomous amendments). Not emitted in Phase 1,
-      // but handled here so the projection stays rebuildable once it is: append
-      // a new fragment, advance the current dossier, and bump the generation.
+      // A clerk amendment (Phase 2). Append a new fragment, advance the current
+      // dossier, and set generation from the COUNT of amendment fragments --
+      // not a read-modify-write of generation -- so concurrent or repeated
+      // materializations converge instead of drifting above the event count.
       const p = ev.payload as unknown as SpecimenIntakePayload;
       const imageId = Number(ev.subjectId);
       const clerkSlug = ev.authorClerk ?? 'unknown';
@@ -136,6 +137,9 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
           model: p.embedModel
         });
       }
+      // Counted after the fragment upsert above, so it includes this amendment
+      // and is idempotent under re-apply (upsert keys on eventId).
+      const generation = await countAmendmentFragments(imageId);
       await upsertSpecimen({
         imageId,
         clerkSlug,
@@ -143,7 +147,7 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
         currentDossier: p.dossier,
         citations: ev.citations,
         intakeEventId: existing?.intakeEventId ?? ev.id,
-        generation: (existing?.generation ?? 0) + 1,
+        generation,
         updatedAt: ev.createdAt
       });
       break;
