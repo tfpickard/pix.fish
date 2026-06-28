@@ -42,7 +42,7 @@ const CANNED: Record<Beat, string[]> = {
 
   THE_ASK: [
     'ok kind of random but can you just spot me {{THE_SUM}}. its for {{THE_REASON}} and i genuinely cannot deal with it myself rn',
-    'not to be weird but float me {{THE_SUM}}. its {{THE_REASON}}. ill get you back at some point probably',
+    'not to be weird but float me {{THE_SUM}}. its for {{THE_REASON}}. ill get you back at some point probably',
     'ok you should just cover me {{THE_SUM}} for {{THE_REASON}}. its honestly not a big deal for you so'
   ],
 
