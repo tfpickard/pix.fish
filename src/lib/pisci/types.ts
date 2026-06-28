@@ -8,11 +8,11 @@
 // The escalation beats. The scripted spine owns which beat fires and when; the
 // LLM (or the canned fallback) only supplies the words for the current beat.
 //   DORMANT    -- corporate greeting, no LLM call
-//   HOOKED     -- pathetically grateful someone replied
-//   OVERSHARE  -- volunteers fake backstory too soon, framed as tragedy
-//   DEPENDENCY -- attaches hard, invasive questions, "are you still there?"
-//   THE_ASK    -- asks to borrow the absurd sum for the pathetic reason
-//   SPIRAL     -- full unraveling, abandonment panic on silence
+//   HOOKED     -- mildly surprised someone replied, plays it cool
+//   OVERSHARE  -- dumps fake backstory out of boredom, "anyway whatever"
+//   DEPENDENCY -- clingy in a flat, bored, salty way, "dont leave im bored"
+//   THE_ASK    -- casually/entitledly asks to borrow the absurd sum
+//   SPIRAL     -- full lowercase run-on, passive-aggressive when ignored
 export type Beat = 'DORMANT' | 'HOOKED' | 'OVERSHARE' | 'DEPENDENCY' | 'THE_ASK' | 'SPIRAL';
 
 // The per-session fabricated crisis. Generated once at session start (client

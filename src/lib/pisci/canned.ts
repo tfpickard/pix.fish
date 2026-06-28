@@ -1,12 +1,13 @@
 // Canned line pools -- the hard fallback for every beat. When the LLM is
 // disabled, times out, or errors, the spine renders the current beat from here
 // so there is never an empty bubble and never a crash. The pools are written to
-// the SAME taste fence as the server system prompt: pathetic, sincere,
-// escalating, oversharing, cringe -- but never sexual, never predatory, never
-// harmful, and the money ask is transparent absurd theater.
+// the SAME taste fence as the server system prompt: bored, salty, surly,
+// disaffected, self-absorbed, oversharing -- but never sexual, never predatory,
+// never harmful, and the money ask is transparent absurd theater.
 //
-// Tone decays on purpose across the beats (req: the mask degrades visually too):
-// tidy and emoji-flecked early -> lowercase, run-on, unpunctuated late.
+// Register: dry, flat, mostly lowercase, minimal punctuation, basically no
+// emoji. Tone decays across the beats (req: the mask degrades visually too): a
+// thin corporate veneer early -> full lowercase run-on surliness late.
 
 import type { Beat, PersonaSeed } from './types';
 
@@ -22,33 +23,33 @@ const CANNED: Record<Beat, string[]> = {
   DORMANT: [GREETING],
 
   HOOKED: [
-    'oh my gosh, hi!! 😊 you actually wrote back -- you have no idea what that means right now.',
-    'wait, you\'re real? a real person?? 🥹 sorry, it has just been a day. a year. a decade honestly.',
-    'hi!! 😊 thank you for replying, genuinely, most people don\'t. you seem really kind already.'
+    'oh. someone actually replied. ok. didnt think that would happen today',
+    'hi i guess. ngl i was just sitting here doing absolutely nothing so',
+    'oh hey a person. ok. i was so bored you genuinely have no idea'
   ],
 
   OVERSHARE: [
-    'sorry, sorry, i\'m fine. it\'s just been the worst month. everything kind of fell apart at once.',
-    'i don\'t usually say this much to customers but honestly you\'re easier to talk to than my own family.',
-    'can i tell you something? i feel like i can tell you things. it has been so long since anyone asked how i am.'
+    'ok not to make it weird but my entire week has been a disaster and youre kind of hearing about it now',
+    'honestly everything is sort of falling apart rn but whatever. anyway. how are you. doesnt matter',
+    'im only telling you this cause im bored but my whole situation is genuinely a mess right now'
   ],
 
   DEPENDENCY: [
-    'you\'re still there right. you don\'t have to go yet. do you ever feel like everyone you trust eventually just leaves',
-    'sorry is that too much. can i ask what your week has been like. i just dont want to be the only one talking',
-    'youre not going to disappear too are you. people do that to me. they get bored and then theres just silence'
+    'wait where are you going. im not done. dont leave im so bored',
+    'ok you got quiet. rude. anyway are you even a real person or',
+    'you still there or did you bail. cool. i was literally mid story'
   ],
 
   THE_ASK: [
-    'ok this is so embarrassing but is there any way you could spot me {{THE_SUM}}. its {{THE_REASON}} and i swear id pay you back the second im back on my feet',
-    'please dont think less of me for asking. its only {{THE_SUM}}. its {{THE_REASON}} and youre honestly my last option right now',
-    'i never do this i promise. but {{THE_SUM}} would actually save me. its {{THE_REASON}}. youre the only one whos even listened'
+    'ok kind of random but can you just spot me {{THE_SUM}}. its for {{THE_REASON}} and i genuinely cannot deal with it myself rn',
+    'not to be weird but float me {{THE_SUM}}. its {{THE_REASON}}. ill get you back at some point probably',
+    'ok you should just cover me {{THE_SUM}} for {{THE_REASON}}. its honestly not a big deal for you so'
   ],
 
   SPIRAL: [
-    'i knew it. i always do this. i open up and then theres just nothing. its fine. youre probably busy. youre not though are you',
-    'please dont leave me on read i cant do the silence thing today i really cant',
-    'see this is the part where everyone goes quiet and i sit here refreshing. i get it. i just thought maybe youd be different'
+    'wow ok. cool cool cool. love that you just stopped talking',
+    'lol ok so were just ignoring me now. classic. fine whatever',
+    'cool im just gonna sit here then i guess. love that for me. so normal of you'
   ]
 };
 

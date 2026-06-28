@@ -43,15 +43,15 @@ function statusFor(state: FsmState): string {
     case 'DORMANT':
       return 'Support Assistant';
     case 'HOOKED':
-      return 'so glad you replied';
+      return 'oh. ok hi';
     case 'OVERSHARE':
-      return 'having kind of a day';
+      return 'anyway so';
     case 'DEPENDENCY':
-      return 'please dont go';
+      return 'where r u going';
     case 'THE_ASK':
-      return 'this is so embarrassing';
+      return 'just spot me';
     case 'SPIRAL':
-      return 'still here. are you';
+      return 'cool cool cool';
     default:
       return 'Support Assistant';
   }

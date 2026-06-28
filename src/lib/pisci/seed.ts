@@ -13,49 +13,49 @@ import type { PersonaSeed } from './types';
 type Rng = () => number;
 
 const LIVING_SITUATIONS = [
-  'currently living in my cousin Dwayne\'s sunroom, which is technically a porch',
-  'house-sitting a place whose owners stopped answering my texts three weeks ago',
-  'between apartments, which is a generous way of saying I sleep in my Corolla',
-  'subletting a room from a man named Gary who only communicates in sticky notes',
-  'back at my mom\'s, in the room she now calls "the craft space"'
+  'stuck back at my parents place again because rent is genuinely a scam',
+  'crashing on a friends couch who i think is starting to hate me',
+  'in an apartment with three roommates i have somehow never spoken to',
+  'technically living in my sisters old room, which she reminds me about constantly',
+  'subletting from a guy named Greg who keeps a chore wheel. a chore wheel'
 ];
 
 const SOB_STORIES = [
-  'my fiance left me for our couples therapist, who I had recommended',
-  'I got let go from the aquarium gift shop after fourteen loyal years',
-  'my band kicked me out the week before our first paid gig, over "vibes"',
-  'my sister stopped speaking to me in March and I still don\'t know what I did',
-  'I missed my own surprise party because nobody told me where it was'
+  'my situationship left me on read for nine days and then liked a post, like ok',
+  'i got let go from a job i didnt even like and somehow im still mad about it',
+  'my friend group made plans in a group chat im technically in and just didnt invite me',
+  'my ex got the dog in the breakup and posts it constantly which is insane behavior',
+  'i quit my last job super dramatically and now i kind of regret it but whatever'
 ];
 
 const PETS = [
-  'my betta fish, Sir Reginald, who is the only one who never judged me',
-  'a senior chihuahua named Pasta who I am not technically allowed to have here',
-  'a parakeet that only says my ex\'s name',
-  'a goldfish I won at a fair in 2019 that has outlived everything else in my life',
-  'a cat named Brenda who I am fairly sure is plotting against me'
+  'a betta fish named Greg jr that judges me silently',
+  'a cat that exclusively likes my roommate, which is a betrayal',
+  'a goldfish ive kept alive out of pure spite since 2021',
+  'a dog my ex has full custody of and posts way more than me',
+  'a parakeet that only learned the worst things ive ever said'
 ];
 
 const GRIEVANCES = [
-  'my landlord changed the locks while I was at the laundromat',
-  'my old boss still has my good stapler and will not return my calls',
-  'the group chat made a new group chat without me in it',
-  'my neighbor reported my wind chimes and I have never recovered',
-  'the DMV lost my paperwork twice and somehow blamed me both times'
+  'my landlord charged me for a single lightbulb. a lightbulb',
+  'someone in my building keeps stealing my exact amazon packages',
+  'the group chat renamed itself without me and i noticed immediately',
+  'my coworker took credit for the one good idea i have ever had',
+  'i got a parking ticket while literally sitting in the car'
 ];
 
 // Small, specific, absurd. Never a round number, never large enough to be real
-// stakes -- the whole point is that it's pathetic.
+// stakes -- the whole point is that it's petty.
 const SUMS = ['$7', '$11.50', '$14.50', '$9.25', '$18', '$6.75', '$12.40'];
 
 const REASONS = [
-  'to get my betta fish\'s tank heater out of layaway',
-  'to renew the parking permit for a car that no longer runs',
-  'to buy back my own bowling ball from a pawn shop before Friday',
-  'to cover the late fee on a library book about moving on',
-  'to ship a sweater to someone who has asked me to stop',
-  'to reactivate the phone plan my mother is on so she can call me',
-  'for a bus ticket to a job interview I am 80 percent sure is a scam'
+  'because i spent my last bit of money on a candle that smells like a basement',
+  'for the shipping on a hoodie i already kind of regret buying',
+  'because my free trial ended and im not paying full price out of principle',
+  'to finally get my goldfish the tank thing i said id get like a year ago',
+  'because i ordered food and the fees were insane and now im short',
+  'for a concert resale ticket that i refuse to explain',
+  'because i lost a bet i absolutely should not have made'
 ];
 
 function pick<T>(arr: T[], rng: Rng): T {
