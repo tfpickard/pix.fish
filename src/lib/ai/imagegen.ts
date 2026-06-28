@@ -108,6 +108,56 @@ export class OpenRouterImageGenerator implements ImageGenerator {
   }
 }
 
+// OpenAI adapter -- text-to-image via the Images API with the gpt-image-2 model
+// (POST https://api.openai.com/v1/images/generations). This is the target the
+// /fuse composite prompt (src/lib/fuse/composite-prompt.ts) is written for. The
+// gpt-image family always returns base64 image data (no url option), which we
+// decode into a Buffer ready for Vercel Blob. Site-level key from
+// OPENAI_API_KEY, the same env var the caption/embedding providers fall back to.
+export class OpenAIImageGenerator implements ImageGenerator {
+  readonly name = 'openai';
+  readonly model: string;
+  private apiKey: string;
+
+  constructor(apiKey: string, model?: string) {
+    this.apiKey = apiKey;
+    this.model = model ?? 'gpt-image-2';
+  }
+
+  async generate(req: ImageGenRequest): Promise<ImageGenResult> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      prompt: req.prompt,
+      n: 1
+    };
+    // gpt-image takes a `size` string (e.g. "1024x1024"), not width/height.
+    // Pass one through when both dims are given; otherwise let the model choose.
+    body.size =
+      req.width && req.height ? `${Math.round(req.width)}x${Math.round(req.height)}` : 'auto';
+
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`OpenAI image gen failed (${res.status}): ${text}`);
+    }
+
+    type OpenAIImageResponse = { data: { b64_json?: string }[] };
+    const json = (await res.json()) as OpenAIImageResponse;
+    const b64 = json.data?.[0]?.b64_json;
+    if (!b64) throw new Error('OpenAI returned no image data');
+
+    return { bytes: Buffer.from(b64, 'base64'), mime: 'image/png', provider: 'openai', model: this.model };
+  }
+}
+
 // Factory. Accepts the resolved config from loadImageGenConfig() so the
 // provider/model come from the DB (editable at /admin/ai), with the API key
 // pulled from the env. Never returns null: the alive pipeline always has
@@ -122,6 +172,14 @@ export function getImageGenerator(cfg?: { provider: string; model: string }): Im
       return new StubImageGenerator();
     }
     return new OpenRouterImageGenerator(key, model);
+  }
+  if (provider === 'openai') {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) {
+      console.warn('[imagegen] provider=openai but OPENAI_API_KEY is not set -- falling back to stub');
+      return new StubImageGenerator();
+    }
+    return new OpenAIImageGenerator(key, model);
   }
   return new StubImageGenerator();
 }

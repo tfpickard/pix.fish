@@ -10,6 +10,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { PathNode } from '@/lib/knn-path-types';
+import { compositePrompt, COMPOSITE_PROMPT_MODEL } from '@/lib/fuse/composite-prompt';
 
 type Props = {
   initial: PathNode[]; // starting inventory (random seeds, or a shared board)
@@ -36,6 +37,7 @@ export function FuseBoard({ initial }: Props) {
   const [reveal, setReveal] = useState<Reveal | null>(null);
   const [copied, setCopied] = useState(false);
   const [copyFallback, setCopyFallback] = useState('');
+  const [promptCopied, setPromptCopied] = useState(false);
 
   const busyRef = useRef(false);
   const inventoryRef = useRef(inventory);
@@ -113,6 +115,22 @@ export function FuseBoard({ initial }: Props) {
     else router.refresh();
   }, [router]);
 
+  // Copy the composite generation prompt for the current pairing. The readonly
+  // textarea it lives in is selectable, so it doubles as the manual fallback.
+  const copyPrompt = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setPromptCopied(true);
+      window.setTimeout(() => setPromptCopied(false), 1800);
+    } catch {
+      /* clipboard blocked -- the visible textarea is the fallback */
+    }
+  }, []);
+
+  // The image-2 prompt for the imagined blend of the two parents (not the nearest
+  // existing result), shown once a fusion settles.
+  const promptText = reveal && !reveal.pending ? compositePrompt(reveal.a.caption, reveal.b.caption) : '';
+
   return (
     <div className="space-y-6 pt-8">
       <section className="space-y-1">
@@ -161,6 +179,34 @@ export function FuseBoard({ initial }: Props) {
                 {reveal.result.caption || reveal.result.slug}
               </Link>
             </div>
+          ) : null}
+
+          {/* The nearest existing specimen is above; this is a prompt to generate
+              the IMAGINED blend (targeting OpenAI's image-2 model). */}
+          {!reveal.pending ? (
+            <details className="mt-3 rounded-lg border border-ink-800/70 bg-ink-950/50 p-3 text-left">
+              <summary className="cursor-pointer font-mono text-[11px] text-ink-400 hover:text-primary">
+                generate this fusion &middot; {COMPOSITE_PROMPT_MODEL} prompt
+              </summary>
+              <p className="mt-2 font-mono text-[10px] leading-relaxed text-ink-500">
+                paste into ChatGPT or the OpenAI Image API ({COMPOSITE_PROMPT_MODEL}) to render the
+                imagined blend that doesn&rsquo;t exist yet.
+              </p>
+              <textarea
+                readOnly
+                rows={5}
+                value={promptText}
+                onFocus={(e) => e.currentTarget.select()}
+                className="mt-2 w-full resize-none rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[10px] leading-relaxed text-ink-300"
+              />
+              <button
+                type="button"
+                onClick={() => copyPrompt(promptText)}
+                className="mt-2 rounded border border-primary/50 bg-primary/10 px-3 py-1 font-mono text-[11px] text-primary hover:bg-primary/20"
+              >
+                {promptCopied ? 'prompt copied!' : 'copy prompt'}
+              </button>
+            </details>
           ) : null}
         </section>
       ) : null}
