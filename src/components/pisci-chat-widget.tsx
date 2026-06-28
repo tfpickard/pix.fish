@@ -242,10 +242,17 @@ export function PisciChatWidget() {
       /* best effort */
     }
     setTimeout(() => {
-      pushBubble('assistant', pickCanned('SPIRAL', seedRef.current as PersonaSeed));
+      // Drive the reopen through the spine (a 'ghost' = abandonment) so the beat,
+      // status line, and bubble stay in sync and progress never regresses: an
+      // early close reopens at DEPENDENCY, a late one at SPIRAL. Then re-arm the
+      // silence timer so it can keep going if ignored again.
+      const next = advance(fsmRef.current, { type: 'ghost' });
+      setFsm(next);
+      pushBubble('assistant', pickCanned(next.beat, seedRef.current as PersonaSeed));
       setOpen(true);
+      armSilence();
     }, WOUNDED_REOPEN_MS);
-  }, [clearSilence, pushBubble]);
+  }, [clearSilence, pushBubble, armSilence]);
 
   if (!mounted || !seed) return null;
 

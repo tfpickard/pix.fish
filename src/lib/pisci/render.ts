@@ -8,7 +8,7 @@
 // without a network.
 
 import { pickCanned } from './canned';
-import { shouldUseLlm, beatDirective } from './fsm';
+import { shouldUseLlm } from './fsm';
 import type { FsmState, PersonaSeed } from './types';
 
 // One chat bubble in the transcript. `role` matches the model's roles so the
@@ -16,10 +16,11 @@ import type { FsmState, PersonaSeed } from './types';
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 // The payload the client POSTs to /api/chat. No PII: just the fabricated seed,
-// the current beat, and a short slice of recent turns for coherence.
+// the current beat, and a short slice of recent turns for coherence. Note the
+// beat directive is NOT sent -- the server derives it from `beat` itself, so a
+// client can't hand-craft a directive to steer the model.
 export type ChatRequest = {
   beat: FsmState['beat'];
-  directive: string;
   seed: PersonaSeed;
   messages: ChatMessage[];
 };
@@ -63,7 +64,6 @@ export async function renderTurn(args: {
   try {
     const req: ChatRequest = {
       beat: state.beat,
-      directive: beatDirective(state.beat),
       seed,
       messages: history.slice(-HISTORY_WINDOW)
     };

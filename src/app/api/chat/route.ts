@@ -9,6 +9,9 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { renderPisciTurn, pisciLlmDisabled } from '@/lib/ai/pisci-chat';
+import { beatDirective } from '@/lib/pisci/fsm';
+import { getRequestIp, hashIp } from '@/lib/hash';
+import { rateLimit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,9 +21,18 @@ export const dynamic = 'force-dynamic';
 const MAX_MESSAGES = 12;
 const MAX_CONTENT = 600;
 
+// Per-IP sliding-window cap on this unauthenticated, LLM-spending endpoint. A
+// normal session makes at most ~12 LLM calls (the per-session cap), so 30/min is
+// generous for real use but stops scripted abuse and runaway upstream cost.
+const RATE_MAX = 30;
+const RATE_WINDOW_MS = 60_000;
+
+// The client-supplied beat is trusted only to *select* a server-owned directive
+// (below); the directive string itself is never taken from the client, so it
+// can't be used to steer the model. The seed is likewise treated as inert data
+// inside the prompt (see pisci-chat.ts).
 const bodySchema = z.object({
   beat: z.enum(['DORMANT', 'HOOKED', 'OVERSHARE', 'DEPENDENCY', 'THE_ASK', 'SPIRAL']),
-  directive: z.string().max(500),
   seed: z.object({
     livingSituation: z.string().max(300),
     sobStory: z.string().max(300),
@@ -40,12 +52,19 @@ const bodySchema = z.object({
 });
 
 export async function POST(req: Request) {
-  // No LLM call on the static greeting -- the client never asks us to render it,
-  // and the spine guards it too, but reject it here as well for defense in depth.
+  // Rate-limit first, before any work. A 429 simply makes the client fall back
+  // to its canned pools -- no crash, no empty bubble.
+  const ipKey = `pisci-chat:${hashIp(getRequestIp(req))}`;
+  if (!rateLimit(ipKey, RATE_MAX, RATE_WINDOW_MS)) {
+    return NextResponse.json({ error: 'rate limited' }, { status: 429 });
+  }
+
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: 'invalid body' }, { status: 400 });
   }
+  // No LLM call on the static greeting -- the client never asks us to render it,
+  // and the spine guards it too, but reject it here as well for defense in depth.
   if (parsed.data.beat === 'DORMANT') {
     return NextResponse.json({ error: 'no llm for greeting' }, { status: 400 });
   }
@@ -59,7 +78,9 @@ export async function POST(req: Request) {
     const reply = await renderPisciTurn({
       seed: parsed.data.seed,
       beat: parsed.data.beat,
-      directive: parsed.data.directive,
+      // Derived server-side from the validated beat -- never trusted from the
+      // client, so it can't be used to override pacing or the taste fence.
+      directive: beatDirective(parsed.data.beat),
       messages: parsed.data.messages
     });
     if (!reply) {

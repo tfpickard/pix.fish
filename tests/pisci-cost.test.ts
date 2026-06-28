@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { advance, initialState, noteLlmUsed, shouldUseLlm, LLM_TURN_CAP } from '../src/lib/pisci/fsm';
-import { PISCI_MAX_TOKENS, clampMaxTokens, pisciLlmDisabled } from '../src/lib/ai/pisci-chat';
+import {
+  PISCI_MAX_TOKENS,
+  clampMaxTokens,
+  pisciLlmDisabled,
+  normalizeHistory
+} from '../src/lib/ai/pisci-chat';
+import type { ChatMessage } from '../src/lib/pisci/render';
 
 // Cost guardrails must be ENFORCED, not just configured.
 
@@ -40,6 +46,43 @@ describe('per-session LLM-call cap', () => {
     expect(spent).toBe(LLM_TURN_CAP);
     expect(state.cannedOnly).toBe(true);
     expect(shouldUseLlm(state)).toBe(false);
+  });
+});
+
+describe('history normalization for the Anthropic Messages API', () => {
+  const A = (content: string): ChatMessage => ({ role: 'assistant', content });
+  const U = (content: string): ChatMessage => ({ role: 'user', content });
+
+  test('drops the leading canned greeting so history starts with user', () => {
+    // The widget's first send: [greeting, user message].
+    const out = normalizeHistory([A('hi im pisci'), U('hi there')]);
+    expect(out).toEqual([U('hi there')]);
+  });
+
+  test('result always starts with a user turn and strictly alternates', () => {
+    const out = normalizeHistory([A('greeting'), U('a'), A('b'), U('c')]);
+    expect(out[0].role).toBe('user');
+    for (let i = 1; i < out.length; i++) {
+      expect(out[i].role).not.toBe(out[i - 1].role);
+    }
+  });
+
+  test('merges back-to-back assistant turns (silence/ghost, wounded reopen)', () => {
+    // A ghost beat leaves the transcript ending on consecutive assistant lines.
+    const out = normalizeHistory([U('a'), A('b'), A('c'), A('d')]);
+    // a -> then the three assistant lines merge, and since it ends on assistant a
+    // user placeholder is appended so the model has a turn to answer.
+    expect(out).toEqual([U('a'), A('b\nc\nd'), U('...')]);
+  });
+
+  test('appends a user placeholder when history ends on an assistant turn', () => {
+    const out = normalizeHistory([U('hey'), A('reply')]);
+    expect(out[out.length - 1]).toEqual(U('...'));
+  });
+
+  test('an all-assistant or empty history still yields a valid user-first turn', () => {
+    expect(normalizeHistory([A('only greeting')])).toEqual([U('...')]);
+    expect(normalizeHistory([])).toEqual([U('...')]);
   });
 });
 
