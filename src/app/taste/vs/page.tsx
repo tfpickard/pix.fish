@@ -102,11 +102,15 @@ async function buildVersus(
     blended ? searchByVector(blended, { limit: 10, kind: 'caption', nsfwMode }) : Promise.resolve([])
   ]);
 
-  const idsA = rankedA.map((m) => m.imageId);
-  const idsB = rankedB.map((m) => m.imageId);
+  // Drop anything either person explicitly passed on before slicing -- the same
+  // rule the solo result applies, so a rejected image can't resurface under
+  // "you'd both love" or a "pull toward" column just because it ranks highly.
+  const skippedSet = new Set([...aSkipped, ...bSkipped]);
+  const idsA = rankedA.map((m) => m.imageId).filter((id) => !skippedSet.has(id));
+  const idsB = rankedB.map((m) => m.imageId).filter((id) => !skippedSet.has(id));
   const setB = new Set(idsB);
   const setA = new Set(idsA);
-  const bothIds = rankedBoth.map((m) => m.imageId).slice(0, 8);
+  const bothIds = rankedBoth.map((m) => m.imageId).filter((id) => !skippedSet.has(id)).slice(0, 8);
   const aOnlyIds = idsA.filter((id) => !setB.has(id)).slice(0, 4);
   const bOnlyIds = idsB.filter((id) => !setA.has(id)).slice(0, 4);
 

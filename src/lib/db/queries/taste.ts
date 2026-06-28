@@ -31,14 +31,15 @@ function idList(ids: number[]) {
 
 // Random caption-embedded image ids, gated to the visitor's NSFW mode. Used to
 // seed the quiz pairs. Randomized per load -- the quiz is exploratory, not a
-// deterministic daily.
+// deterministic daily. Archived images are excluded (the quiz renders these
+// directly, so a deleted-but-still-embedded row must not surface as a pair).
 export async function getRandomEmbeddedImageIds(count: number, nsfwMode: NsfwMode): Promise<number[]> {
   const limit = Math.min(Math.max(Math.trunc(count), 1), 64);
   const res = await db.execute<{ id: number }>(sql`
     SELECT i.id
     FROM images i
     JOIN embeddings e ON e.image_id = i.id AND e.kind = 'caption' AND e.subject_type = 'image'
-    WHERE true ${nsfwClause(nsfwMode)}
+    WHERE i.archived_at IS NULL ${nsfwClause(nsfwMode)}
     ORDER BY random()
     LIMIT ${limit}
   `);
@@ -125,7 +126,9 @@ export async function recordTasteVote(winnerId: number, loserId: number, ipHash:
 }
 
 // Images ranked by win rate, gated by NSFW mode. A min-appearances floor keeps
-// a single lucky win off the top. Returns [] if the table is missing.
+// a single lucky win off the top. Archived images are excluded (the leaderboard
+// renders them, and a row can accrue votes before being archived). Returns []
+// if the table is missing.
 export async function topMagnetic(limit: number, nsfwMode: NsfwMode): Promise<{ id: number; wins: number; total: number }[]> {
   const lim = Math.min(Math.max(Math.trunc(limit), 1), 48);
   try {
@@ -140,7 +143,7 @@ export async function topMagnetic(limit: number, nsfwMode: NsfwMode): Promise<{ 
       SELECT i.id, agg.wins, agg.total
       FROM agg
       JOIN images i ON i.id = agg.id
-      WHERE agg.total >= 3 ${nsfwClause(nsfwMode)}
+      WHERE agg.total >= 3 AND i.archived_at IS NULL ${nsfwClause(nsfwMode)}
       ORDER BY (agg.wins::float / agg.total) DESC, agg.wins DESC, i.id ASC
       LIMIT ${lim}
     `);

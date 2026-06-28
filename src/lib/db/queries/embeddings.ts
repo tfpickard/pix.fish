@@ -160,6 +160,13 @@ export async function countCaptionEmbeddings(): Promise<number> {
 // near-orthogonal distance (~1.0), so the farthest set can be incoherent.
 // Callers that care about coherence should ignore distance and use the
 // farthest set only as LLM context, not as a final answer.
+//
+// Archived images (archived_at set) are excluded unconditionally: this is the
+// public ranking primitive (search, "more like this", taste), and an archived
+// row is meant to vanish from every public surface while staying recoverable.
+// Its embedding is left intact on archive, so without this gate a still-near
+// vector would resurface a deleted image. Admin callers (breed/surprise) want
+// the same -- a deleted image shouldn't be offered as a live match either.
 export async function searchByVector(
   vec: number[],
   opts: { limit?: number; kind?: EmbeddingKind; order?: 'nearest' | 'farthest'; nsfwMode?: NsfwMode } = {}
@@ -178,7 +185,7 @@ export async function searchByVector(
     SELECT e.image_id, e.vec <=> ${vecLiteral}::vector AS distance
     FROM embeddings e
     JOIN images i ON i.id = e.image_id
-    WHERE e.kind = ${kind} AND e.subject_type = 'image'
+    WHERE e.kind = ${kind} AND e.subject_type = 'image' AND i.archived_at IS NULL
     ${nsfwClause}
     ORDER BY distance ${direction}
     LIMIT ${limit}
