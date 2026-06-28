@@ -117,6 +117,19 @@ export async function updateJobPayload(id: number, payload: unknown): Promise<vo
     .where(eq(jobs.id, id));
 }
 
+// Return a claimed job to the queue WITHOUT consuming an attempt or rescheduling
+// it. Used by the cron drain to defer a job it claimed but cannot finish within
+// the remaining function budget, so a long single-attempt job (fuse.render) is
+// never started just to be killed by the wall and reclaimed as failed. Its runAt
+// is left in the past, so it stays the oldest eligible row and is claimed first
+// on the next tick (where it has the full budget).
+export async function releaseJob(id: number): Promise<void> {
+  await db
+    .update(jobs)
+    .set({ status: 'pending', lockedBy: null, lockedAt: null })
+    .where(eq(jobs.id, id));
+}
+
 export async function markJobDone(id: number): Promise<void> {
   await db
     .update(jobs)
