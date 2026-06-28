@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { loadChronicleEntries } from '@/lib/universe/chronicle-load';
 import type { ChronicleEntry } from '@/lib/universe/chronicle';
+import { readNsfwMode } from '@/lib/nsfw';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -31,7 +32,7 @@ function EntryRow({ e }: { e: ChronicleEntry }) {
         {e.clerk ? <span>&middot; {e.clerk}</span> : null}
         {e.subjectKind === 'specimen' && e.subjectSlug ? (
           <Link
-            href={`/${e.subjectSlug}`}
+            href={e.subjectHandle ? `/u/${e.subjectHandle}/${e.subjectSlug}` : `/${e.subjectSlug}`}
             prefetch={false}
             className="underline-offset-2 hover:text-ink-100 hover:underline"
           >
@@ -48,7 +49,8 @@ function EntryRow({ e }: { e: ChronicleEntry }) {
 export default async function ChroniclePage() {
   let entries: ChronicleEntry[] = [];
   try {
-    entries = await loadChronicleEntries(60);
+    const nsfwMode = await readNsfwMode();
+    entries = await loadChronicleEntries(60, nsfwMode);
   } catch (err) {
     console.error('chronicle page: loadChronicleEntries failed', err);
   }

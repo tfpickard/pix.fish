@@ -676,6 +676,23 @@ export async function getImagesByIdsOrdered(ids: number[]): Promise<Image[]> {
   return ids.map((id) => byId.get(id)).filter((r): r is Image => !!r);
 }
 
+export type ImageRef = { slug: string; handle: string; isNsfw: boolean };
+
+// Slim per-image refs (slug + owner handle + NSFW flag) for a set of ids.
+// Used by the chronicle to build canonical /u/<handle>/<slug> links and to
+// apply the same NSFW visibility rule the public gallery uses.
+export async function imageRefsByIds(ids: number[]): Promise<Map<number, ImageRef>> {
+  const out = new Map<number, ImageRef>();
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({ id: images.id, slug: images.slug, handle: users.handle, isNsfw: images.isNsfw })
+    .from(images)
+    .innerJoin(users, eq(users.id, images.ownerId))
+    .where(inArray(images.id, ids));
+  for (const r of rows) out.set(r.id, { slug: r.slug, handle: r.handle, isNsfw: r.isNsfw });
+  return out;
+}
+
 // Slim projection for sitemap/feed generation. We don't hydrate captions or
 // tags here: a gallery of several thousand rows would otherwise trigger
 // captions/descriptions/tags fan-outs that the sitemap has no use for.

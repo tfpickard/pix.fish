@@ -1,4 +1,5 @@
 import type { UniverseEvent } from '@/lib/db/schema';
+import type { ImageRef } from '@/lib/db/queries/images';
 import { EVENT_TYPE } from './events';
 
 // Pure mapping from a canon event to a chronicle entry. Shared by the
@@ -15,6 +16,7 @@ export type ChronicleEntry = {
   subjectKind: string;
   subjectId: string;
   subjectSlug: string | null; // image slug for specimen subjects (for linking)
+  subjectHandle: string | null; // owner handle, for canonical /u/<handle>/<slug> links
   text: string;
 };
 
@@ -45,7 +47,7 @@ function truncate(s: string, n = 180): string {
 }
 
 export type ChronicleContext = {
-  slugByImageId: Map<number, string>;
+  refByImageId: Map<number, ImageRef>;
   clerkNameBySlug: Map<string, string>;
 };
 
@@ -64,9 +66,12 @@ export function toChronicleEntry(ev: UniverseEvent, ctx: ChronicleContext): Chro
   }
 
   let subjectSlug: string | null = null;
+  let subjectHandle: string | null = null;
   if (ev.subjectType === 'specimen') {
     const id = Number(ev.subjectId);
-    subjectSlug = Number.isFinite(id) ? ctx.slugByImageId.get(id) ?? null : null;
+    const ref = Number.isFinite(id) ? ctx.refByImageId.get(id) : undefined;
+    subjectSlug = ref?.slug ?? null;
+    subjectHandle = ref?.handle ?? null;
   }
 
   return {
@@ -78,6 +83,7 @@ export function toChronicleEntry(ev: UniverseEvent, ctx: ChronicleContext): Chro
     subjectKind: ev.subjectType,
     subjectId: ev.subjectId,
     subjectSlug,
+    subjectHandle,
     text
   };
 }

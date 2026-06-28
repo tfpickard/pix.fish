@@ -129,14 +129,16 @@ export async function universeAmendHandler(job: Job): Promise<void> {
     dedupeKey: dedupeKey.amendment(imageId, generation)
   });
 
-  // Lost the race for this generation -- another worker already filed it.
-  if (!inserted) return;
-
+  // Always materialize the returned event -- whether we just inserted it or it
+  // was already on the canon from a prior attempt that died before
+  // materializing. applyEvent upserts, so this is idempotent and recovers a
+  // "filed but invisible" amendment without a manual full rebuild.
   await materializeEvent(event);
 
   // If this amendment contradicts a prior clerk, file an audit flag for the
-  // chronicle. It is a pure event-log artifact (the reducer ignores it); the
-  // contradiction itself lives, unreconciled, in the fragments.
+  // chronicle. Dedupe-keyed, so it is safe to (re)attempt on a retry. It is a
+  // pure event-log artifact (the reducer ignores it); the contradiction itself
+  // lives, unreconciled, in the fragments.
   const contradicted = fragments.map((f) => f.clerkSlug).find((s) => s !== amender.slug) ?? null;
   if (contradicted) {
     const audit: AuditFlaggedPayload = {
@@ -154,8 +156,9 @@ export async function universeAmendHandler(job: Job): Promise<void> {
     });
   }
 
-  // Event-driven ripple: nudge the neighbourhood, bounded to one hop.
-  if (depth < 1) {
+  // Event-driven ripple, bounded to one hop. Gated on `inserted` so a retry
+  // (event already present) does not re-fan-out to neighbours.
+  if (inserted && depth < 1) {
     await enqueueJob({
       type: 'universe.ripple',
       payload: { imageId, seed, depth },

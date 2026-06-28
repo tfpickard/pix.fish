@@ -114,11 +114,25 @@ NEAREST RECORDS ON FILE:
 
 File your amendment now.`;
 
+// Cap how many prior filings are serialized into an amendment prompt, and
+// truncate each body. Without this, a specimen the loop revisits many times
+// would grow its prompt without bound until it hits provider context limits or
+// the job timeout. We keep the most recent filings (the caller passes them
+// oldest-first) since those are what a new clerk most needs to engage with.
+const MAX_PRIOR_FRAGMENTS = 6;
+const MAX_PRIOR_BODY_CHARS = 600;
+
 function formatPriorFragments(prior: { clerk: string; body: string }[]): string {
   if (prior.length === 0) return '(no prior filings)';
-  return prior
-    .map((p) => `- ${p.clerk}: ${p.body.trim()}`)
-    .join('\n\n');
+  const recent = prior.slice(-MAX_PRIOR_FRAGMENTS);
+  const omitted = prior.length - recent.length;
+  const lines = recent.map((p) => {
+    const body = p.body.trim();
+    const clipped = body.length > MAX_PRIOR_BODY_CHARS ? `${body.slice(0, MAX_PRIOR_BODY_CHARS - 1)}…` : body;
+    return `- ${p.clerk}: ${clipped}`;
+  });
+  if (omitted > 0) lines.unshift(`(${omitted} earlier filing(s) omitted for brevity)`);
+  return lines.join('\n\n');
 }
 
 export async function buildAmendmentPrompt(ctx: AmendmentContext): Promise<string> {
