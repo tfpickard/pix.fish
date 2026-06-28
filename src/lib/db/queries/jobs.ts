@@ -21,11 +21,24 @@ export async function enqueueJob(row: {
 }
 
 // Reclaim rows whose visibility-timeout lease expired. Runs at the top of the
-// cron tick so a handler that died mid-flight can retry on the next pass.
+// cron tick. A row still 'processing' past the timeout means the worker that
+// claimed it died mid-flight -- on Vercel the function is killed at the 60s wall,
+// so it is definitely not still running. Count that as a consumed attempt: bump
+// attempts and, if that reaches maxAttempts, mark the job 'failed' instead of
+// re-queuing it. This stops a single-attempt paid job (fuse.render,
+// maxAttempts: 1) from being re-claimed and BILLED A SECOND TIME after a crash
+// or deploy, while still letting multi-attempt idempotent jobs retry as before.
 export async function reclaimStuckJobs(olderThan: Date): Promise<number> {
   const res = await db
     .update(jobs)
-    .set({ status: 'pending', lockedBy: null, lockedAt: null })
+    .set({
+      attempts: sql`${jobs.attempts} + 1`,
+      status: sql`CASE WHEN ${jobs.attempts} + 1 >= ${jobs.maxAttempts} THEN 'failed' ELSE 'pending' END`,
+      finishedAt: sql`CASE WHEN ${jobs.attempts} + 1 >= ${jobs.maxAttempts} THEN NOW() ELSE ${jobs.finishedAt} END`,
+      lastError: sql`CASE WHEN ${jobs.attempts} + 1 >= ${jobs.maxAttempts} THEN 'reclaimed after visibility timeout (worker died mid-job); not retried' ELSE ${jobs.lastError} END`,
+      lockedBy: null,
+      lockedAt: null
+    })
     .where(and(eq(jobs.status, 'processing'), sql`${jobs.lockedAt} < ${olderThan.toISOString()}`))
     .returning({ id: jobs.id });
   return res.length;

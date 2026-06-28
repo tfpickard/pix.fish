@@ -17,6 +17,10 @@ export type ImageGenRequest = {
   height?: number;
   // Optional determinism hint for adapters that support it.
   seed?: number;
+  // Optional cancellation. Long, paid renders (fuse.render) abort the in-flight
+  // fetch on a time budget rather than leaving it dangling when the function is
+  // killed at the wall.
+  signal?: AbortSignal;
 };
 
 export type ImageGenResult = {
@@ -86,7 +90,8 @@ export class OpenRouterImageGenerator implements ImageGenerator {
         'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL ?? 'https://pix.fish',
         'X-Title': 'pix.fish'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: req.signal
     });
 
     if (!res.ok) {
@@ -145,7 +150,8 @@ export class OpenAIImageGenerator implements ImageGenerator {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: req.signal
     });
 
     if (!res.ok) {
@@ -167,7 +173,7 @@ export class OpenAIImageGenerator implements ImageGenerator {
       };
     }
     if (item?.url) {
-      const imgRes = await fetch(item.url);
+      const imgRes = await fetch(item.url, { signal: req.signal });
       if (!imgRes.ok) throw new Error(`OpenAI image url fetch failed (${imgRes.status})`);
       return {
         bytes: Buffer.from(await imgRes.arrayBuffer()),

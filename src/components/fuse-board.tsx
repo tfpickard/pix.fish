@@ -197,7 +197,9 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
         }
         // pending / processing -> keep polling
       }
-      setRenderError('still rendering -- check /admin/jobs for the result');
+      // Stopped polling, but the job lives on: it will finish in the background and
+      // the rendered image stays recoverable at /admin/jobs (which shows the url).
+      setRenderError(`still rendering -- it'll appear at /admin/jobs (job #${data.jobId}) when done`);
     } catch {
       if (!superseded()) setRenderError('render failed -- network error');
     } finally {
