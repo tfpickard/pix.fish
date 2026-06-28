@@ -130,10 +130,14 @@ export class OpenAIImageGenerator implements ImageGenerator {
       prompt: req.prompt,
       n: 1
     };
-    // gpt-image takes a `size` string (e.g. "1024x1024"), not width/height.
-    // Pass one through when both dims are given; otherwise let the model choose.
-    body.size =
-      req.width && req.height ? `${Math.round(req.width)}x${Math.round(req.height)}` : 'auto';
+    // gpt-image takes a `size` string (e.g. "1024x1024"), not width/height. Only
+    // send it when both dims are given; otherwise omit it so the model uses its
+    // default (safer than guessing a value it might reject). We deliberately do
+    // NOT send `response_format`: the gpt-image family rejects that parameter and
+    // always returns base64 (`b64_json`), so requesting it would error.
+    if (req.width && req.height) {
+      body.size = `${Math.round(req.width)}x${Math.round(req.height)}`;
+    }
 
     const res = await fetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
@@ -149,12 +153,30 @@ export class OpenAIImageGenerator implements ImageGenerator {
       throw new Error(`OpenAI image gen failed (${res.status}): ${text}`);
     }
 
-    type OpenAIImageResponse = { data: { b64_json?: string }[] };
+    // gpt-image returns b64_json; tolerate a `url` too (in case a routed model
+    // returns one) by fetching the bytes.
+    type OpenAIImageResponse = { data: { b64_json?: string; url?: string }[] };
     const json = (await res.json()) as OpenAIImageResponse;
-    const b64 = json.data?.[0]?.b64_json;
-    if (!b64) throw new Error('OpenAI returned no image data');
-
-    return { bytes: Buffer.from(b64, 'base64'), mime: 'image/png', provider: 'openai', model: this.model };
+    const item = json.data?.[0];
+    if (item?.b64_json) {
+      return {
+        bytes: Buffer.from(item.b64_json, 'base64'),
+        mime: 'image/png',
+        provider: 'openai',
+        model: this.model
+      };
+    }
+    if (item?.url) {
+      const imgRes = await fetch(item.url);
+      if (!imgRes.ok) throw new Error(`OpenAI image url fetch failed (${imgRes.status})`);
+      return {
+        bytes: Buffer.from(await imgRes.arrayBuffer()),
+        mime: imgRes.headers.get('content-type') ?? 'image/png',
+        provider: 'openai',
+        model: this.model
+      };
+    }
+    throw new Error('OpenAI returned no image data');
   }
 }
 

@@ -13,8 +13,9 @@
 // yields the same prompt, matching the deterministic fusion. Obeys the
 // no-em-dash rule (uses --).
 
-// The model id this prompt is written for. Kept here so the UI can name the
-// target and the imagegen adapter can default to it from one place.
+// The model id this prompt is written for. Referenced by the UI (to name the
+// target) and by /api/fuse/render (which passes it to the image generator), so
+// the prompt and the live render stay on the same model id.
 export const COMPOSITE_PROMPT_MODEL = 'gpt-image-2';
 
 // Trim a caption to a clean subject clause: drop a trailing period and outer

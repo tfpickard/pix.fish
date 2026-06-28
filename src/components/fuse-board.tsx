@@ -30,6 +30,9 @@ type Reveal = {
   result: PathNode | null;
   isNew: boolean;
   pending: boolean;
+  // Set on a real fuse error (429/422/500/network) so the UI can distinguish it
+  // from a legitimate "no distinct result".
+  error?: string;
 };
 
 export function FuseBoard({ initial, isAdmin = false }: Props) {
@@ -74,13 +77,20 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ a: aId, b: bId })
         });
-        const data = res.ok ? ((await res.json()) as { node?: PathNode | null }) : { node: null };
-        const node = data.node ?? null;
-        const isNew = !!node && !inventoryRef.current.some((n) => n.imageId === node.imageId);
-        if (node && isNew) setInventory((inv) => [...inv, node]);
-        setReveal({ a, b, result: node, isNew, pending: false });
+        if (res.ok) {
+          const data = (await res.json()) as { node?: PathNode | null };
+          const node = data.node ?? null;
+          const isNew = !!node && !inventoryRef.current.some((n) => n.imageId === node.imageId);
+          if (node && isNew) setInventory((inv) => [...inv, node]);
+          setReveal({ a, b, result: node, isNew, pending: false });
+        } else {
+          // A real error (429 rate limit / 422 unfusable / 500) is NOT the same as
+          // a legitimate "no distinct result" -- surface it distinctly.
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          setReveal({ a, b, result: null, isNew: false, pending: false, error: data.error || `fuse failed (${res.status})` });
+        }
       } catch {
-        setReveal({ a, b, result: null, isNew: false, pending: false });
+        setReveal({ a, b, result: null, isNew: false, pending: false, error: 'fuse failed -- network error' });
       } finally {
         busyRef.current = false;
       }
@@ -190,6 +200,10 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
               </div>
             ) : reveal.result ? (
               <Thumb node={reveal.result} size="lg" glow />
+            ) : reveal.error ? (
+              <div className="flex aspect-square w-20 items-center justify-center rounded-md border border-dashed border-rose-500/50 bg-ink-950 p-1 text-center font-mono text-[10px] leading-tight text-rose-300 sm:w-24">
+                {reveal.error}
+              </div>
             ) : (
               <div className="flex aspect-square w-20 items-center justify-center rounded-md border border-dashed border-ink-700 bg-ink-950 text-center font-mono text-[10px] text-ink-500 sm:w-24">
                 nothing new between them
