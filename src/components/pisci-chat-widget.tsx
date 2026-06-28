@@ -78,6 +78,7 @@ export function PisciChatWidget() {
   // re-armed silence timer firing hidden ghost requests).
   const turnSeqRef = useRef(0);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const woundedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Mirrors `open` for the auto-open click/scroll listeners, which would
   // otherwise count clicks on the widget's own controls (e.g. the close button).
@@ -114,6 +115,15 @@ export function PisciChatWidget() {
     if (silenceTimer.current) {
       clearTimeout(silenceTimer.current);
       silenceTimer.current = null;
+    }
+  }, []);
+
+  // Cancel a pending "wounded reopen" -- e.g. when the visitor reopens or replies
+  // within the delay, so it can't fire an out-of-order ghost into a live chat.
+  const clearWounded = useCallback(() => {
+    if (woundedTimer.current) {
+      clearTimeout(woundedTimer.current);
+      woundedTimer.current = null;
     }
   }, []);
 
@@ -157,9 +167,13 @@ export function PisciChatWidget() {
     } catch {
       /* best effort */
     }
+    // A manual reopen pre-empts a pending wounded reopen and invalidates any
+    // in-flight ghost (turnSeqRef) so neither lands out of order.
+    clearWounded();
+    turnSeqRef.current += 1;
     setOpen(true);
     ensureGreeting();
-  }, [ensureGreeting]);
+  }, [ensureGreeting, clearWounded]);
 
   // Auto-intrusion: once per session, open on a 5-10s timer OR after minimal
   // interaction, whichever fires first.
@@ -207,14 +221,24 @@ export function PisciChatWidget() {
     window.addEventListener('scroll', onScroll, { passive: true });
     window.addEventListener('click', onClick);
     return cleanup;
-  }, [mounted, openPanel]);
+    // `open` is a dependency so that opening the panel (by any means) re-runs this
+    // effect: the previous run's cleanup tears down the timer/listeners, and the
+    // re-run early-returns because AUTO_OPENED_KEY is now set. Without it, a manual
+    // open would leave the auto-open timer/listeners live to reopen after a close.
+  }, [mounted, openPanel, open]);
 
   // Keep the transcript pinned to the newest message.
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [bubbles, open]);
 
-  useEffect(() => () => clearSilence(), [clearSilence]);
+  useEffect(
+    () => () => {
+      clearSilence();
+      clearWounded();
+    },
+    [clearSilence, clearWounded]
+  );
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -261,6 +285,7 @@ export function PisciChatWidget() {
   // exactly once (if the conversation had already tripped), then stays closed.
   const handleClose = useCallback(() => {
     clearSilence();
+    clearWounded();
     // Invalidate any in-flight turn so its late reply can't revive the widget.
     turnSeqRef.current += 1;
     setOpen(false);
@@ -280,7 +305,12 @@ export function PisciChatWidget() {
     } catch {
       /* best effort */
     }
-    setTimeout(() => {
+    const seq = turnSeqRef.current;
+    woundedTimer.current = setTimeout(() => {
+      woundedTimer.current = null;
+      // The visitor reopened or replied within the delay (either bumps the token):
+      // this wounded reopen is now stale -- don't fire a ghost into a live chat.
+      if (turnSeqRef.current !== seq) return;
       // Drive the reopen through the spine (a 'ghost' = abandonment) so the beat,
       // status line, and bubble stay in sync and progress never regresses: an
       // early close reopens at DEPENDENCY, a late one at SPIRAL. Then re-arm the
@@ -291,7 +321,7 @@ export function PisciChatWidget() {
       setOpen(true);
       armSilence();
     }, WOUNDED_REOPEN_MS);
-  }, [clearSilence, pushBubble, armSilence]);
+  }, [clearSilence, clearWounded, pushBubble, armSilence]);
 
   if (!mounted || !seed) return null;
 
