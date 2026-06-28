@@ -43,8 +43,12 @@ export function FishStatsBanner({ stats, fishHidden, onShowFish }: FishStatsBann
     writeStatsHidden(false);
   };
 
+  // Anchored just below the site NavBar (sticky top-0, z-40, h-14 = 56px) so the
+  // header never covers it -- this is what bit iOS Safari. Sits a level below the
+  // nav AND below the mobile hamburger panel (also at top-14, z-30), so an open
+  // menu cleanly covers the banner rather than fighting it.
   const barClass =
-    'fixed inset-x-0 top-0 z-30 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-ink-800/70 bg-ink-950/80 px-3 py-1.5 font-mono text-[11px] text-ink-300 backdrop-blur';
+    'fixed inset-x-0 top-14 z-20 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-ink-800/70 bg-ink-950/80 px-3 py-1.5 font-mono text-[11px] text-ink-300 backdrop-blur';
 
   // Fish dismissed: forced-open notice, no hide control.
   if (fishHidden) {
@@ -77,7 +81,7 @@ export function FishStatsBanner({ stats, fishHidden, onShowFish }: FishStatsBann
         type="button"
         onClick={show}
         aria-label="show fish stats"
-        className="fixed right-3 top-2 z-30 rounded-full border border-ink-800/70 bg-ink-950/80 px-2 py-0.5 font-mono text-[10px] text-ink-500 backdrop-blur transition-colors hover:text-ink-200"
+        className="fixed right-3 top-16 z-20 rounded-full border border-ink-800/70 bg-ink-950/80 px-2 py-0.5 font-mono text-[10px] text-ink-500 backdrop-blur transition-colors hover:text-ink-200"
       >
         ▾ stats
       </button>
