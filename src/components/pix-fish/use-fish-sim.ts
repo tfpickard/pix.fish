@@ -34,6 +34,9 @@ import {
   POST_MEAL_COOLDOWN_FAST,
   PREDATION_GROWTH,
   PREDATION_MAX_BASESIZE,
+  REDUCED_MORPH_AMOUNT_SCALE,
+  REDUCED_MORPH_SPEED_SCALE,
+  REDUCED_SWIM_SCALE,
   REPRO_COOLDOWN,
   REPRO_COOLDOWN_FAST,
   SCATTER_RADIUS,
@@ -322,13 +325,6 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     if (r.refs.facing) r.refs.facing.style.transform = `scaleX(${r.facing})`;
   }, []);
 
-  const resetMorph = useCallback((r: EntityRuntime) => {
-    if (r.refs.morphGroup) r.refs.morphGroup.removeAttribute('transform');
-    if (r.refs.warp) r.refs.warp.setAttribute('scale', '0');
-    if (r.refs.body) r.refs.body.setAttribute('d', buildBodyPath(0));
-    r.currentSize = r.baseSize;
-  }, []);
-
   // --- behavior machine ------------------------------------------------------
   const enterBehavior = useCallback(
     (r: EntityRuntime, next: Behavior, now: number) => {
@@ -402,8 +398,26 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
 
   // --- per-frame steps -------------------------------------------------------
   const stepMorph = useCallback(
-    (r: EntityRuntime, neighborsSmooth: Array<{ x: number; y: number; z: number }>, dt: number, cfg: FishMorphConfig, now: number) => {
-      const eff = applyGenotypeToConfig(r.genotype, cfg);
+    (
+      r: EntityRuntime,
+      neighborsSmooth: Array<{ x: number; y: number; z: number }>,
+      dt: number,
+      cfg: FishMorphConfig,
+      now: number,
+      gentle: boolean
+    ) => {
+      const base = applyGenotypeToConfig(r.genotype, cfg);
+      // Reduced motion keeps the morph alive but calmer: slower drift and a
+      // shallower squash/skew/warp so nothing deforms abruptly.
+      const eff = gentle
+        ? {
+            ...base,
+            lorenzSpeed: base.lorenzSpeed * REDUCED_MORPH_SPEED_SCALE,
+            squashAmount: base.squashAmount * REDUCED_MORPH_AMOUNT_SCALE,
+            skewAmount: base.skewAmount * REDUCED_MORPH_AMOUNT_SCALE,
+            warpAmount: base.warpAmount * REDUCED_MORPH_AMOUNT_SCALE
+          }
+        : base;
       const frameScale = clamp(dt / (1 / 60), 0.25, 4);
       const raw = lorenzStep(r.lorenz, eff.lorenzSpeed * frameScale);
 
@@ -475,9 +489,10 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         // tank refills, potentially exceeding POP_MAX for reduced-motion users.
         seekTarget(r, dt, MAX_SPEED);
       } else if (reduced) {
-        // Essentially parked: drift at 4% of normal speed so the fish stay nearly
-        // still (honoring prefers-reduced-motion) while avoiding a fully frozen layout.
-        seekTarget(r, dt, MAX_SPEED * 0.04);
+        // Calm swim: a gentle plain wander (no boids chase/darting) at a fraction
+        // of cruising speed -- alive but unhurried, honoring prefers-reduced-motion
+        // without freezing the tank.
+        seekTarget(r, dt, MAX_SPEED * REDUCED_SWIM_SCALE);
         if (Math.hypot(r.target.x - r.pos.x, r.target.y - r.pos.y) < WANDER_RETARGET_DIST) {
           r.target = pickWanderTarget();
         }
@@ -672,12 +687,9 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       // coupling is order-independent within a frame.
       const snap = rts.map((r) => ({ id: r.id, pos: r.pos, sm: { ...r.lorenzSmooth } }));
 
-      // Pass 1: morph (sets currentSize used by chase/avoid in pass 2).
+      // Pass 1: morph (sets currentSize used by chase/avoid in pass 2). Under
+      // reduced motion the morph still runs, just gentler (see stepMorph).
       for (const r of rts) {
-        if (reduced) {
-          resetMorph(r);
-          continue;
-        }
         // k nearest within radius, for coupling.
         const neighbors = snap
           .filter((s) => s.id !== r.id)
@@ -686,14 +698,14 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
           .sort((a, z) => a.d - z.d)
           .slice(0, NEIGHBOR_K)
           .map((n) => n.s.sm);
-        stepMorph(r, neighbors, dt, cfg, t);
+        stepMorph(r, neighbors, dt, cfg, t, reduced);
       }
 
       // Pass 2: motion + blink.
       for (const r of rts) {
         const others = rts.filter((o) => o.id !== r.id);
         stepMotion(r, others, dt, t, reduced);
-        if (!reduced) stepBlink(r, t);
+        stepBlink(r, t);
 
         // Behavior expiry (skip while emigrating / reduced).
         if (!reduced && !r.emigrating && t >= r.behaviorEndsAt) {
@@ -738,7 +750,6 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     stepMotion,
     stepBlink,
     enterBehavior,
-    resetMorph,
     runEventStep,
     eventInterval,
     bounds,

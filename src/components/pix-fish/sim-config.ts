@@ -127,6 +127,22 @@ export const TEMPERAMENT_DEADZONE = 0.15;
 export const EDGE_MARGIN = 80;
 export const EDGE_WEIGHT = 2.2;
 
+// ---------------------------------------------------------------------------
+// Reduced motion -- when prefers-reduced-motion is set we keep the tank ALIVE
+// (slow organic morph + a calm swim) rather than freezing it, but scale the
+// morph intensity/speed down and drop the jarring bits: the click-scatter burst
+// (gated off in scatter()), fast chase/predation darts (reduced fish use the
+// plain-wander path, no boids), and the CSS enter/exit scale flash (handled by
+// motion-reduce:transition-none in fish-entity.tsx).
+// ---------------------------------------------------------------------------
+
+// Fraction of normal Lorenz drift speed kept for the morph under reduced motion.
+export const REDUCED_MORPH_SPEED_SCALE = 0.5;
+// Fraction of the squash/skew/warp amounts kept under reduced motion.
+export const REDUCED_MORPH_AMOUNT_SCALE = 0.6;
+// Calm swim speed under reduced motion, as a fraction of MAX_SPEED.
+export const REDUCED_SWIM_SCALE = 0.32;
+
 // Movement integration.
 export const MAX_SPEED = 78; // px/s cruising cap
 export const MIN_SPEED = 26; // px/s -- nudge along if a fish stalls while wandering
