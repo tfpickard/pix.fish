@@ -2,12 +2,13 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getEmbedder, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
-import { searchByVector } from '@/lib/db/queries/embeddings';
+import { searchByVector, searchLoreByVector } from '@/lib/db/queries/embeddings';
 import {
   DEFAULT_SEARCH_SIM_THRESHOLD,
   getGalleryDefaults
 } from '@/lib/db/queries/gallery-config';
-import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
+import { getImagesByIdsOrdered, hydrateImages, imageRefsByIds } from '@/lib/db/queries/images';
+import { getLoreFragmentBodies } from '@/lib/db/queries/lore-fragments';
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { readNsfwMode } from '@/lib/nsfw';
@@ -92,6 +93,11 @@ export default async function SearchPage({ searchParams }: PageProps) {
   let totalScored = 0;
   let rankedCount = 0;
   let failed = false;
+  // Lore matches: images whose clerk-authored dossier (not just its caption)
+  // is close to the query. Shown in their own section so the archive's writing
+  // is searchable alongside the pictures.
+  type LoreResult = { imageId: number; slug: string; handle: string | null; excerpt: string };
+  let loreResults: LoreResult[] = [];
   try {
     const [cfg, adminKeys, nsfwMode] = await Promise.all([
       loadAiConfig(),
@@ -117,6 +123,37 @@ export default async function SearchPage({ searchParams }: PageProps) {
     const rows = await getImagesByIdsOrdered(ranked.map((m) => m.imageId));
     hydrated = await hydrateImages(rows);
     similarities = new Map(ranked.map((m) => [m.imageId, m.similarity]));
+
+    // Same query vector, ranked against the lore corpus. Apply the same
+    // closeness threshold, drop anything already shown as an image match, and
+    // gate by the same NSFW/archived visibility rules as the rest of the site.
+    const loreMatches = await searchLoreByVector(vec, { limit: 24 });
+    const loreRanked = loreMatches
+      .map((m) => ({ ...m, similarity: Math.max(0, Math.min(1, 1 - m.distance)) }))
+      .filter((m) => m.similarity >= simThreshold);
+    if (loreRanked.length > 0) {
+      const shownImageIds = new Set(hydrated.map((h) => h.id));
+      const [refs, bodies] = await Promise.all([
+        imageRefsByIds([...new Set(loreRanked.map((m) => m.specimenImageId))]),
+        getLoreFragmentBodies(loreRanked.map((m) => m.loreFragmentId))
+      ]);
+      const seen = new Set<number>();
+      for (const m of loreRanked) {
+        if (shownImageIds.has(m.specimenImageId) || seen.has(m.specimenImageId)) continue;
+        const ref = refs.get(m.specimenImageId);
+        if (!ref || ref.archived) continue;
+        if (nsfwMode === 'hide' && ref.isNsfw) continue;
+        if (nsfwMode === 'only' && !ref.isNsfw) continue;
+        seen.add(m.specimenImageId);
+        const body = (bodies.get(m.loreFragmentId) ?? '').trim().replace(/\s+/g, ' ');
+        loreResults.push({
+          imageId: m.specimenImageId,
+          slug: ref.slug,
+          handle: ref.handle,
+          excerpt: body.length > 220 ? `${body.slice(0, 219)}…` : body
+        });
+      }
+    }
   } catch (err) {
     console.error('semantic search failed', err);
     failed = true;
@@ -139,6 +176,28 @@ export default async function SearchPage({ searchParams }: PageProps) {
         </p>
       </section>
       {!failed ? <ImageGrid images={hydrated} similarities={similarities} /> : null}
+
+      {!failed && loreResults.length > 0 ? (
+        <section className="space-y-3 border-t border-ink-800 pt-6">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">
+            from the dossiers
+          </h2>
+          <ul className="space-y-3">
+            {loreResults.map((r) => (
+              <li key={r.imageId} className="space-y-1 border-b border-ink-800/60 pb-3">
+                <Link
+                  href={r.handle ? `/u/${r.handle}/${r.slug}` : `/${r.slug}`}
+                  prefetch={false}
+                  className="font-mono text-xs text-ink-300 underline-offset-2 hover:text-ink-100 hover:underline"
+                >
+                  {r.slug}
+                </Link>
+                <p className="prose-caption text-sm leading-relaxed text-ink-300">{r.excerpt}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }
