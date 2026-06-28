@@ -181,6 +181,7 @@ export function PisciChatWidget() {
       ghostsRef.current += 1;
       const seq = turnSeqRef.current;
       const ac = new AbortController();
+      inFlightAbort.current?.abort();
       inFlightAbort.current = ac;
       const next = advance(state, { type: 'ghost' });
       const result = await renderTurn({
@@ -189,8 +190,10 @@ export function PisciChatWidget() {
         history: bubblesRef.current.map(({ role, content }) => ({ role, content })),
         signal: ac.signal
       });
-      inFlightAbort.current = null;
-      // Closed while the ghost reply was in flight: drop it.
+      // Only clear the shared aborter if this ghost is still the active turn -- a
+      // newer send may have replaced it.
+      if (inFlightAbort.current === ac) inFlightAbort.current = null;
+      // Closed or superseded while the ghost reply was in flight: drop it.
       if (turnSeqRef.current !== seq) return;
       setFsm(result.source === 'llm' ? noteLlmUsed(next) : next);
       pushBubble('assistant', result.text);
@@ -305,6 +308,9 @@ export function PisciChatWidget() {
     setSending(true);
     const seq = turnSeqRef.current;
     const ac = new AbortController();
+    // Cancel any overlapping in-flight turn (a racing double-submit, or a ghost
+    // that fired just before this send) so it can't keep spending tokens.
+    inFlightAbort.current?.abort();
     inFlightAbort.current = ac;
     const history = [
       ...bubblesRef.current.map(({ role, content }) => ({ role, content })),
@@ -318,12 +324,14 @@ export function PisciChatWidget() {
       // the widget -- fall back to a canned on-beat line.
       result = { text: pickCanned(next.beat, seedRef.current), source: 'canned' as const };
     }
-    inFlightAbort.current = null;
-    // Visitor closed the panel while the reply was in flight: drop it. Don't
-    // append into a closed panel, don't commit the beat, don't arm silence (which
-    // would fire hidden ghost requests after dismissal).
+    // Only this turn may clear shared state, and only while it is still the active
+    // one. A stale turn (superseded by a newer send, or invalidated by close) must
+    // not null a newer turn's aborter or re-enable the form under it.
+    const active = inFlightAbort.current === ac;
+    if (active) inFlightAbort.current = null;
     if (turnSeqRef.current !== seq) {
-      setSending(false);
+      // Discarded: closed, or a newer turn took over. Whoever invalidated this
+      // turn (handleClose, or the newer send) owns the `sending` state.
       return;
     }
     setFsm(result.source === 'llm' ? noteLlmUsed(next) : next);
@@ -342,6 +350,9 @@ export function PisciChatWidget() {
     turnSeqRef.current += 1;
     inFlightAbort.current?.abort();
     inFlightAbort.current = null;
+    // Close owns `sending` now that a discarded in-flight turn no longer clears
+    // it -- otherwise the form could stay disabled after a send+close.
+    setSending(false);
     setOpen(false);
     setFsm((prev) => advance(prev, { type: 'close' }));
 
