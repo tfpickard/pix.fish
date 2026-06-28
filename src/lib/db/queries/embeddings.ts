@@ -262,19 +262,43 @@ export async function allCaptionVectors(): Promise<{ imageId: number; vec: numbe
 
 export async function getNeighborsByImageId(
   imageId: number,
-  opts: { limit?: number; kind?: EmbeddingKind; order?: 'nearest' | 'farthest' } = {}
+  opts: {
+    limit?: number;
+    kind?: EmbeddingKind;
+    order?: 'nearest' | 'farthest';
+    // Visibility gating is OPT-IN. Pass nsfwMode from a PUBLIC render path (the
+    // /[slug] detail page renders these neighbors): without it an opted-out
+    // visitor could be shown NSFW neighbors, and a deleted (archived) image
+    // could resurface in the strip. Background callers (universe jobs) omit it
+    // and keep the lean, ungated self-join -- they do their own archived checks.
+    nsfwMode?: NsfwMode;
+    includeArchived?: boolean;
+  } = {}
 ): Promise<VectorMatch[]> {
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 6), 1), 50);
   const kind = opts.kind ?? 'caption';
   // Cosine distance: 0 = identical direction, 2 = opposite. Nearest uses
   // ASC, farthest DESC. Both queries walk the same pgvector index.
   const direction = opts.order === 'farthest' ? sql`DESC` : sql`ASC`;
+  const gated = opts.nsfwMode !== undefined;
+  const joinImages = gated ? sql`JOIN images i2 ON i2.id = e2.image_id` : sql``;
+  const nsfwClause = !gated
+    ? sql``
+    : opts.nsfwMode === 'only'
+      ? sql`AND i2.is_nsfw = true`
+      : opts.nsfwMode === 'include'
+        ? sql``
+        : sql`AND i2.is_nsfw = false`;
+  const archivedClause = gated && !opts.includeArchived ? sql`AND i2.archived_at IS NULL` : sql``;
   const res = await db.execute<{ image_id: number; distance: number }>(sql`
     SELECT e2.image_id, e2.vec <=> e1.vec AS distance
     FROM embeddings e1
     JOIN embeddings e2
       ON e2.kind = e1.kind AND e2.subject_type = 'image' AND e2.image_id <> e1.image_id
+    ${joinImages}
     WHERE e1.image_id = ${imageId} AND e1.kind = ${kind} AND e1.subject_type = 'image'
+    ${nsfwClause}
+    ${archivedClause}
     ORDER BY distance ${direction}
     LIMIT ${limit}
   `);

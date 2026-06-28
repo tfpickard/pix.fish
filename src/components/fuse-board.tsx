@@ -1,0 +1,267 @@
+'use client';
+
+// /fuse -- image alchemy. Tap two specimens to fuse them: the server returns the
+// real image nearest the centroid of their caption embeddings -- the thing that
+// lives "between" them. New results join your board, and you fuse discoveries
+// into deeper ones. Deterministic (same pair = same fusion), so a board is a
+// shareable collection. Pure React, no new deps; the fusion math is server-side.
+
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import type { PathNode } from '@/lib/knn-path-types';
+
+type Props = {
+  initial: PathNode[]; // starting inventory (random seeds, or a shared board)
+};
+
+const BOARD_CAP = 60; // matches the page's MAX_BOARD (share/restore cap)
+
+function detailUrl(node: PathNode): string {
+  return node.handle ? `/u/${node.handle}/${node.slug}` : `/${node.slug}`;
+}
+
+type Reveal = {
+  a: PathNode;
+  b: PathNode;
+  result: PathNode | null;
+  isNew: boolean;
+  pending: boolean;
+};
+
+export function FuseBoard({ initial }: Props) {
+  const router = useRouter();
+  const [inventory, setInventory] = useState<PathNode[]>(initial);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [reveal, setReveal] = useState<Reveal | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [copyFallback, setCopyFallback] = useState('');
+
+  const busyRef = useRef(false);
+  const inventoryRef = useRef(inventory);
+  inventoryRef.current = inventory;
+
+  // The original seeds are the "primordial" elements; everything else is a find.
+  const seedIds = useMemo(() => new Set(initial.map((n) => n.imageId)), [initial]);
+  const byId = useMemo(() => new Map(inventory.map((n) => [n.imageId, n])), [inventory]);
+  const discovered = useMemo(
+    () => inventory.filter((n) => !seedIds.has(n.imageId)).length,
+    [inventory, seedIds]
+  );
+
+  const doFuse = useCallback(
+    async (aId: number, bId: number) => {
+      if (busyRef.current) return;
+      const a = byId.get(aId);
+      const b = byId.get(bId);
+      if (!a || !b) return;
+      busyRef.current = true;
+      setReveal({ a, b, result: null, isNew: false, pending: true });
+      try {
+        const res = await fetch('/api/fuse', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ a: aId, b: bId })
+        });
+        const data = res.ok ? ((await res.json()) as { node?: PathNode | null }) : { node: null };
+        const node = data.node ?? null;
+        const isNew = !!node && !inventoryRef.current.some((n) => n.imageId === node.imageId);
+        if (node && isNew) setInventory((inv) => [...inv, node]);
+        setReveal({ a, b, result: node, isNew, pending: false });
+      } catch {
+        setReveal({ a, b, result: null, isNew: false, pending: false });
+      } finally {
+        busyRef.current = false;
+      }
+    },
+    [byId]
+  );
+
+  const onTile = useCallback(
+    (id: number) => {
+      if (busyRef.current) return;
+      if (selectedId === null) {
+        setSelectedId(id);
+      } else if (selectedId === id) {
+        setSelectedId(null); // tap again to deselect
+      } else {
+        const a = selectedId;
+        setSelectedId(null);
+        void doFuse(a, id);
+      }
+    },
+    [selectedId, doFuse]
+  );
+
+  const share = useCallback(async () => {
+    const ids = inventoryRef.current.map((n) => n.imageId).slice(-BOARD_CAP);
+    const url = `${window.location.origin}/fuse?have=${ids.join(',')}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setCopyFallback('');
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopyFallback(url);
+    }
+  }, []);
+
+  // "new board" must re-seed even when already on bare /fuse (same href would be
+  // a no-op), so refresh re-runs the random-seeding server page.
+  const newBoard = useCallback(() => {
+    if (typeof window !== 'undefined' && window.location.search) router.push('/fuse');
+    else router.refresh();
+  }, [router]);
+
+  return (
+    <div className="space-y-6 pt-8">
+      <section className="space-y-1">
+        <h1 className="font-fungal-lite text-3xl text-ink-100">fuse</h1>
+        <p className="font-mono text-xs leading-relaxed text-ink-500">
+          image alchemy -- tap two specimens to fuse them and discover the one that lives between them.
+          fuse your finds into deeper ones; every recipe is stable, so a board is yours to share.
+        </p>
+      </section>
+
+      {/* Reveal: A + B = C (or "fusing..."). Sits above the board so each fusion
+          announces itself without scrolling. */}
+      {reveal ? (
+        <section className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+          <div className="flex items-center justify-center gap-3 sm:gap-4">
+            <Thumb node={reveal.a} size="sm" />
+            <span className="font-mono text-lg text-ink-500">+</span>
+            <Thumb node={reveal.b} size="sm" />
+            <span className="font-mono text-lg text-primary">=</span>
+            {reveal.pending ? (
+              <div className="flex aspect-square w-20 items-center justify-center rounded-md border border-dashed border-primary/40 bg-ink-950 font-mono text-xs text-primary sm:w-24">
+                fusing&hellip;
+              </div>
+            ) : reveal.result ? (
+              <Thumb node={reveal.result} size="lg" glow />
+            ) : (
+              <div className="flex aspect-square w-20 items-center justify-center rounded-md border border-dashed border-ink-700 bg-ink-950 text-center font-mono text-[10px] text-ink-500 sm:w-24">
+                nothing new between them
+              </div>
+            )}
+          </div>
+          {reveal.result && !reveal.pending ? (
+            <div className="mt-3 text-center">
+              <span
+                className={
+                  'font-mono text-[10px] uppercase tracking-wider ' +
+                  (reveal.isNew ? 'text-primary' : 'text-ink-500')
+                }
+              >
+                {reveal.isNew ? 'new discovery' : 'already in your board'}
+              </span>
+              <Link
+                href={detailUrl(reveal.result)}
+                className="mt-0.5 block font-fungal-lite text-lg leading-snug text-ink-100 hover:text-primary"
+              >
+                {reveal.result.caption || reveal.result.slug}
+              </Link>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* The board */}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-ink-500">
+            your specimens &middot; {inventory.length}
+            {discovered > 0 ? <span className="text-primary"> ({discovered} found)</span> : null}
+          </p>
+          <p className="font-mono text-[10px] text-ink-600">
+            {selectedId !== null ? 'pick a second to fuse' : 'tap two to fuse'}
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+          {inventory.map((node) => {
+            const isSelected = selectedId === node.imageId;
+            const isFind = !seedIds.has(node.imageId);
+            return (
+              <button
+                key={node.imageId}
+                type="button"
+                onClick={() => onTile(node.imageId)}
+                title={node.caption || node.slug}
+                aria-pressed={isSelected}
+                className={
+                  'group relative aspect-square overflow-hidden rounded-md border bg-ink-950 transition-all ' +
+                  (isSelected
+                    ? 'border-primary ring-2 ring-primary/60'
+                    : 'border-ink-800/80 hover:border-primary/60')
+                }
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={node.blobUrl}
+                  alt={node.caption || node.slug}
+                  className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.05]"
+                />
+                {isFind ? (
+                  <span className="absolute right-1 top-1 rounded-full bg-primary/80 px-1 font-mono text-[8px] uppercase leading-tight text-ink-950">
+                    found
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Actions */}
+      <section className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={share}
+          className="rounded border border-primary/50 bg-primary/10 px-4 py-1.5 font-mono text-xs text-primary hover:bg-primary/20"
+        >
+          {copied ? 'board link copied!' : 'share your board'}
+        </button>
+        <button
+          type="button"
+          onClick={newBoard}
+          className="rounded border border-ink-700 bg-ink-900 px-4 py-1.5 font-mono text-xs text-ink-200 hover:border-primary/50 hover:text-primary"
+        >
+          new board
+        </button>
+        <span className="font-mono text-[11px] text-ink-600">
+          a shared board hands a friend your specimens to keep fusing.
+        </span>
+      </section>
+
+      {copyFallback ? (
+        <div className="space-y-1">
+          <p className="font-mono text-[10px] text-ink-500">copy didn&rsquo;t work -- select and copy this:</p>
+          <textarea
+            readOnly
+            value={copyFallback}
+            rows={2}
+            onFocus={(e) => e.currentTarget.select()}
+            className="w-full resize-none rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[11px] text-ink-300"
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Thumb({ node, size, glow }: { node: PathNode; size: 'sm' | 'lg'; glow?: boolean }) {
+  const dim = size === 'lg' ? 'w-20 sm:w-24' : 'w-14 sm:w-16';
+  return (
+    <Link
+      href={detailUrl(node)}
+      title={node.caption || node.slug}
+      className={
+        'block aspect-square shrink-0 overflow-hidden rounded-md border bg-ink-950 ' +
+        dim +
+        (glow ? ' border-primary shadow-[0_0_18px_-2px] shadow-primary/50' : ' border-ink-800/80')
+      }
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={node.blobUrl} alt={node.caption || node.slug} className="h-full w-full object-cover" />
+    </Link>
+  );
+}
