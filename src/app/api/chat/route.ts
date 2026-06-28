@@ -75,7 +75,10 @@ export async function POST(req: Request) {
       // Derived server-side from the validated beat -- never trusted from the
       // client, so it can't be used to override pacing or the taste fence.
       directive: beatDirective(parsed.data.beat),
-      messages: parsed.data.messages
+      messages: parsed.data.messages,
+      // Propagate the client's disconnect so a timed-out fetch aborts the
+      // upstream call instead of spending tokens on a discarded reply.
+      signal: req.signal
     });
     if (!reply) {
       return NextResponse.json({ error: 'no reply' }, { status: 503 });

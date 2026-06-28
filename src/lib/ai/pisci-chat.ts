@@ -23,6 +23,11 @@ const PISCI_MODEL = 'claude-haiku-4-5-20251001';
 // already demands brevity; this enforces it even if the model ignores the prompt.
 export const PISCI_MAX_TOKENS = 120;
 
+// Server-side request deadline, kept under the client's fetch timeout (8s) so a
+// slow upstream call is aborted here instead of running on to spend tokens on a
+// reply the browser has already given up on and replaced with a canned line.
+export const PISCI_REQUEST_TIMEOUT_MS = 7000;
+
 // Clamp any requested token budget to the hard ceiling. Exported and pure so the
 // cost test can assert the cap is actually enforced, not just configured.
 export function clampMaxTokens(requested: number): number {
@@ -174,18 +179,27 @@ export async function renderPisciTurn(args: {
   beat: Beat;
   directive: string;
   messages: ChatMessage[];
+  // The request's abort signal (the browser fetch's). When the client times out
+  // and disconnects, the upstream call is aborted instead of running to spend
+  // tokens on a discarded reply.
+  signal?: AbortSignal;
 }): Promise<string | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (pisciLlmDisabled() || !apiKey) return null;
 
   const seed: PersonaSeed = makeSeedFromInt(args.seedInt);
   const client = new Anthropic({ apiKey });
-  const res = await client.messages.create({
-    model: PISCI_MODEL,
-    max_tokens: clampMaxTokens(PISCI_MAX_TOKENS),
-    system: buildSystemPrompt(seed, args.beat, args.directive),
-    messages: normalizeHistory(args.messages)
-  });
+  const res = await client.messages.create(
+    {
+      model: PISCI_MODEL,
+      max_tokens: clampMaxTokens(PISCI_MAX_TOKENS),
+      system: buildSystemPrompt(seed, args.beat, args.directive),
+      messages: normalizeHistory(args.messages)
+    },
+    // Abort on client disconnect, and cap the wait server-side; no retries so a
+    // slow call can't multiply the token spend.
+    { signal: args.signal, timeout: PISCI_REQUEST_TIMEOUT_MS, maxRetries: 0 }
+  );
   const block = res.content.find((c) => c.type === 'text');
   if (!block || block.type !== 'text') return null;
   const text = block.text.trim();

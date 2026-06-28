@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { advance, initialState, noteLlmUsed, shouldUseLlm, LLM_TURN_CAP } from '../src/lib/pisci/fsm';
 import {
   PISCI_MAX_TOKENS,
+  PISCI_REQUEST_TIMEOUT_MS,
   clampMaxTokens,
   pisciLlmDisabled,
   normalizeHistory
@@ -29,6 +30,16 @@ describe('max_tokens ceiling', () => {
     expect(clampMaxTokens(0)).toBe(PISCI_MAX_TOKENS);
     expect(clampMaxTokens(-10)).toBe(PISCI_MAX_TOKENS);
     expect(clampMaxTokens(Number.NaN)).toBe(PISCI_MAX_TOKENS);
+  });
+});
+
+describe('server-side request deadline', () => {
+  // Must sit under the client fetch timeout (8s in render.ts) so the upstream
+  // call is aborted server-side rather than left to spend tokens on a reply the
+  // browser already discarded.
+  test('is a positive bound under the client timeout', () => {
+    expect(PISCI_REQUEST_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(PISCI_REQUEST_TIMEOUT_MS).toBeLessThan(8000);
   });
 });
 
