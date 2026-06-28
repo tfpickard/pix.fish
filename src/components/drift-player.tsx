@@ -55,6 +55,9 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
   const [pulse, setPulse] = useState<'toward' | 'away' | null>(null);
   const [copied, setCopied] = useState(false);
   const [copyFallback, setCopyFallback] = useState('');
+  // One-time intro: what drift is + how to steer. Auto-shown on first visit
+  // (remembered in localStorage), reopenable from the "?" in the top chrome.
+  const [showHelp, setShowHelp] = useState(false);
 
   // Refs mirror state for use inside async callbacks without stale closures.
   const nodesRef = useRef(nodes);
@@ -68,11 +71,26 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
   // old trajectory can be ignored when it resolves (see fetchNext).
   const genRef = useRef(0);
   const liveRef = useRef(live);
+  const showHelpRef = useRef(false);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { idxRef.current = idx; }, [idx]);
   useEffect(() => { lucidityRef.current = lucidity; }, [lucidity]);
   useEffect(() => { doneRef.current = done; }, [done]);
   useEffect(() => { liveRef.current = live; }, [live]);
+  useEffect(() => { showHelpRef.current = showHelp; }, [showHelp]);
+
+  // Show the intro on first visit only; persist a flag so it doesn't nag.
+  useEffect(() => {
+    try {
+      if (!window.localStorage.getItem('pf_drift_seen')) setShowHelp(true);
+    } catch {
+      /* blocked/private storage -- just skip the auto-intro */
+    }
+  }, []);
+  const dismissHelp = useCallback(() => {
+    setShowHelp(false);
+    try { window.localStorage.setItem('pf_drift_seen', '1'); } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -229,6 +247,7 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
   // slider, the copy textarea, or a focused button.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (showHelpRef.current) return; // don't drive the fall while the intro is open
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || (typeof t.closest === 'function' && t.closest('input, textarea, select, button')))) return;
       if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
@@ -326,6 +345,14 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
           </span>
           <div className="flex items-center gap-2">
             <span className="font-mono text-[10px] text-ink-500">{trail.length} deep</span>
+            <button
+              type="button"
+              onClick={() => setShowHelp(true)}
+              aria-label="how drift works"
+              className="rounded border border-ink-700/70 bg-ink-950/60 px-1.5 py-0.5 font-mono text-[11px] leading-none text-ink-300 hover:border-primary/50 hover:text-primary"
+            >
+              ?
+            </button>
           </div>
         </div>
 
@@ -406,6 +433,51 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
           </div>
         ) : null}
       </div>
+
+      {/* Intro / how-it-works -- what drift is and how to steer. The fall keeps
+          running, dimmed, behind it as a live preview. */}
+      {showHelp ? (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-ink-950/80 p-4 backdrop-blur-sm">
+          <div className="max-h-full w-full max-w-md space-y-4 overflow-y-auto rounded-xl border border-primary/30 bg-ink-950/95 p-5">
+            <div className="space-y-1">
+              <h2 className="font-fungal-lite text-2xl text-ink-100">drift &middot; fall through the deep</h2>
+              <p className="font-mono text-xs leading-relaxed text-ink-400">
+                Each image flows into the next by pure meaning -- a continuous, never-repeating
+                fall through the gallery. It plays on its own; you steer the current.
+              </p>
+            </div>
+            <ul className="space-y-2 font-mono text-[11px] leading-relaxed text-ink-300">
+              <li>
+                <span className="text-primary">pull toward</span> -- tap the right of the frame (or press T) to
+                lean into what&rsquo;s on screen.
+              </li>
+              <li>
+                <span className="text-rose-300">push away</span> -- tap the left (or press X) to veer toward its
+                opposite.
+              </li>
+              <li>
+                <span className="text-ink-100">lucidity</span> -- drag the dial from a seamless morph up to
+                surreal leaps: you decide how fast reality dissolves.
+              </li>
+              <li>
+                <span className="text-ink-100">pause / step</span> -- space to pause, arrow keys to step through
+                frames.
+              </li>
+              <li>
+                <span className="text-ink-100">share / branch / new</span> -- save your fall for a friend, branch
+                from any frame, or start a fresh one.
+              </li>
+            </ul>
+            <button
+              type="button"
+              onClick={dismissHelp}
+              className="w-full rounded border border-primary/50 bg-primary/10 px-4 py-2 font-mono text-xs text-primary hover:bg-primary/20"
+            >
+              start drifting
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
