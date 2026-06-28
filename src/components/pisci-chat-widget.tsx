@@ -79,10 +79,14 @@ export function PisciChatWidget() {
   const turnSeqRef = useRef(0);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Mirrors `open` for the auto-open click/scroll listeners, which would
+  // otherwise count clicks on the widget's own controls (e.g. the close button).
+  const openRef = useRef(open);
   const [avatarOk, setAvatarOk] = useState(true);
 
   fsmRef.current = fsm;
   bubblesRef.current = bubbles;
+  openRef.current = open;
 
   const nextId = () => ++idRef.current;
 
@@ -146,6 +150,13 @@ export function PisciChatWidget() {
   }, [pushBubble]);
 
   const openPanel = useCallback(() => {
+    // Opening by any means (auto or a manual launcher click) counts as "already
+    // nagged this session" so it doesn't auto-pop again on the next route.
+    try {
+      window.sessionStorage.setItem(AUTO_OPENED_KEY, '1');
+    } catch {
+      /* best effort */
+    }
     setOpen(true);
     ensureGreeting();
   }, [ensureGreeting]);
@@ -177,8 +188,14 @@ export function PisciChatWidget() {
     };
     const delay = AUTO_OPEN_MIN_MS + Math.random() * (AUTO_OPEN_MAX_MS - AUTO_OPEN_MIN_MS);
     const timer = setTimeout(fire, delay);
-    const onScroll = () => fire();
+    // Once the panel is open (manually or auto), stop counting -- otherwise a
+    // click on the widget's own close button would tick the counter and reopen it.
+    const onScroll = () => {
+      if (openRef.current) return;
+      fire();
+    };
     const onClick = () => {
+      if (openRef.current) return;
       clicks += 1;
       if (clicks >= CLICKS_TO_OPEN) fire();
     };
@@ -203,6 +220,10 @@ export function PisciChatWidget() {
     const text = input.trim();
     if (!text || sending || !seedRef.current) return;
     clearSilence();
+    // Invalidate any silence/ghost reply already in flight: clearing the timer
+    // doesn't stop a renderTurn that already started, and a stale abandonment
+    // line must not land after the visitor has just answered.
+    turnSeqRef.current += 1;
     ghostsRef.current = 0;
     setInput('');
     pushBubble('user', text);
