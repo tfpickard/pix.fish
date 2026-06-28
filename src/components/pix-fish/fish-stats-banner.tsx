@@ -88,9 +88,12 @@ export function FishStatsBanner({ stats, fishHidden, onShowFish }: FishStatsBann
     );
   }
 
-  // Fish shown + banner open: the live stats.
+  // Fish shown + banner open: the live stats. Deliberately NOT a live region
+  // (no role="status"/aria-live): it refreshes ~1Hz, which a polite live region
+  // would announce continuously. It's ambient decoration, so let SR users read
+  // it on demand instead of having it narrated.
   return (
-    <div className={barClass} role="status">
+    <div className={barClass}>
       <span className="whitespace-nowrap text-ink-400" aria-hidden="true">
         🐟 pix-fish
       </span>

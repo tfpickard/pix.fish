@@ -188,20 +188,19 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     },
     [getStats]
   );
-  const recordFight = useCallback(
-    (now: number) => {
-      getStats().fights++;
-      void now;
-    },
-    [getStats]
-  );
+  const recordFight = useCallback(() => {
+    getStats().fights++;
+  }, [getStats]);
 
   // --- tunable selectors (fast-mode aware) ----------------------------------
   const eventInterval = useCallback(() => {
     if (DEBUG_FAST_EVENTS) return randRange(simRng, EVENT_INTERVAL_MIN_FAST, EVENT_INTERVAL_MAX_FAST);
-    // Admin-tunable cadence, stored in seconds.
+    // Admin-tunable cadence, stored in seconds. The two sliders move
+    // independently, so normalize in case min was dragged above max.
     const cfg = configRef.current;
-    return randRange(simRng, cfg.eventIntervalMin * 1000, cfg.eventIntervalMax * 1000);
+    const lo = Math.min(cfg.eventIntervalMin, cfg.eventIntervalMax) * 1000;
+    const hi = Math.max(cfg.eventIntervalMin, cfg.eventIntervalMax) * 1000;
+    return randRange(simRng, lo, hi);
   }, []);
   const retryInterval = useCallback(
     () =>
@@ -777,7 +776,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         const a = rts.get(ev.a);
         const b = rts.get(ev.b);
         if (!a || !b) return;
-        recordFight(now);
+        recordFight();
         // Loser = the smaller fish (tie -> coin flip). Lethal only while the
         // tank is above its floor, so a fight can never empty it.
         const aLoses =
