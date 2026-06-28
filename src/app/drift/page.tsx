@@ -52,7 +52,9 @@ export default async function DriftPage({ searchParams }: PageProps) {
       const meta = await hydrateNodes(ordered);
       const nodes = ordered.map((id) => meta.get(id)).filter((n): n is PathNode => !!n && !!n.blobUrl);
       if (nodes.length >= 2) {
-        return <DriftPlayer initial={nodes} replay points={points} />;
+        // key by the replay ids so an App Router soft-nav to a different drift
+        // remounts the player with fresh state instead of reusing the old one.
+        return <DriftPlayer key={`r:${ordered.join(',')}`} initial={nodes} replay points={points} />;
       }
     }
   }
@@ -80,5 +82,7 @@ export default async function DriftPage({ searchParams }: PageProps) {
       </div>
     );
   }
-  return <DriftPlayer initial={[seed]} points={points} />;
+  // key by the seed so branching (?from=) or starting a new drift remounts the
+  // player with fresh state rather than reusing the previous instance's nodes.
+  return <DriftPlayer key={`s:${seedId}`} initial={[seed]} points={points} />;
 }

@@ -202,20 +202,26 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
     }
   }, []);
 
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      // Let focused controls handle their own keys -- don't hijack ArrowLeft/Right
-      // (lucidity slider), Space (transport buttons), or typing (copy textarea).
+  // Keyboard shortcuts at the WINDOW level. On a fresh /drift load focus is on
+  // <body>, which is outside the player subtree, so a handler bound to the
+  // wrapper would never receive the event (and after clicking the art, focus
+  // lands on a tabIndex=-1 hidden steer zone the guard skips). A window listener
+  // makes space / arrows / t / x actually reachable, while the same
+  // interactive-target guard keeps it from stealing keys meant for the lucidity
+  // slider, the copy textarea, or a focused button.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t && (t.isContentEditable || t.closest('input, textarea, select, button'))) return;
+      if (t && (t.isContentEditable || (typeof t.closest === 'function' && t.closest('input, textarea, select, button')))) return;
       if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
       else if (e.key === 'ArrowRight') setIdx((i) => Math.min(i + 1, nodesRef.current.length - 1));
       else if (e.key === 'ArrowLeft') setIdx((i) => Math.max(i - 1, 0));
       else if (e.key.toLowerCase() === 't') steer('toward');
       else if (e.key.toLowerCase() === 'x' || e.key.toLowerCase() === 'a') steer('away');
-    },
-    [steer]
-  );
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [steer]);
 
   const node = nodes[idx] ?? null;
   const trail = useMemo(() => nodes.slice(0, idx + 1).map((n) => n.imageId), [nodes, idx]);
@@ -225,9 +231,7 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
 
   return (
     <div
-      tabIndex={-1}
-      onKeyDown={onKeyDown}
-      className="relative -mx-4 flex h-[82vh] flex-col overflow-hidden rounded-none bg-ink-950 outline-none sm:mx-0 sm:rounded-xl sm:border sm:border-ink-800/70"
+      className="relative -mx-4 flex h-[82vh] flex-col overflow-hidden rounded-none bg-ink-950 sm:mx-0 sm:rounded-xl sm:border sm:border-ink-800/70"
     >
       {/* Image stack -- only a window around the current frame is mounted, so we
           never fire dozens of decodes. current-1 keeps the outgoing layer for
