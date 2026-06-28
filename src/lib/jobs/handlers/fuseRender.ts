@@ -41,12 +41,17 @@ export async function fuseRenderHandler(job: Job): Promise<void> {
     throw new Error('fuse.render: image generation is not configured (set OPENAI_API_KEY)');
   }
 
-  // Abort the (paid) generation a hair under the worker's 55s per-job cap so the
-  // in-flight fetch is cancelled deterministically instead of being left dangling
-  // when the function is killed at the 60s wall. maxAttempts: 1 makes this failure
-  // terminal -- no silent retry/re-bill.
+  // Budget the (paid) generation to 40s, well under the worker's 55s per-job cap,
+  // so that even a slow-but-successful generation leaves ~15s of headroom for the
+  // Blob upload + payload persist below -- otherwise a generation that returned
+  // near the cap could be marked failed (or lose its url) when put/updateJobPayload
+  // ran past the worker timeout. Aborting also cancels the in-flight fetch
+  // deterministically instead of leaving it dangling when the function is killed
+  // at the 60s wall. maxAttempts: 1 makes this failure terminal -- no silent
+  // retry/re-bill.
+  const GENERATE_BUDGET_MS = 40_000;
   const controller = new AbortController();
-  const budget = setTimeout(() => controller.abort(), 50_000);
+  const budget = setTimeout(() => controller.abort(), GENERATE_BUDGET_MS);
   let generated;
   try {
     generated = await generator.generate({
@@ -57,7 +62,7 @@ export async function fuseRenderHandler(job: Job): Promise<void> {
     });
   } catch (err) {
     if (controller.signal.aborted) {
-      throw new Error('fuse.render: generation exceeded the 50s budget and was aborted');
+      throw new Error('fuse.render: generation exceeded the 40s budget and was aborted');
     }
     throw err;
   } finally {
