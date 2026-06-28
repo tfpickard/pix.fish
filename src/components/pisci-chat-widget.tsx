@@ -12,7 +12,7 @@
 // and lazily from the root layout so it never touches SSR or initial paint.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { advance, initialState, noteLlmUsed } from '@/lib/pisci/fsm';
+import { advance, initialState, noteLlmUsed, LLM_TURN_CAP } from '@/lib/pisci/fsm';
 import { makeSeedFromInt, randomSeedInt } from '@/lib/pisci/seed';
 import { GREETING, pickCanned } from '@/lib/pisci/canned';
 import { renderTurn, type ChatMessage } from '@/lib/pisci/render';
@@ -23,6 +23,7 @@ import type { FsmState, PersonaSeed } from '@/lib/pisci/types';
 const SEED_KEY = 'pf_pisci_seed';
 const AUTO_OPENED_KEY = 'pf_pisci_autoopened'; // sessionStorage: already nagged you this session
 const WOUNDED_KEY = 'pf_pisci_wounded'; // localStorage: already did the one wounded reopen
+const LLM_USED_KEY = 'pf_pisci_llm'; // sessionStorage: LLM turns spent, so the cap survives reloads
 
 // Auto-open window: somewhere in 5-10s after load, or after minimal interaction
 // (a scroll / a couple of clicks), whichever comes first.
@@ -82,6 +83,9 @@ export function PisciChatWidget() {
   const turnSeqRef = useRef(0);
   const silenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const woundedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The current in-flight turn's aborter, so close/unmount can cancel the fetch
+  // (and the upstream Anthropic call) instead of letting it spend tokens.
+  const inFlightAbort = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Mirrors `open` for the auto-open click/scroll listeners, which would
   // otherwise count clicks on the widget's own controls (e.g. the close button).
@@ -115,7 +119,40 @@ export function PisciChatWidget() {
     const s = makeSeedFromInt(n);
     seedRef.current = s;
     setSeed(s);
+
+    // Restore the LLM budget so a reload can't reset the per-session cap and
+    // hand out another full set of paid calls. The transcript stays ephemeral;
+    // only the spend counter carries over.
+    try {
+      const rawUsed = window.sessionStorage.getItem(LLM_USED_KEY);
+      const used = rawUsed && /^\d+$/.test(rawUsed) ? Number(rawUsed) : 0;
+      if (used > 0) {
+        setFsm((prev) => ({
+          ...prev,
+          llmTurnsUsed: used,
+          cannedOnly: prev.cannedOnly || used >= LLM_TURN_CAP
+        }));
+      }
+    } catch {
+      /* sessionStorage unavailable -- the cap is then per-load, which is fine */
+    }
   }, []);
+
+  // Persist the LLM spend counter so reloads/remounts keep counting against the
+  // same per-session budget. The counter only ever increases, so we persist the
+  // max -- this also stops the initial render (count 0) from clobbering a value
+  // just restored from storage.
+  useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem(LLM_USED_KEY);
+      const stored = raw && /^\d+$/.test(raw) ? Number(raw) : 0;
+      if (fsm.llmTurnsUsed > stored) {
+        window.sessionStorage.setItem(LLM_USED_KEY, String(fsm.llmTurnsUsed));
+      }
+    } catch {
+      /* best effort */
+    }
+  }, [fsm.llmTurnsUsed]);
 
   const clearSilence = useCallback(() => {
     if (silenceTimer.current) {
@@ -143,12 +180,16 @@ export function PisciChatWidget() {
       if (state.beat === 'DORMANT') return;
       ghostsRef.current += 1;
       const seq = turnSeqRef.current;
+      const ac = new AbortController();
+      inFlightAbort.current = ac;
       const next = advance(state, { type: 'ghost' });
       const result = await renderTurn({
         state: next,
         seedInt: seedIntRef.current,
-        history: bubblesRef.current.map(({ role, content }) => ({ role, content }))
+        history: bubblesRef.current.map(({ role, content }) => ({ role, content })),
+        signal: ac.signal
       });
+      inFlightAbort.current = null;
       // Closed while the ghost reply was in flight: drop it.
       if (turnSeqRef.current !== seq) return;
       setFsm(result.source === 'llm' ? noteLlmUsed(next) : next);
@@ -242,6 +283,7 @@ export function PisciChatWidget() {
     () => () => {
       clearSilence();
       clearWounded();
+      inFlightAbort.current?.abort();
     },
     [clearSilence, clearWounded]
   );
@@ -262,18 +304,21 @@ export function PisciChatWidget() {
     const next = advance(fsmRef.current, { type: 'reply' });
     setSending(true);
     const seq = turnSeqRef.current;
+    const ac = new AbortController();
+    inFlightAbort.current = ac;
     const history = [
       ...bubblesRef.current.map(({ role, content }) => ({ role, content })),
       { role: 'user' as const, content: text }
     ];
     let result;
     try {
-      result = await renderTurn({ state: next, seedInt: seedIntRef.current, history });
+      result = await renderTurn({ state: next, seedInt: seedIntRef.current, history, signal: ac.signal });
     } catch {
       // renderTurn already swallows failures, but never let a stray throw crash
       // the widget -- fall back to a canned on-beat line.
       result = { text: pickCanned(next.beat, seedRef.current), source: 'canned' as const };
     }
+    inFlightAbort.current = null;
     // Visitor closed the panel while the reply was in flight: drop it. Don't
     // append into a closed panel, don't commit the beat, don't arm silence (which
     // would fire hidden ghost requests after dismissal).
@@ -292,8 +337,11 @@ export function PisciChatWidget() {
   const handleClose = useCallback(() => {
     clearSilence();
     clearWounded();
-    // Invalidate any in-flight turn so its late reply can't revive the widget.
+    // Invalidate any in-flight turn so its late reply can't revive the widget,
+    // and abort its fetch so the upstream call stops spending tokens.
     turnSeqRef.current += 1;
+    inFlightAbort.current?.abort();
+    inFlightAbort.current = null;
     setOpen(false);
     setFsm((prev) => advance(prev, { type: 'close' }));
 

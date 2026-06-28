@@ -53,6 +53,9 @@ export async function renderTurn(args: {
   history: ChatMessage[];
   rng?: () => number;
   fetcher?: Fetcher;
+  // External abort (e.g. the widget cancelling on close) -- aborting it cancels
+  // the fetch, which propagates to the server and stops the upstream token spend.
+  signal?: AbortSignal;
 }): Promise<RenderResult> {
   const { state, seedInt, history, rng = Math.random } = args;
   const fetcher = args.fetcher ?? defaultFetcher;
@@ -66,6 +69,12 @@ export async function renderTurn(args: {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // Link the caller's abort (close/unmount) to this request.
+  const external = args.signal;
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', () => controller.abort(), { once: true });
+  }
   try {
     const req: ChatRequest = {
       beat: state.beat,
