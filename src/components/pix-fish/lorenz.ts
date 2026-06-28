@@ -26,9 +26,12 @@ const SIGMA = 10;
 const RHO = 28;
 const BETA = 8 / 3;
 
-// The SVG warp filter id. There is exactly one mascot mounted globally, so a
-// constant id is safe.
-export const WARP_FILTER_ID = 'pix-fish-warp';
+// The SVG warp filter id. There are now N fish in the tank, each with its own
+// displacement filter (the warp `scale` is breathed per fish), so the id must be
+// per-entity. Derived from the fish's monotonic id, which is never reused.
+export function warpFilterId(id: number): string {
+  return `pix-fish-warp-${id}`;
+}
 
 // Normalization ranges. The classic regime keeps z roughly in [Z_MIN, Z_MAX]
 // and x,y within +/- XY_RANGE. Outputs are clamped so an occasional excursion

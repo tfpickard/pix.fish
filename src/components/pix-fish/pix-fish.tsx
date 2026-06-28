@@ -1,27 +1,25 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { FishSprite } from './fish-sprite';
+import { FishEntity } from './fish-entity';
 import { readFishDismissed, writeFishDismissed } from './prefs';
-import { useFishBrain } from './use-fish-brain';
+import { useFishSim } from './use-fish-sim';
+import { DEBUG_FAST_EVENTS, MAX_FILTERED_FISH } from './sim-config';
 import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/config';
 
-// Top-level mascot component. Mounted once in the root layout, outside
-// <main> and the <Providers> tree so it never participates in document
-// flow (zero layout shift) and isn't affected by Suspense boundaries on
-// any page.
+// The tank. Mounted once in the root layout, outside <main> and <Providers> so
+// it never participates in document flow (zero layout shift) and survives route
+// changes. It owns dismiss/reopen + the live morph config, and renders the
+// keyed fish list driven by the single simulation in useFishSim. Births mount
+// and deaths unmount cleanly; the sim handles all per-frame motion via refs.
 //
-// SSR-safe two-phase mount mirrors temperature-hud-shell.tsx: the server
-// renders the reopen dot only; the client reconciles to the persisted
-// preference after mount. This avoids a hydration mismatch and a flash of
-// fish on first paint for dismissed visitors.
+// SSR-safe two-phase mount: the server renders the reopen dot only; the client
+// reconciles to the persisted preference after mount (no hydration mismatch, no
+// flash of fish for dismissed visitors).
 
 export function PixFish() {
   const [mounted, setMounted] = useState(false);
   const [dismissed, setDismissed] = useState(true);
-  // Global morph tunables (admin-editable at /admin/fish). Start from defaults
-  // -- which match the committed look -- then reconcile to the live config, so
-  // there's no flash unless an admin has changed it.
   const [config, setConfig] = useState<FishMorphConfig>(DEFAULT_FISH_MORPH_CONFIG);
 
   useEffect(() => {
@@ -34,7 +32,7 @@ export function PixFish() {
         if (!cancelled && data?.config) setConfig(data.config as FishMorphConfig);
       })
       .catch(() => {
-        /* keep defaults on any failure -- the mascot still works */
+        /* keep defaults on any failure -- the tank still works */
       });
     return () => {
       cancelled = true;
@@ -51,21 +49,13 @@ export function PixFish() {
     writeFishDismissed(false);
   }, []);
 
-  const { state, setContainerRef, setMorphGroupRef, setWarpRef, startle } = useFishBrain({
+  const { entities, register, unregister, scatter, debug } = useFishSim({
     paused: !mounted || dismissed,
     config
   });
 
-  const onClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      startle(e.clientX, e.clientY);
-    },
-    [startle]
-  );
-
   // Pre-mount and dismissed: render only a tiny reopen affordance in the
-  // bottom-left corner (HUD owns bottom-right at z-40). The button is
-  // intentionally muted so it doesn't compete with site chrome.
+  // bottom-left corner (HUD owns bottom-right at z-40).
   if (!mounted || dismissed) {
     return (
       <button
@@ -81,46 +71,28 @@ export function PixFish() {
 
   return (
     <>
-      {/* The fish itself. Outer container does fixed positioning + the per-
-          frame translate (set imperatively by the brain). pointer-events
-          are off by default so the fish doesn't eat clicks on cards as it
-          drifts past; an inner clickable layer re-enables them only over
-          the sprite's bounding box. */}
-      <div
-        ref={setContainerRef}
-        aria-hidden="true"
-        className="pointer-events-none fixed left-0 top-0 z-30 text-ink-100"
-        style={{ width: 72, height: 43, willChange: 'transform' }}
-      >
-        <div
-          onClick={onClick}
-          className={
-            state.behavior === 'hiding'
-              ? 'pointer-events-none'
-              : 'pointer-events-auto cursor-pointer'
-          }
-          style={{
-            width: 72,
-            height: 43,
-            transform: `scaleX(${state.facing})`,
-            transition: 'transform 220ms ease-in-out'
-          }}
-        >
-          <FishSprite
-            eyeState={state.eyeState}
-            mouthState={state.mouthState}
-            morphProgress={state.morphProgress}
-            width={72}
-            morphGroupRef={setMorphGroupRef}
-            warpRef={setWarpRef}
-            config={config}
-          />
-        </div>
-      </div>
+      {entities.map((view, i) => (
+        <FishEntity
+          key={view.id}
+          view={view}
+          // Perf gate: only the first N fish get the expensive displacement warp;
+          // the rest fall back to squash/stretch. Recomputed only here, on
+          // membership change -- stable across frames.
+          warpEnabled={i < MAX_FILTERED_FISH}
+          config={config}
+          register={register}
+          unregister={unregister}
+          onScatter={scatter}
+        />
+      ))}
 
-      {/* Dismiss affordance. Lives near the reopen-dot location so the
-          visitor learns the control's home corner. Only shown when the
-          fish is active. */}
+      {DEBUG_FAST_EVENTS && (
+        <div className="pointer-events-none fixed bottom-4 left-14 z-40 rounded border border-ink-800/70 bg-ink-950/80 px-2 py-1 font-mono text-[10px] text-ink-400 backdrop-blur">
+          pop {debug.population} · {debug.lastEvent}
+        </div>
+      )}
+
+      {/* Dismiss affordance -- hides the whole tank. */}
       <button
         type="button"
         onClick={dismiss}
