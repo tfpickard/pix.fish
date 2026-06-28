@@ -52,9 +52,10 @@ export default async function DriftPage({ searchParams }: PageProps) {
       const meta = await hydrateNodes(ordered);
       const nodes = ordered.map((id) => meta.get(id)).filter((n): n is PathNode => !!n && !!n.blobUrl);
       if (nodes.length >= 2) {
-        // key by the replay ids so an App Router soft-nav to a different drift
-        // remounts the player with fresh state instead of reusing the old one.
-        return <DriftPlayer key={`r:${ordered.join(',')}`} initial={nodes} replay points={points} />;
+        // key by the replay ids AND the NSFW mode so an App Router soft-nav to a
+        // different drift -- or a NSFW-cookie change on the same ?d= -- remounts
+        // the player with fresh, re-gated state instead of reusing old nodes.
+        return <DriftPlayer key={`r:${nsfwMode}:${ordered.join(',')}`} initial={nodes} replay points={points} />;
       }
     }
   }
@@ -82,7 +83,8 @@ export default async function DriftPage({ searchParams }: PageProps) {
       </div>
     );
   }
-  // key by the seed so branching (?from=) or starting a new drift remounts the
-  // player with fresh state rather than reusing the previous instance's nodes.
-  return <DriftPlayer key={`s:${seedId}`} initial={[seed]} points={points} />;
+  // key by the seed AND the NSFW mode so branching / a new drift -- or a NSFW
+  // cookie change on the same ?from= seed -- remounts with fresh, re-gated state
+  // (otherwise already-fetched NSFW frames could survive a switch back to hide).
+  return <DriftPlayer key={`s:${nsfwMode}:${seedId}`} initial={[seed]} points={points} />;
 }

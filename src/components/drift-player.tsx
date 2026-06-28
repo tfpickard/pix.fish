@@ -67,10 +67,12 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
   // Bumped on every steer / lucidity change so an in-flight fetch built from the
   // old trajectory can be ignored when it resolves (see fetchNext).
   const genRef = useRef(0);
+  const liveRef = useRef(live);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { idxRef.current = idx; }, [idx]);
   useEffect(() => { lucidityRef.current = lucidity; }, [lucidity]);
   useEffect(() => { doneRef.current = done; }, [done]);
+  useEffect(() => { liveRef.current = live; }, [live]);
 
   useEffect(() => {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -176,9 +178,14 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
 
   const onLucidity = useCallback((v: number) => {
     setLucidity(v);
-    genRef.current += 1; // supersede any in-flight fetch built from the old lucidity
-    // Drop the buffer so the new leap-size applies to the next step immediately.
-    setNodes((ns) => ns.slice(0, idxRef.current + 1));
+    // Only drop the buffer when actually drifting live. During a replay the nodes
+    // are a fixed shared sequence, so truncating them would chop the replay (and
+    // prematurely trip atReplayEnd, pausing at "end of this drift"); the new leap
+    // size just takes effect once the viewer chooses to keep drifting.
+    if (liveRef.current) {
+      genRef.current += 1; // supersede any in-flight fetch built from the old lucidity
+      setNodes((ns) => ns.slice(0, idxRef.current + 1));
+    }
   }, []);
 
   const keepDrifting = useCallback(() => {
