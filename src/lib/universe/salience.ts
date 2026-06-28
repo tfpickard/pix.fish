@@ -71,6 +71,15 @@ function clamp01(n: number): number {
   return n < 0 ? 0 : n > 1 ? 1 : n;
 }
 
+// Per-specimen tie-break jitter, derived from (seed, imageId) so it does NOT
+// depend on the order specimens are iterated. Drawing jitter from the shared
+// walk RNG would make the ranking change if the input row order changed (the
+// salience SQL has no stable ORDER BY), breaking reproducibility-from-seed.
+function jitterFor(seed: number, imageId: number): number {
+  const mixed = (Math.imul(seed, 0x9e3779b1) ^ imageId) >>> 0;
+  return mulberry32(mixed)() * 0.05;
+}
+
 // Build an undirected adjacency map (nearest distance per pair) from the kNN
 // edges, restricted to the given node set.
 function buildAdjacency(
@@ -90,6 +99,9 @@ function buildAdjacency(
     adj.get(a)!.push(b);
     adj.get(b)!.push(a);
   }
+  // Sort each adjacency list so the seeded walk is stable for a given edge set,
+  // regardless of the order edges were loaded (the kNN query has no ORDER BY).
+  for (const list of adj.values()) list.sort((x, y) => x - y);
   return adj;
 }
 
@@ -134,7 +146,7 @@ export function selectSalientSpecimens(
     // already weighing in, the less urgent a fresh contradiction.
     const tension = s.distinctClerks <= 0 ? 0.5 : 1 / s.distinctClerks;
     const walk = visited.has(s.imageId) ? 1 : 0;
-    const jitter = rng() * 0.05;
+    const jitter = jitterFor(opts.seed, s.imageId);
 
     const score =
       weights.coverage * coverage +

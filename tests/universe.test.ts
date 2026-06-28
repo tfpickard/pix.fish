@@ -159,4 +159,22 @@ describe('selectSalientSpecimens (evolution-loop target selection)', () => {
   test('empty input yields no picks', () => {
     expect(selectSalientSpecimens([], { count: 5, seed: 1, nowMs: NOW, edges: [] })).toEqual([]);
   });
+
+  test('ranking is independent of input row order (seeded jitter + sorted adjacency)', () => {
+    const specimens = [
+      base({ imageId: 1, fragments: 2 }),
+      base({ imageId: 2, fragments: 1 }),
+      base({ imageId: 3, fragments: 4 }),
+      base({ imageId: 4, fragments: 1 })
+    ];
+    const edges: ClusterEdge[] = [
+      { src: 1, dst: 2, dist: 0.1 },
+      { src: 2, dst: 3, dist: 0.2 },
+      { src: 3, dst: 4, dist: 0.1 }
+    ];
+    const opts = { count: 4, seed: 11, nowMs: NOW, edges };
+    const forward = selectSalientSpecimens(specimens, opts).map((p) => p.imageId);
+    const reversed = selectSalientSpecimens([...specimens].reverse(), opts).map((p) => p.imageId);
+    expect(reversed).toEqual(forward);
+  });
 });

@@ -14,5 +14,5 @@ export async function GET() {
   // points is stored as jsonb; strip internal metadata for public consumers.
   const points = (row.points as Array<{ imageId: number; x: number; y: number }> | null) ?? [];
   const loreMap = await loreSummaryByImageIds(points.map((p) => p.imageId)).catch(() => new Map());
-  return NextResponse.json({ points: row.points, lore: [...loreMap.values()], createdAt: row.createdAt });
+  return NextResponse.json({ points, lore: [...loreMap.values()], createdAt: row.createdAt });
 }
