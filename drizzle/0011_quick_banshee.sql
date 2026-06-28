@@ -1,0 +1,1 @@
+ALTER TABLE "taste_votes" ADD CONSTRAINT "taste_votes_distinct" CHECK (winner_id <> loser_id);
