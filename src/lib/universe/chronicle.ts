@@ -20,11 +20,15 @@ export type ChronicleEntry = {
   text: string;
 };
 
+// The chronicle surfaces ongoing filing activity. District intake is
+// deliberately excluded: a district's character is synthesized from its member
+// captions, which can include NSFW-hidden images, so publishing it in the
+// public feed would leak an aggregate description derived from hidden content.
+// (District openings are also one-time bootstrap setup, not ongoing activity.)
 export const CHRONICLE_EVENT_TYPES = [
   EVENT_TYPE.SpecimenIntake,
   EVENT_TYPE.DossierAmendment,
-  EVENT_TYPE.AuditFlagged,
-  EVENT_TYPE.DistrictIntake
+  EVENT_TYPE.AuditFlagged
 ];
 
 const LABELS: Record<string, string> = {

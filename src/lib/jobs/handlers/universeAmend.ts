@@ -138,7 +138,7 @@ export async function universeAmendHandler(job: Job): Promise<void> {
     ...neighbors.map((n) => ({ kind: 'neighbor' as const, ref: n.slug }))
   ];
 
-  const { inserted } = await appendEvent({
+  const { event } = await appendEvent({
     type: EVENT_TYPE.DossierAmendment,
     subjectType: SUBJECT_TYPE.Specimen,
     subjectId: String(imageId),
@@ -155,32 +155,38 @@ export async function universeAmendHandler(job: Job): Promise<void> {
   // failure (event filed, projection not yet built) is recovered.
   await materializeSpecimen(imageId);
 
+  // The author of record is the CANON event's author -- not this attempt's
+  // recomputed `amender`, which a retry that hit the dedupe key may have chosen
+  // differently. Deriving from the stored event keeps the audit attribution and
+  // the ripple correct on retries, and both are dedupe-keyed so re-running them
+  // is safe (idempotent) -- recovering side effects lost to a partial failure.
+  const author = event.authorClerk ?? amender.slug;
+
   // If this amendment contradicts a prior clerk, file an audit flag for the
-  // chronicle. Gated on `inserted` so it is only filed by the attempt that
-  // actually authored the amendment -- a retry that hit the dedupe key could
-  // have recomputed a different `amender` and would mis-attribute the
-  // contradiction. It is a pure event-log artifact (the reducer ignores it);
-  // the contradiction itself lives, unreconciled, in the fragments.
-  const contradicted = fragments.map((f) => f.clerkSlug).find((s) => s !== amender.slug) ?? null;
-  if (inserted && contradicted) {
+  // chronicle. Pure event-log artifact (the reducer ignores it); the
+  // contradiction itself lives, unreconciled, in the fragments.
+  const contradicted = fragments.map((f) => f.clerkSlug).find((s) => s !== author) ?? null;
+  if (contradicted) {
     const audit: AuditFlaggedPayload = {
-      note: `${amender.name} files against ${clerkName.get(contradicted) ?? contradicted}'s reading`,
-      by: amender.slug,
+      note: `${clerkName.get(author) ?? author} files against ${clerkName.get(contradicted) ?? contradicted}'s reading`,
+      by: author,
       contradicts: contradicted
     };
     await appendEvent({
       type: EVENT_TYPE.AuditFlagged,
       subjectType: SUBJECT_TYPE.Specimen,
       subjectId: String(imageId),
-      authorClerk: amender.slug,
+      authorClerk: author,
       payload: audit as unknown as Record<string, unknown>,
       dedupeKey: dedupeKey.audit(imageId, nonce)
     });
   }
 
-  // Event-driven ripple, bounded to one hop. Gated on `inserted` so a retry
-  // (event already present) does not re-fan-out to neighbours.
-  if (inserted && depth < 1) {
+  // Event-driven ripple, bounded to one hop. Not gated on `inserted`, so a
+  // retry after a partial failure still propagates; the neighbour amend jobs it
+  // enqueues are themselves dedupe-keyed, so a duplicate ripple collapses at
+  // the canon level rather than filing extra amendments.
+  if (depth < 1) {
     await enqueueJob({
       type: 'universe.ripple',
       payload: { imageId, seed, depth },

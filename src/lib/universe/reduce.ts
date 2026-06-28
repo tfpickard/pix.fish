@@ -3,7 +3,11 @@ import { upsertClerk } from '@/lib/db/queries/clerks';
 import { upsertCrossReference } from '@/lib/db/queries/cross-references';
 import { upsertDistrict } from '@/lib/db/queries/districts';
 import { upsertLoreEmbedding } from '@/lib/db/queries/embeddings';
-import { countAmendmentFragments, upsertLoreFragment } from '@/lib/db/queries/lore-fragments';
+import {
+  countAmendmentFragments,
+  latestLoreFragment,
+  upsertLoreFragment
+} from '@/lib/db/queries/lore-fragments';
 import { getSpecimen, upsertSpecimen } from '@/lib/db/queries/specimens';
 import { coordsFor, type CoordsMap } from './coords';
 import {
@@ -137,18 +141,22 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
           model: p.embedModel
         });
       }
-      // Counted after the fragment upsert above, so it includes this amendment
-      // and is idempotent under re-apply (upsert keys on eventId).
+      // Derive the specimen's live fields from the NEWEST fragment on file and
+      // the amendment COUNT, both read after the upsert above -- never from the
+      // event being applied. This makes the projection a convergent fold: two
+      // overlapping replays (or a stale snapshot finishing last) land on the
+      // same current dossier/clerk/generation instead of rolling back.
       const generation = await countAmendmentFragments(imageId);
+      const latest = await latestLoreFragment(imageId);
       await upsertSpecimen({
         imageId,
-        clerkSlug,
+        clerkSlug: latest?.clerkSlug ?? clerkSlug,
         districtKey: existing?.districtKey ?? p.districtKey,
-        currentDossier: p.dossier,
-        citations: ev.citations,
+        currentDossier: latest?.body ?? p.dossier,
+        citations: latest?.sources ?? ev.citations,
         intakeEventId: existing?.intakeEventId ?? ev.id,
         generation,
-        updatedAt: ev.createdAt
+        updatedAt: latest?.createdAt ?? ev.createdAt
       });
       break;
     }

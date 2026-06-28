@@ -16,7 +16,11 @@ async function tick(req: Request) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
-  const job = await enqueueJob({ type: 'universe.tick', payload: {}, maxAttempts: 1 });
+  // Stamp the seed at enqueue time so a reclaimed/re-run tick reuses it and the
+  // same logical tick collapses through the existing amendment dedupe keys
+  // instead of emitting a fresh set of nonces.
+  const seed = Date.now() % 2_147_483_647;
+  const job = await enqueueJob({ type: 'universe.tick', payload: { seed }, maxAttempts: 1 });
   return NextResponse.json({ enqueued: 'universe.tick', jobId: job.id });
 }
 

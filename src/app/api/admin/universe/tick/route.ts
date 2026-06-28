@@ -23,6 +23,9 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: 'invalid body', issues: parsed.error.issues }, { status: 400 });
   }
-  const job = await enqueueJob({ type: 'universe.tick', payload: parsed.data, maxAttempts: 1 });
+  // Stamp a seed at enqueue (unless the admin pinned one) so a reclaimed/re-run
+  // tick reuses it and collapses through existing amendment dedupe keys.
+  const payload = { ...parsed.data, seed: parsed.data.seed ?? Date.now() % 2_147_483_647 };
+  const job = await enqueueJob({ type: 'universe.tick', payload, maxAttempts: 1 });
   return NextResponse.json({ jobId: job.id });
 }

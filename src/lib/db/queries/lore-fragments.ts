@@ -1,4 +1,4 @@
-import { asc, eq, inArray, sql } from 'drizzle-orm';
+import { asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { loreFragments, type LoreFragment, type NewLoreFragment } from '../schema';
 
@@ -29,6 +29,21 @@ export async function upsertLoreFragment(input: NewLoreFragment): Promise<number
     })
     .returning({ id: loreFragments.id });
   return row!.id;
+}
+
+// The newest fragment on file for a specimen (intake or amendment). The
+// reducer derives the specimen's current dossier/clerk/citations from this
+// rather than from the event being applied, so the projection converges to the
+// latest filing regardless of the order overlapping replays finish in -- a
+// stale replay can't roll current_dossier back to an older amendment.
+export async function latestLoreFragment(imageId: number): Promise<LoreFragment | null> {
+  const [row] = await db
+    .select()
+    .from(loreFragments)
+    .where(eq(loreFragments.specimenImageId, imageId))
+    .orderBy(desc(loreFragments.createdAt), desc(loreFragments.id))
+    .limit(1);
+  return row ?? null;
 }
 
 // All fragments filed against a specimen, oldest first -- the dossier's
