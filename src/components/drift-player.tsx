@@ -28,6 +28,7 @@ type Props = {
 const DWELL_MS = 4200;
 const FADE_MS = 1100;
 const VISITED_CAP = 120; // matches the server no-repeat window
+const SHARE_CAP = 200; // matches the /drift page's MAX_REPLAY (replay/branch cap)
 
 const KENBURNS = [
   { origin: '30% 28%', scale: 1.08 },
@@ -62,6 +63,9 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
   const loadingRef = useRef(false);
   const towardRef = useRef<number[]>([]);
   const awayRef = useRef<number[]>([]);
+  // Bumped on every steer / lucidity change so an in-flight fetch built from the
+  // old trajectory can be ignored when it resolves (see fetchNext).
+  const genRef = useRef(0);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { idxRef.current = idx; }, [idx]);
   useEffect(() => { lucidityRef.current = lucidity; }, [lucidity]);
@@ -81,6 +85,8 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
     if (loadingRef.current || doneRef.current) return;
     loadingRef.current = true;
     setLoading(true);
+    const myGen = genRef.current;
+    let errored = false;
     try {
       const visited = nodesRef.current.map((n) => n.imageId).slice(-VISITED_CAP);
       const res = await fetch('/api/drift/next', {
@@ -93,29 +99,47 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
           lucidity: lucidityRef.current
         })
       });
-      if (res.ok) {
+      if (!res.ok) {
+        errored = true; // 429/500 etc -- back off and let the effect retry
+      } else {
         const data = (await res.json()) as { node?: PathNode | null; done?: boolean };
+        // A steer / lucidity change since this request started supersedes it:
+        // ignore the now-stale frame (computed from the old trajectory). The
+        // prefetch effect re-runs when loading clears and fetches fresh.
+        if (myGen !== genRef.current) return;
         if (data.done || !data.node) {
           doneRef.current = true;
           setDone(true);
         } else {
           const node = data.node;
-          setNodes((ns) => (ns.some((n) => n.imageId === node.imageId) ? ns : [...ns, node]));
+          // Only reject a repeat within the server's no-repeat window (the last
+          // VISITED_CAP). An older image legitimately resurfacing far into a long
+          // drift must still append -- a global dedupe would drop it and stall.
+          setNodes((ns) => {
+            const recent = new Set(ns.slice(-VISITED_CAP).map((n) => n.imageId));
+            return recent.has(node.imageId) ? ns : [...ns, node];
+          });
         }
       }
     } catch {
-      /* network hiccup -- the advance effect will retry on the next tick */
+      errored = true; // network hiccup -- back off and let the effect retry
     } finally {
-      loadingRef.current = false;
-      setLoading(false);
+      // On failure, back off before letting the prefetch effect retry so a
+      // persistent 429/500 doesn't become a tight refetch loop; on success or a
+      // supersede, clear immediately so the next (or steered) frame is fetched.
+      const clear = () => { loadingRef.current = false; setLoading(false); };
+      if (errored) window.setTimeout(clear, 1500);
+      else clear();
     }
   }, []);
 
-  // Keep one frame buffered ahead while falling live.
+  // Keep one frame buffered ahead while falling live. `loading` is a dependency
+  // so the effect re-evaluates when a fetch settles -- this is what retries after
+  // a failed/superseded fetch instead of leaving the player stuck on "falling".
   useEffect(() => {
     if (!playing || done || !live) return;
     if (idx >= nodes.length - 1 && !loadingRef.current) void fetchNext();
-  }, [idx, nodes.length, playing, done, live, fetchNext]);
+  }, [idx, nodes.length, playing, done, live, loading, fetchNext]);
 
   // Auto-advance once the next frame is buffered.
   useEffect(() => {
@@ -139,6 +163,7 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
       if (!node) return;
       if (dir === 'toward') towardRef.current = [...towardRef.current, node.imageId];
       else awayRef.current = [...awayRef.current, node.imageId];
+      genRef.current += 1; // supersede any in-flight fetch built from the old heading
       setLive(true); // steering always resumes live drifting (e.g. mid-replay)
       setNodes((ns) => ns.slice(0, idx + 1));
       setPulse(dir);
@@ -150,6 +175,7 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
 
   const onLucidity = useCallback((v: number) => {
     setLucidity(v);
+    genRef.current += 1; // supersede any in-flight fetch built from the old lucidity
     // Drop the buffer so the new leap-size applies to the next step immediately.
     setNodes((ns) => ns.slice(0, idxRef.current + 1));
   }, []);
@@ -162,7 +188,9 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
   }, []);
 
   const share = useCallback(async () => {
-    const ids = nodesRef.current.slice(0, idxRef.current + 1).map((n) => n.imageId);
+    // Cap to the last SHARE_CAP frames: a drift can run indefinitely, and an
+    // unbounded id list would blow past URL limits and the page's MAX_REPLAY cap.
+    const ids = nodesRef.current.slice(0, idxRef.current + 1).map((n) => n.imageId).slice(-SHARE_CAP);
     const url = `${window.location.origin}/drift?d=${ids.join(',')}`;
     try {
       await navigator.clipboard.writeText(url);
@@ -176,6 +204,10 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Let focused controls handle their own keys -- don't hijack ArrowLeft/Right
+      // (lucidity slider), Space (transport buttons), or typing (copy textarea).
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || t.closest('input, textarea, select, button'))) return;
       if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
       else if (e.key === 'ArrowRight') setIdx((i) => Math.min(i + 1, nodesRef.current.length - 1));
       else if (e.key === 'ArrowLeft') setIdx((i) => Math.max(i - 1, 0));
@@ -230,18 +262,22 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
         })}
 
         {/* Steer hit-zones: tap the left third to push away, the right two-thirds
-            to pull toward. Big, gesture-first, and invisible so the art owns the
-            frame. (Buttons below do the same for keyboard/AT.) */}
+            to pull toward. Mouse/touch only -- removed from the tab order and
+            hidden from assistive tech (the visible, labeled steer buttons below
+            cover keyboard and screen-reader users), so the invisible full-height
+            zones don't pollute focus order. */}
         <button
           type="button"
           onClick={() => steer('away')}
-          aria-label="push away"
+          tabIndex={-1}
+          aria-hidden="true"
           className="absolute inset-y-0 left-0 z-10 w-1/3 cursor-w-resize focus:outline-none"
         />
         <button
           type="button"
           onClick={() => steer('toward')}
-          aria-label="pull toward"
+          tabIndex={-1}
+          aria-hidden="true"
           className="absolute inset-y-0 right-0 z-10 w-2/3 cursor-e-resize focus:outline-none"
         />
 

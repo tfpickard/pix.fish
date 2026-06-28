@@ -46,6 +46,29 @@ export async function seedDriftImage(
   return r.rows[0] ? Number(r.rows[0].id) : null;
 }
 
+// A random in-scope image (embedded, not archived, NSFW-allowed) that is NOT in
+// `excludeIds`. Used as the drift fallback when the nearest band is exhausted:
+// excluding server-side guarantees an unseen frame whenever one exists, so the
+// drift only ends (`done`) when the visible corpus is truly exhausted -- unlike
+// sampling N random ids and hoping one is unseen, which can falsely end a drift
+// in a corpus only slightly larger than the no-repeat window.
+export async function randomUnseenDriftId(
+  excludeIds: number[],
+  nsfwMode: NsfwMode
+): Promise<number | null> {
+  const exclude = excludeIds.filter((n) => Number.isInteger(n) && n > 0);
+  const notSeen = exclude.length ? sql`AND i.id NOT IN (${idList(exclude)})` : sql``;
+  const r = await db.execute<{ id: number }>(sql`
+    SELECT i.id
+    FROM images i
+    JOIN embeddings e ON e.image_id = i.id AND e.kind = 'caption' AND e.subject_type = 'image'
+    WHERE i.archived_at IS NULL ${nsfwClause(nsfwMode)} ${notSeen}
+    ORDER BY random()
+    LIMIT 1
+  `);
+  return r.rows[0] ? Number(r.rows[0].id) : null;
+}
+
 // Which of the given ids are a valid drift frame -- embedded, not archived,
 // allowed by NSFW mode. A replay/branch URL (?d=12,45,...) is filtered through
 // this before hydrating, so a crafted id list can't smuggle an archived or

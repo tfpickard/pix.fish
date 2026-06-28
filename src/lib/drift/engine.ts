@@ -16,8 +16,15 @@ export type SteerDir = 'toward' | 'away';
 // How strongly the direction of recent travel carries the drift forward when
 // you are NOT steering -- this is what makes it keep *falling* on its own.
 const MOMENTUM_WEIGHT = 0.5;
-// How strongly accumulated steer (toward/away picks) bends the heading.
-const BIAS_WEIGHT = 1.0;
+// How strongly accumulated steer (toward/away picks) displaces the position.
+// Deliberately > 1 so an explicit push-away can OVERCOME the current position:
+// away-ing the current frame makes bias = -position, and target = position +
+// BIAS_REACH * (-position) = position * (1 - BIAS_REACH); with BIAS_REACH > 1
+// that flips past the origin to the opposite direction. (At <= 1 the step would
+// just rescale `position` and the rejection control would do nothing until
+// momentum existed.) The bias is applied OUTSIDE the lucidity reach so steering
+// always bites, even at low lucidity.
+const BIAS_REACH = 1.3;
 
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
@@ -65,22 +72,23 @@ export function driftTarget(
     for (let i = 0; i < dim; i++) mom[i] = position[i]! - previous[i]!;
   }
 
-  // heading = where we want to go next, relative to here.
-  let mag = 0;
-  const heading = new Array<number>(dim);
-  for (let i = 0; i < dim; i++) {
-    const h = MOMENTUM_WEIGHT * mom[i]! + BIAS_WEIGHT * bias[i]!;
-    heading[i] = h;
-    mag += h * h;
-  }
-
   // Cold start (no steer, no momentum): aim at the current position itself so we
   // still advance to its nearest unseen neighbor instead of stalling.
+  let drive = 0;
+  for (let i = 0; i < dim; i++) drive += bias[i]! * bias[i]! + mom[i]! * mom[i]!;
+  if (Math.sqrt(drive) < 1e-9) {
+    const out0 = normalize(position);
+    return out0.every((x) => Number.isFinite(x)) ? out0 : null;
+  }
+
+  // Step the position: momentum carries the fall (scaled by lucidity -> how far
+  // each leap reaches), while the steer bias is applied at full BIAS_REACH so a
+  // push-away can always overcome where you are (see BIAS_REACH above).
   const reach = stepSize(lucidity);
-  const target =
-    Math.sqrt(mag) < 1e-9
-      ? position.slice()
-      : position.map((p, i) => p + reach * heading[i]!);
+  const target = new Array<number>(dim);
+  for (let i = 0; i < dim; i++) {
+    target[i] = position[i]! + reach * MOMENTUM_WEIGHT * mom[i]! + BIAS_REACH * bias[i]!;
+  }
 
   const out = normalize(target);
   if (!out.every((x) => Number.isFinite(x))) return null;

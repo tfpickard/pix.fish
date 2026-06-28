@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readNsfwMode } from '@/lib/nsfw';
-import { getCaptionVectorsForIds, getRandomEmbeddedImageIds } from '@/lib/db/queries/taste';
+import { getCaptionVectorsForIds } from '@/lib/db/queries/taste';
+import { randomUnseenDriftId } from '@/lib/db/queries/drift';
 import { searchByVector } from '@/lib/db/queries/embeddings';
 import { hydrateNodes } from '@/lib/db/queries/daily';
 import { driftTarget, sanitizeTrajectory } from '@/lib/drift/engine';
@@ -83,10 +84,12 @@ async function pickNext(args: {
   }
 
   // Fallback: degenerate heading, or the whole nearby band is already seen
-  // (small/dense corpus). Jump to a random in-scope image to keep falling.
+  // (small/dense corpus). Query a random in-scope image the visitor hasn't seen
+  // in the no-repeat window -- excluding server-side so we only ever return
+  // `done` when the visible corpus is genuinely exhausted, never because a small
+  // random sample happened to miss the remaining unseen frames.
   if (nextId === null) {
-    const pool = await getRandomEmbeddedImageIds(24, nsfwMode);
-    nextId = pool.find((id) => !seen.has(id)) ?? null;
+    nextId = await randomUnseenDriftId([...seen], nsfwMode);
   }
   if (nextId === null) return null;
 

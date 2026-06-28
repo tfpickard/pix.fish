@@ -25,7 +25,7 @@ function parseIds(raw: string | undefined): number[] {
     .split(',')
     .map((s) => parseInt(s, 10))
     .filter((n) => Number.isInteger(n) && n > 0)
-    .slice(0, MAX_REPLAY);
+    .slice(-MAX_REPLAY); // keep the tail -- the most recent frames, matching the capped share link
 }
 
 type PageProps = {
