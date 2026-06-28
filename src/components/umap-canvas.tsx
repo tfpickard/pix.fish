@@ -14,10 +14,16 @@ type ImageMeta = {
   surprisal?: number | null;
 };
 
+// Per-image lore summary from the universe layer. Optional + additive: when
+// supplied and toggled on, specimens that carry a dossier get a warm ring sized
+// by how many fragments are on file -- a view of where the canon is thickest.
+type LoreSummary = { imageId: number; fragments: number };
+
 type Props = {
   points: Point[];
   images: ImageMeta[]; // maps imageId -> slug (and optional blobUrl + palette)
   height?: number;
+  lore?: LoreSummary[];
 };
 
 // Scatter-plot canvas with hover thumbnails and wheel-zoom / drag-pan.
@@ -25,7 +31,7 @@ type Props = {
 // the cluster shape doubles as a faint visual chord. Click navigates to
 // the image detail page; hover renders a small thumbnail next to the
 // cursor so the cluster shape is browsable without a click.
-export function UmapCanvas({ points, images, height = 600 }: Props) {
+export function UmapCanvas({ points, images, height = 600, lore }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [hover, setHover] = useState<Point | null>(null);
@@ -44,6 +50,12 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
   // Index by id; rebuilt only when `images` changes so render + hit-test
   // stay O(1) per lookup without thrashing the map on unrelated renders.
   const metaById = useMemo(() => new Map(images.map((i) => [i.id, i])), [images]);
+  const loreById = useMemo(
+    () => new Map((lore ?? []).map((l) => [l.imageId, l.fragments])),
+    [lore]
+  );
+  const hasLore = loreById.size > 0;
+  const [showLore, setShowLore] = useState(false);
 
   useEffect(() => {
     const el = wrapperRef.current;
@@ -124,8 +136,22 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
+
+      // Lore layer: a warm ring on specimens that carry a dossier, its gap from
+      // the point growing with the fragment count (a thicker file reads bigger).
+      if (showLore) {
+        const fragments = loreById.get(p.imageId);
+        if (fragments && fragments > 0) {
+          const ringRadius = radius + 2.5 + Math.min(6, fragments * 1.2);
+          ctx.strokeStyle = 'rgba(251, 191, 36, 0.7)'; // amber
+          ctx.lineWidth = 1.25;
+          ctx.beginPath();
+          ctx.arc(x, y, ringRadius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
     }
-  }, [points, size, projectPoint, scale, metaById]);
+  }, [points, size, projectPoint, scale, metaById, showLore, loreById]);
 
   function hitTest(clientX: number, clientY: number): Point | null {
     const rect = canvasRef.current!.getBoundingClientRect();
@@ -254,6 +280,16 @@ export function UmapCanvas({ points, images, height = 600 }: Props) {
         </div>
       ) : null}
       <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-2 font-mono text-[10px] text-ink-500">
+        {hasLore && (
+          <button
+            type="button"
+            onClick={() => setShowLore((v) => !v)}
+            aria-pressed={showLore}
+            className={`pointer-events-auto rounded border px-1.5 py-0.5 ${showLore ? 'border-amber-400/70 text-amber-300' : 'border-ink-800 bg-ink-950/80 hover:text-ink-200'}`}
+          >
+            lore
+          </button>
+        )}
         {(scale !== 1 || translate.x !== 0 || translate.y !== 0) && (
           <button
             type="button"

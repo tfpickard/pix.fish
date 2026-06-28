@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../client';
 import { events, type UniverseEvent } from '../schema';
 
@@ -20,9 +20,11 @@ export type AppendEventInput = {
 // Append an event. Idempotent when a dedupeKey is supplied: a second append
 // with the same key is a no-op (the unique index absorbs it) and reports
 // inserted=false, so the bootstrap can run repeatedly without double-filing.
+// Returns the full row (newly inserted or the pre-existing one) so callers can
+// materialize it immediately without a second lookup.
 export async function appendEvent(
   e: AppendEventInput
-): Promise<{ id: number; inserted: boolean }> {
+): Promise<{ event: UniverseEvent; inserted: boolean }> {
   const [row] = await db
     .insert(events)
     .values({
@@ -35,18 +37,18 @@ export async function appendEvent(
       dedupeKey: e.dedupeKey ?? null
     })
     .onConflictDoNothing({ target: events.dedupeKey })
-    .returning({ id: events.id });
+    .returning();
 
-  if (row) return { id: row.id, inserted: true };
+  if (row) return { event: row, inserted: true };
 
-  // Conflict on dedupeKey: the event is already filed. Return its id so the
-  // caller can still wire up references without re-appending.
-  const existing = await db
-    .select({ id: events.id })
+  // Conflict on dedupeKey: the event is already filed. Return it so the caller
+  // can still wire up references without re-appending.
+  const [existing] = await db
+    .select()
     .from(events)
     .where(eq(events.dedupeKey, e.dedupeKey as string))
     .limit(1);
-  return { id: existing[0]!.id, inserted: false };
+  return { event: existing!, inserted: false };
 }
 
 export async function eventExists(dedupeKey: string): Promise<boolean> {
@@ -56,6 +58,11 @@ export async function eventExists(dedupeKey: string): Promise<boolean> {
     .where(eq(events.dedupeKey, dedupeKey))
     .limit(1);
   return Boolean(row);
+}
+
+export async function getEvent(id: number): Promise<UniverseEvent | null> {
+  const [row] = await db.select().from(events).where(eq(events.id, id)).limit(1);
+  return row ?? null;
 }
 
 // All events in canonical (insert) order. The rebuild replays this slice
@@ -74,6 +81,19 @@ export async function listSpecimenEvents(imageId: number): Promise<UniverseEvent
     .from(events)
     .where(and(eq(events.subjectType, 'specimen'), eq(events.subjectId, String(imageId))))
     .orderBy(asc(events.id));
+}
+
+// Most recent events, newest first. Powers the chronicle/incident feed. An
+// optional type allow-list keeps the feed to the canon-visible events
+// (intakes, amendments, audits, district intakes) and out of bookkeeping.
+export async function listRecentEvents(
+  limit = 50,
+  opts: { types?: string[] } = {}
+): Promise<UniverseEvent[]> {
+  const lim = Math.min(Math.max(Math.trunc(limit), 1), 200);
+  const where = opts.types && opts.types.length > 0 ? inArray(events.type, opts.types) : undefined;
+  const q = db.select().from(events);
+  return (where ? q.where(where) : q).orderBy(desc(events.id)).limit(lim);
 }
 
 export async function countEvents(): Promise<number> {

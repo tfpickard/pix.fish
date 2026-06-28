@@ -4,6 +4,7 @@ import { db } from '@/lib/db/client';
 import { images, users } from '@/lib/db/schema';
 import { latestManifold } from '@/lib/db/queries/manifold';
 import { countCaptionEmbeddings } from '@/lib/db/queries/embeddings';
+import { loreSummaryByImageIds } from '@/lib/db/queries/lore-fragments';
 import { readNsfwMode } from '@/lib/nsfw';
 import { ManifoldSceneClient } from '@/components/manifold-scene-client';
 import { MANIFOLD_SUBSAMPLE_CAP } from '@/lib/jobs/handlers/manifoldRecompute';
@@ -70,6 +71,13 @@ export default async function ManifoldPage() {
   const visibleIds = new Set(metaRows.map((r) => r.id));
   const visiblePoints = points.filter((p) => visibleIds.has(p.imageId));
 
+  // Universe lore overlay for the visible specimens (best-effort).
+  const loreMap =
+    visibleIds.size > 0
+      ? await loreSummaryByImageIds([...visibleIds]).catch(() => new Map())
+      : new Map();
+  const lore = [...loreMap.values()];
+
   return (
     <div className="space-y-4 pt-8">
       <h1 className="font-fungal-lite text-3xl text-ink-100">manifold</h1>
@@ -77,7 +85,7 @@ export default async function ManifoldPage() {
         3D semantic point cloud. each dot is an image; position reflects caption-embedding
         similarity projected via UMAP to 3 dimensions.
       </p>
-      <ManifoldSceneClient points={visiblePoints} images={metaRows} />
+      <ManifoldSceneClient points={visiblePoints} images={metaRows} lore={lore} />
       {row ? (
         <p className="font-mono text-xs text-ink-500">
           {row.pointCount} of {totalEmbedded} points

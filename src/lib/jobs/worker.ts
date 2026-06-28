@@ -26,6 +26,9 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'nsfw.scan': 25_000, // single Haiku vision call; same shape as a webhook fetch
   'entropy.recompute': 55_000, // read-then-write over the whole corpus; fills the tick
   'knn.rebuild': 55_000, // O(n^2) all-pairs; fills the tick at ~5000 images
+  'universe.tick': 20_000, // score + enqueue only; no generation
+  'universe.amend': 55_000, // one vision-less text call + one embed; fills the tick
+  'universe.ripple': 10_000, // fan-out enqueue only
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;

@@ -4,8 +4,24 @@ import { deleteAllDistricts } from '@/lib/db/queries/districts';
 import { listAllEvents } from '@/lib/db/queries/events';
 import { deleteAllLoreFragments } from '@/lib/db/queries/lore-fragments';
 import { deleteAllSpecimens } from '@/lib/db/queries/specimens';
+import { listSpecimenEvents } from '@/lib/db/queries/events';
 import { buildCoordsMap } from './coords';
 import { applyEvent } from './reduce';
+
+// Rebuild a single specimen's projection by replaying its full event stream
+// (intake + amendments, in order). This is idempotent and order-correct:
+// generation and current dossier are derived by re-folding the whole history,
+// so a retry, a race, or re-applying an already-materialized amendment all
+// converge to the same state -- no generation drift. Preferred over applying a
+// lone amendment event, which would advance generation off already-advanced
+// projection state. Bounded to one specimen's events, so cheap at loop cadence.
+export async function materializeSpecimen(imageId: number): Promise<void> {
+  const coords = await buildCoordsMap();
+  const events = await listSpecimenEvents(imageId);
+  for (const ev of events) {
+    await applyEvent(ev, { coords });
+  }
+}
 
 // Rebuild every projection from the event log alone. This is the documented
 // reconciliation routine: it clears the projection tables (never the events)

@@ -676,6 +676,49 @@ export async function getImagesByIdsOrdered(ids: number[]): Promise<Image[]> {
   return ids.map((id) => byId.get(id)).filter((r): r is Image => !!r);
 }
 
+// True if the image is soft-archived (pulled from circulation by the alive
+// flow). The evolution loop checks this before generating, so neither tick nor
+// ripple spends model calls on archived records.
+export async function isImageArchived(imageId: number): Promise<boolean> {
+  const [row] = await db
+    .select({ archivedAt: images.archivedAt })
+    .from(images)
+    .where(eq(images.id, imageId))
+    .limit(1);
+  return Boolean(row?.archivedAt);
+}
+
+export type ImageRef = { slug: string; handle: string; isNsfw: boolean; archived: boolean };
+
+// Slim per-image refs (slug + owner handle + NSFW + archived flags) for a set
+// of ids. Used by the chronicle to build canonical /u/<handle>/<slug> links and
+// to apply the same NSFW + archived visibility rules the public gallery uses,
+// and by the evolution loop to drop hidden neighbours from amendment RAG.
+export async function imageRefsByIds(ids: number[]): Promise<Map<number, ImageRef>> {
+  const out = new Map<number, ImageRef>();
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({
+      id: images.id,
+      slug: images.slug,
+      handle: users.handle,
+      isNsfw: images.isNsfw,
+      archivedAt: images.archivedAt
+    })
+    .from(images)
+    .innerJoin(users, eq(users.id, images.ownerId))
+    .where(inArray(images.id, ids));
+  for (const r of rows) {
+    out.set(r.id, {
+      slug: r.slug,
+      handle: r.handle,
+      isNsfw: r.isNsfw,
+      archived: Boolean(r.archivedAt)
+    });
+  }
+  return out;
+}
+
 // Slim projection for sitemap/feed generation. We don't hydrate captions or
 // tags here: a gallery of several thousand rows would otherwise trigger
 // captions/descriptions/tags fan-outs that the sitemap has no use for.

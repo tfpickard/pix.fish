@@ -3,6 +3,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/client';
 import { images, users } from '@/lib/db/schema';
 import { latestManifold } from '@/lib/db/queries/manifold';
+import { loreSummaryByImageIds } from '@/lib/db/queries/lore-fragments';
 
 export const runtime = 'nodejs';
 // force-dynamic prevents Next.js from attempting static pre-render at build
@@ -23,7 +24,7 @@ export type ManifoldImageMeta = {
 export async function GET() {
   const row = await latestManifold();
   if (!row) {
-    return NextResponse.json({ points: [], images: [], createdAt: null, seed: null });
+    return NextResponse.json({ points: [], images: [], lore: [], createdAt: null, seed: null });
   }
 
   type Pt = { imageId: number; x: number; y: number; z: number };
@@ -48,9 +49,12 @@ export async function GET() {
           .where(inArray(images.id, ids))
       : [];
 
+  const loreMap = await loreSummaryByImageIds(ids).catch(() => new Map());
+
   return NextResponse.json({
     points,
     images: metaRows,
+    lore: [...loreMap.values()],
     createdAt: row.createdAt,
     seed: row.seed,
     pointCount: row.pointCount

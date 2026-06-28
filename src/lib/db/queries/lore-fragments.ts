@@ -1,4 +1,4 @@
-import { asc, eq, sql } from 'drizzle-orm';
+import { asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { loreFragments, type LoreFragment, type NewLoreFragment } from '../schema';
 
@@ -31,6 +31,21 @@ export async function upsertLoreFragment(input: NewLoreFragment): Promise<number
   return row!.id;
 }
 
+// The newest fragment on file for a specimen (intake or amendment). The
+// reducer derives the specimen's current dossier/clerk/citations from this
+// rather than from the event being applied, so the projection converges to the
+// latest filing regardless of the order overlapping replays finish in -- a
+// stale replay can't roll current_dossier back to an older amendment.
+export async function latestLoreFragment(imageId: number): Promise<LoreFragment | null> {
+  const [row] = await db
+    .select()
+    .from(loreFragments)
+    .where(eq(loreFragments.specimenImageId, imageId))
+    .orderBy(desc(loreFragments.createdAt), desc(loreFragments.id))
+    .limit(1);
+  return row ?? null;
+}
+
 // All fragments filed against a specimen, oldest first -- the dossier's
 // chronological record. The latest is the current case file; the rest are the
 // amendment history.
@@ -49,11 +64,41 @@ export async function countLoreFragmentsForImage(imageId: number): Promise<numbe
   return Number(res.rows?.[0]?.n ?? 0);
 }
 
+// Count of amendment fragments for a specimen. The reducer derives the
+// specimen's generation from this (rather than a read-modify-write of
+// generation), so concurrent or repeated materializations converge to the same
+// value instead of drifting above the canon event count.
+export async function countAmendmentFragments(imageId: number): Promise<number> {
+  const res = await db.execute<{ n: number }>(
+    sql`SELECT count(*)::int AS n FROM lore_fragments WHERE specimen_image_id = ${imageId} AND kind = 'amendment'`
+  );
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
 export async function countImagesWithLoreFragments(): Promise<number> {
   const res = await db.execute<{ n: number }>(
     sql`SELECT count(DISTINCT specimen_image_id)::int AS n FROM lore_fragments`
   );
   return Number(res.rows?.[0]?.n ?? 0);
+}
+
+export type LoreSummary = { imageId: number; fragments: number };
+
+// Fragment counts per image for a set of ids. Used by the map/manifold lore
+// layer to size each specimen's marker by how thick its dossier has grown.
+// Images with no lore are simply absent from the returned map.
+export async function loreSummaryByImageIds(ids: number[]): Promise<Map<number, LoreSummary>> {
+  const out = new Map<number, LoreSummary>();
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({ imageId: loreFragments.specimenImageId, n: sql<number>`count(*)::int` })
+    .from(loreFragments)
+    .where(inArray(loreFragments.specimenImageId, ids))
+    .groupBy(loreFragments.specimenImageId);
+  for (const r of rows) {
+    out.set(r.imageId, { imageId: r.imageId, fragments: Number(r.n) });
+  }
+  return out;
 }
 
 // Rebuild support. DELETE cascades to the fragments' lore embeddings via the

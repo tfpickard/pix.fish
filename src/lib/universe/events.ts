@@ -57,6 +57,28 @@ export type CrossReferenceFiledPayload = {
   dist: number;
 };
 
+// A dossier amendment (Phase 2). Same shape as an intake -- a clerk files new
+// dossier text + its embedding -- but it appends to the record rather than
+// founding it. The reducer advances the specimen's current dossier and bumps
+// its generation; prior fragments are never overwritten.
+export type DossierAmendmentPayload = {
+  dossier: string;
+  districtKey: string;
+  embedding: number[] | null;
+  embedProvider: string | null;
+  embedModel: string | null;
+};
+
+// A flagged contradiction (Phase 2). Purely a chronicle/audit artifact: it
+// records that one clerk's filing contradicts another's. It changes no
+// projection -- the contradiction itself lives in the dossier fragments, which
+// are never reconciled.
+export type AuditFlaggedPayload = {
+  note: string;
+  by: string; // clerk slug who flagged / introduced the contradiction
+  contradicts: string | null; // clerk slug being contradicted, if known
+};
+
 // A cited source: where a clerk says a claim came from. Kept loose (a free
 // label plus an optional ref) so clerks can cite captions, neighbors,
 // districts, or other dossiers without a rigid schema.
@@ -76,5 +98,14 @@ export const dedupeKey = {
   district: (key: string) => `district.intake:${key}`,
   specimenIntake: (imageId: number) => `specimen.intake:${imageId}`,
   crossReference: (srcImageId: number, dstImageId: number) =>
-    `cross_reference.filed:${srcImageId}:${dstImageId}`
+    `cross_reference.filed:${srcImageId}:${dstImageId}`,
+  // Amendments are keyed by a stable per-job nonce (the amend job's seed), NOT
+  // by live specimen generation. Deriving the key from generation made it
+  // unstable across retries (a retry that reloaded an advanced specimen would
+  // compute a new key and file a duplicate) and across races (the loser would
+  // replay and bump generation again). A fixed nonce means all attempts of one
+  // amend job collapse to a single canon event, while distinct ticks (distinct
+  // seeds) still produce distinct amendments.
+  amendment: (imageId: number, nonce: number) => `dossier.amendment:${imageId}:${nonce}`,
+  audit: (imageId: number, nonce: number) => `audit.flagged:${imageId}:${nonce}`
 };
