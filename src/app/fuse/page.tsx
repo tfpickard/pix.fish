@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { readNsfwMode } from '@/lib/nsfw';
 import { hydrateNodes } from '@/lib/db/queries/daily';
 import { getRandomEmbeddedImageIds } from '@/lib/db/queries/taste';
@@ -36,6 +37,9 @@ type PageProps = {
 export default async function FusePage({ searchParams }: PageProps) {
   const { have: rawHave } = await searchParams;
   const nsfwMode = await readNsfwMode();
+  // Only the owner/admin can spend on a live gpt-image-2 render (the button is
+  // hidden for everyone else; /api/fuse/render enforces this server-side too).
+  const isAdmin = isSiteAdmin(await auth());
 
   // ---- Shared board: ?have=12,45,... restores someone's collection. Filter
   // through the active+embedded+visible set first so a crafted id list can't put
@@ -48,7 +52,7 @@ export default async function FusePage({ searchParams }: PageProps) {
       const meta = await hydrateNodes(ordered);
       const inventory = ordered.map((id) => meta.get(id)).filter((n): n is PathNode => !!n && !!n.blobUrl);
       if (inventory.length >= 2) {
-        return <FuseBoard key={`have:${nsfwMode}:${ordered.join(',')}`} initial={inventory} />;
+        return <FuseBoard key={`have:${nsfwMode}:${ordered.join(',')}`} initial={inventory} isAdmin={isAdmin} />;
       }
     }
   }
@@ -71,5 +75,5 @@ export default async function FusePage({ searchParams }: PageProps) {
 
   // key by the seed ids AND the NSFW mode so a fresh load / cookie change starts
   // a clean, re-gated board instead of reusing a previous instance's state.
-  return <FuseBoard key={`seed:${nsfwMode}:${ids.join(',')}`} initial={inventory} />;
+  return <FuseBoard key={`seed:${nsfwMode}:${ids.join(',')}`} initial={inventory} isAdmin={isAdmin} />;
 }

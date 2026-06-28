@@ -14,6 +14,8 @@ import { compositePrompt, COMPOSITE_PROMPT_MODEL } from '@/lib/fuse/composite-pr
 
 type Props = {
   initial: PathNode[]; // starting inventory (random seeds, or a shared board)
+  // When true (owner/admin only) the reveal offers a live gpt-image-2 render.
+  isAdmin?: boolean;
 };
 
 const BOARD_CAP = 60; // matches the page's MAX_BOARD (share/restore cap)
@@ -30,7 +32,7 @@ type Reveal = {
   pending: boolean;
 };
 
-export function FuseBoard({ initial }: Props) {
+export function FuseBoard({ initial, isAdmin = false }: Props) {
   const router = useRouter();
   const [inventory, setInventory] = useState<PathNode[]>(initial);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -38,8 +40,13 @@ export function FuseBoard({ initial }: Props) {
   const [copied, setCopied] = useState(false);
   const [copyFallback, setCopyFallback] = useState('');
   const [promptCopied, setPromptCopied] = useState(false);
+  // Live gpt-image-2 render (admin only). Reset on every new fusion.
+  const [rendering, setRendering] = useState(false);
+  const [renderUrl, setRenderUrl] = useState('');
+  const [renderError, setRenderError] = useState('');
 
   const busyRef = useRef(false);
+  const renderingRef = useRef(false);
   const inventoryRef = useRef(inventory);
   inventoryRef.current = inventory;
 
@@ -58,6 +65,8 @@ export function FuseBoard({ initial }: Props) {
       const b = byId.get(bId);
       if (!a || !b) return;
       busyRef.current = true;
+      setRenderUrl(''); // a new pairing -- drop any prior render
+      setRenderError('');
       setReveal({ a, b, result: null, isNew: false, pending: true });
       try {
         const res = await fetch('/api/fuse', {
@@ -124,6 +133,31 @@ export function FuseBoard({ initial }: Props) {
       window.setTimeout(() => setPromptCopied(false), 1800);
     } catch {
       /* clipboard blocked -- the visible textarea is the fallback */
+    }
+  }, []);
+
+  // Admin only: render the imagined blend for real via gpt-image-2. The server
+  // route is the authoritative gate; the client guard just bounds double-clicks.
+  const renderForReal = useCallback(async (aId: number, bId: number) => {
+    if (renderingRef.current) return;
+    renderingRef.current = true;
+    setRendering(true);
+    setRenderError('');
+    setRenderUrl('');
+    try {
+      const res = await fetch('/api/fuse/render', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ a: aId, b: bId })
+      });
+      const data = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (res.ok && data.url) setRenderUrl(data.url);
+      else setRenderError(data.error || `render failed (${res.status})`);
+    } catch {
+      setRenderError('render failed -- network error');
+    } finally {
+      renderingRef.current = false;
+      setRendering(false);
     }
   }, []);
 
@@ -206,6 +240,33 @@ export function FuseBoard({ initial }: Props) {
               >
                 {promptCopied ? 'prompt copied!' : 'copy prompt'}
               </button>
+
+              {/* Owner/admin only: spend on a live gpt-image-2 render of the
+                  imagined blend. The /api/fuse/render route enforces the gate. */}
+              {isAdmin ? (
+                <div className="mt-3 space-y-2 border-t border-ink-800/60 pt-3">
+                  <button
+                    type="button"
+                    disabled={rendering}
+                    onClick={() => reveal && renderForReal(reveal.a.imageId, reveal.b.imageId)}
+                    className="rounded border border-primary/60 bg-primary/15 px-3 py-1 font-mono text-[11px] text-primary hover:bg-primary/25 disabled:opacity-60"
+                  >
+                    {rendering ? 'rendering with gpt-image-2...' : 'render for real (gpt-image-2)'}
+                  </button>
+                  {renderError ? <p className="font-mono text-[10px] text-rose-300">{renderError}</p> : null}
+                  {renderUrl ? (
+                    <a
+                      href={renderUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block overflow-hidden rounded-md border border-primary/40"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={renderUrl} alt="rendered fusion" className="w-full" />
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
             </details>
           ) : null}
         </section>
