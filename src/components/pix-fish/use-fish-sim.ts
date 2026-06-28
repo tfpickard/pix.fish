@@ -5,7 +5,7 @@ import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/conf
 import { computeSteering, vlen } from './boids';
 import { pickHideTarget, pickPerchTarget } from './dom-targets';
 import { emptyRefs, type Behavior, type EntityRefs, type EntityRuntime, type EntityView, type ExitKind, type Vec2 } from './entity';
-import { selectEvent, type LifeEvent } from './events';
+import { selectEvent, type LifeEvent, type SimLimits } from './events';
 import { featureFromSeed } from './feature';
 import { applyGenotypeToConfig, blendGenotype, mutateGenotype, randomGenotype, type FishGenotype } from './genotype';
 import { buildBodyPath, EYE_CX, EYE_CY, MOUTH_PATHS, NUM_FISH_VARIANTS } from './fish-sprite';
@@ -30,7 +30,6 @@ import {
   NEIGHBOR_K,
   NEIGHBOR_RADIUS,
   OFFPAGE_MARGIN,
-  POP_MAX,
   POST_MEAL_COOLDOWN,
   POST_MEAL_COOLDOWN_FAST,
   PREDATION_GROWTH,
@@ -574,7 +573,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         const pb = rts.get(ev.parentB);
         if (!pa || !pb) return;
         const views: EntityView[] = [];
-        for (let i = 0; i < ev.litter && count() < POP_MAX; i++) {
+        for (let i = 0; i < ev.litter && count() < configRef.current.popMax; i++) {
           const genotype = mutateGenotype(blendGenotype(pa.genotype, pb.genotype, simRng), simRng);
           const pos: Vec2 = {
             x: (pa.pos.x + pb.pos.x) / 2 + randRange(simRng, -40, 40),
@@ -587,13 +586,13 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         addEntities(views);
       } else if (ev.type === 'birth-budding') {
         const p = rts.get(ev.parent);
-        if (!p || count() >= POP_MAX) return;
+        if (!p || count() >= configRef.current.popMax) return;
         const genotype = mutateGenotype(p.genotype, simRng);
         const pos: Vec2 = { x: p.pos.x + randRange(simRng, -36, 36), y: p.pos.y + randRange(simRng, -36, 36) };
         p.reproCooldownUntil = now + reproCooldown();
         addEntities([spawn(genotype, pos)]);
       } else if (ev.type === 'immigration') {
-        if (count() >= POP_MAX) return;
+        if (count() >= configRef.current.popMax) return;
         const { pos, target } = immigrantStart();
         addEntities([spawn(randomGenotype(simRng), pos, { target })]);
       } else if (ev.type === 'predation') {
@@ -617,7 +616,14 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
   const runEventStep = useCallback(
     (now: number) => {
       const rts = Array.from(runtimesRef.current.values()).filter((r) => !pendingRemovalRef.current.has(r.id) && !r.emigrating);
-      const ev = selectEvent(rts, now, simRng);
+      const cfg = configRef.current;
+      const limits: SimLimits = {
+        popMin: cfg.popMin,
+        popMax: cfg.popMax,
+        popMean: cfg.popMean,
+        immigrationWeight: cfg.immigrationWeight
+      };
+      const ev = selectEvent(rts, now, simRng, limits);
       if (ev.type === 'none') {
         nextEventAtRef.current = now + retryInterval();
         return;

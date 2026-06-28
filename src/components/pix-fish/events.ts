@@ -12,24 +12,28 @@
 import type { EntityRuntime } from './entity';
 import { pick, randInt, type Rng } from './prng';
 import {
-  ALLOW_IMMIGRATION,
   BREED_PROXIMITY,
   BUD_BASE_PROB,
   BUD_LOWPOP_BOOST,
   BUD_LOWPOP_THRESHOLD,
   EMIGRATION_BASE_WEIGHT,
   EMIGRATION_WANDERLUST_MIN,
-  IMMIGRATION_BASE_WEIGHT,
   LITTER_MAX,
   LITTER_MIN,
-  POP_MAX,
-  POP_MEAN,
-  POP_MIN,
   POP_PRESSURE_GAIN,
   PREDATION_OVERLAP,
   PREDATION_SIZE_RATIO,
   TWO_PARENT_BIAS
 } from './sim-config';
+
+// Admin-configurable population limits passed in at call time so the sim can
+// honour changes without a redeploy.
+export interface SimLimits {
+  popMin: number;
+  popMax: number;
+  popMean: number;
+  immigrationWeight: number;
+}
 
 export type LifeEvent =
   | { type: 'birth-two-parent'; parentA: number; parentB: number; litter: number }
@@ -48,9 +52,10 @@ function dist(a: EntityRuntime, b: EntityRuntime): number {
   return Math.hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y);
 }
 
-export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng): LifeEvent {
+export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng, limits: SimLimits): LifeEvent {
+  const { popMin, popMax, popMean, immigrationWeight } = limits;
   const count = rts.length;
-  const pressure = POP_MEAN - count;
+  const pressure = popMean - count;
   const birthBias = Math.exp(POP_PRESSURE_GAIN * pressure);
   const deathBias = Math.exp(-POP_PRESSURE_GAIN * pressure);
 
@@ -59,7 +64,7 @@ export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng): LifeEv
   const offReproCooldown = rts.filter((r) => now >= r.reproCooldownUntil && !r.emigrating);
 
   // Birth, two-parent: a proximate pair both off cooldown. Favored path.
-  if (count < POP_MAX && offReproCooldown.length >= 2) {
+  if (count < popMax && offReproCooldown.length >= 2) {
     let best: { a: EntityRuntime; b: EntityRuntime; d: number } | null = null;
     for (let i = 0; i < offReproCooldown.length; i++) {
       for (let j = i + 1; j < offReproCooldown.length; j++) {
@@ -83,7 +88,7 @@ export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng): LifeEv
   }
 
   // Birth, budding: a single off-cooldown fish. Low base, boosted when critical.
-  if (count < POP_MAX && offReproCooldown.length >= 1) {
+  if (count < popMax && offReproCooldown.length >= 1) {
     const lowBoost = count <= BUD_LOWPOP_THRESHOLD ? BUD_LOWPOP_BOOST : 1;
     candidates.push({
       event: { type: 'birth-budding', parent: pick(rng, offReproCooldown).id },
@@ -91,14 +96,14 @@ export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng): LifeEv
     });
   }
 
-  // Immigration: a stray swims in.
-  if (ALLOW_IMMIGRATION && count < POP_MAX) {
-    candidates.push({ event: { type: 'immigration' }, weight: IMMIGRATION_BASE_WEIGHT * birthBias });
+  // Immigration: a stray swims in. Disabled when immigrationWeight is 0.
+  if (immigrationWeight > 0 && count < popMax) {
+    candidates.push({ event: { type: 'immigration' }, weight: immigrationWeight * birthBias });
   }
 
   // Predation: a big fish overlapping a much smaller neighbor. Removal -> guarded
-  // by count > POP_MIN so the tank never empties.
-  if (count > POP_MIN) {
+  // by count > popMin so the tank never empties.
+  if (count > popMin) {
     let best: { pred: EntityRuntime; prey: EntityRuntime; adv: number } | null = null;
     for (const pred of rts) {
       if (pred.emigrating || now < pred.postMealUntil) continue;
@@ -119,7 +124,7 @@ export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng): LifeEv
   }
 
   // Emigration: a restless wanderer leaves for good.
-  if (count > POP_MIN) {
+  if (count > popMin) {
     const eligible = rts.filter(
       (r) => !r.emigrating && r.genotype.wanderlust >= EMIGRATION_WANDERLUST_MIN
     );

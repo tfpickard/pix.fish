@@ -29,6 +29,12 @@ export interface FishMorphConfig {
   warpBaseFrequency: number;
   // feTurbulence octaves (integer).
   warpOctaves: number;
+  // Population limits (sim layer; stored here so the admin panel can tune them).
+  popMin: number;
+  popMax: number;
+  popMean: number;
+  // Immigration weight (0 disables; 0.25 is the default rate).
+  immigrationWeight: number;
 }
 
 export interface FishParamSpec {
@@ -136,6 +142,49 @@ export const FISH_PARAMS: FishParamSpec[] = [
     step: 1,
     integer: true,
     hint: 'turbulence layers'
+  },
+  // Population shaping
+  {
+    key: 'popMin',
+    field: 'pop_min',
+    label: 'min fish',
+    default: 1,
+    min: 1,
+    max: 5,
+    step: 1,
+    integer: true,
+    hint: 'tank never drops below this many fish'
+  },
+  {
+    key: 'popMax',
+    field: 'pop_max',
+    label: 'max fish',
+    default: 9,
+    min: 3,
+    max: 16,
+    step: 1,
+    integer: true,
+    hint: 'tank never exceeds this many fish'
+  },
+  {
+    key: 'popMean',
+    field: 'pop_mean',
+    label: 'target population',
+    default: 4.5,
+    min: 1,
+    max: 12,
+    step: 0.5,
+    hint: 'event pressure pulls the population toward this number'
+  },
+  {
+    key: 'immigrationWeight',
+    field: 'immigration_weight',
+    label: 'immigration',
+    default: 0.25,
+    min: 0,
+    max: 2,
+    step: 0.05,
+    hint: 'relative weight of new fish swimming in from off-screen; 0 disables'
   }
 ];
 
