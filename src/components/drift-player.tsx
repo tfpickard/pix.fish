@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { PathNode } from '@/lib/knn-path-types';
 import { DriftAtlas } from '@/components/drift-atlas';
 
@@ -187,6 +188,16 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
     setPlaying(true);
   }, []);
 
+  const router = useRouter();
+  // "new drift" must always re-seed. From a replay/branch URL (?d= / ?from=)
+  // navigating to bare /drift changes the route and refetches a new random seed;
+  // when already on bare /drift the href is identical, so a Link would be a
+  // no-op -- refresh() re-runs the (random-seeding) server page instead.
+  const newDrift = useCallback(() => {
+    if (typeof window !== 'undefined' && window.location.search) router.push('/drift');
+    else router.refresh();
+  }, [router]);
+
   const share = useCallback(async () => {
     // Cap to the last SHARE_CAP frames: a drift can run indefinitely, and an
     // unbounded id list would blow past URL limits and the page's MAX_REPLAY cap.
@@ -266,13 +277,15 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
         })}
 
         {/* Steer hit-zones: tap the left third to push away, the right two-thirds
-            to pull toward. Mouse/touch only -- removed from the tab order and
-            hidden from assistive tech (the visible, labeled steer buttons below
-            cover keyboard and screen-reader users), so the invisible full-height
-            zones don't pollute focus order. */}
+            to pull toward. Mouse/touch only -- tabIndex=-1 + aria-hidden keep them
+            out of the tab order and AT (the visible, labeled steer buttons below
+            cover keyboard/screen-reader users). onMouseDown preventDefault stops
+            them from TAKING focus on click, so pointer steering doesn't park focus
+            on an invisible button and disable the window keyboard shortcuts. */}
         <button
           type="button"
           onClick={() => steer('away')}
+          onMouseDown={(e) => e.preventDefault()}
           tabIndex={-1}
           aria-hidden="true"
           className="absolute inset-y-0 left-0 z-10 w-1/3 cursor-w-resize focus:outline-none"
@@ -280,6 +293,7 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
         <button
           type="button"
           onClick={() => steer('toward')}
+          onMouseDown={(e) => e.preventDefault()}
           tabIndex={-1}
           aria-hidden="true"
           className="absolute inset-y-0 right-0 z-10 w-2/3 cursor-e-resize focus:outline-none"
@@ -372,9 +386,9 @@ export function DriftPlayer({ initial, points, replay = false }: Props) {
           <Link href={`/drift?from=${node.imageId}`} prefetch={false} className="font-mono text-[11px] text-ink-500 hover:text-ink-300">
             branch from here
           </Link>
-          <Link href="/drift" prefetch={false} className="font-mono text-[11px] text-ink-500 hover:text-ink-300">
+          <button type="button" onClick={newDrift} className="font-mono text-[11px] text-ink-500 hover:text-ink-300">
             new drift
-          </Link>
+          </button>
           <span className="hidden font-mono text-[10px] text-ink-600 sm:inline">space &middot; &larr;/&rarr; &middot; t = toward &middot; x = away</span>
         </div>
 
