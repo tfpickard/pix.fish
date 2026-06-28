@@ -1,7 +1,7 @@
 'use client';
 
 import { memo } from 'react';
-import { WARP_FILTER_ID } from './lorenz';
+import type { FishFeature, FeatureShape } from './feature';
 import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/config';
 
 // Five body outlines traced from the five reference line drawings. All share
@@ -19,9 +19,6 @@ import { DEFAULT_FISH_MORPH_CONFIG, type FishMorphConfig } from '@/lib/fish/conf
 //  Q7  upper tail lobe
 
 export const NUM_FISH_VARIANTS = 5;
-
-export type EyeState = 'open' | 'half' | 'closed';
-export type MouthState = 'smile' | 'o' | 'flat';
 
 const VARIANTS: number[][] = [
   // V0 -- balanced/standard
@@ -65,36 +62,72 @@ export function buildBodyPath(morphProgress: number): string {
   return d + ' Z';
 }
 
+// Eye/mouth geometry. The sim drives the eye blink by writing a scaleY transform
+// to the eye group (1 = open, ~0.08 = closed) and the mouth mood by writing one
+// of these `d` strings to the mouth path -- both imperative, so a blinking or
+// mood-changing fish never re-renders React.
+export const EYE_CX = 24;
+export const EYE_CY = 28;
+export const MOUTH_PATHS = {
+  smile: 'M 10 38 Q 14 43, 18 39',
+  o: 'M 11 40 Q 13 36.5, 15 40 Q 13 43.5, 11 40',
+  flat: 'M 10 40 L 17 40'
+} as const;
+
+function FeatureShapeEl({ shape }: { shape: FeatureShape }) {
+  if (shape.type === 'circle') {
+    return (
+      <circle
+        cx={shape.cx}
+        cy={shape.cy}
+        r={shape.r}
+        fill="currentColor"
+        stroke="none"
+        opacity={shape.opacity}
+      />
+    );
+  }
+  return <path d={shape.d} fill="none" strokeWidth={shape.strokeWidth} opacity={shape.opacity} />;
+}
+
 interface FishSpriteProps {
-  eyeState: EyeState;
-  mouthState: MouthState;
-  morphProgress: number;
+  feature: FishFeature;
+  // Perf gate: when false the displacement warp filter is omitted entirely and
+  // the fish relies on squash/stretch only.
+  warpEnabled: boolean;
+  // Per-fish filter id (and turbulence seed) so each fish's warp field differs
+  // and the N filters don't collide.
+  filterId: string;
+  turbulenceSeed: number;
   width?: number;
-  // Ref-setters wired by the brain hook so its rAF loop can mutate the morph
-  // group's transform and the warp filter's displacement scale imperatively,
-  // without re-rendering. Stable identities keep this component's memo intact.
+  config?: FishMorphConfig;
+  // Ref-setters wired by the sim so its single rAF loop can mutate this fish's
+  // morph transform, warp scale, body outline, eye blink, and mouth mood
+  // imperatively -- no per-fish re-render.
   morphGroupRef?: (el: SVGGElement | null) => void;
   warpRef?: (el: SVGFEDisplacementMapElement | null) => void;
-  // Live morph config; only the warp filter params are read here (the transform
-  // is written imperatively by the brain). Defaults keep the sprite renderable
-  // before the config has loaded.
-  config?: FishMorphConfig;
+  bodyRef?: (el: SVGPathElement | null) => void;
+  eyeRef?: (el: SVGGElement | null) => void;
+  mouthRef?: (el: SVGPathElement | null) => void;
 }
 
 function FishSpriteImpl({
-  eyeState,
-  mouthState,
-  morphProgress,
+  feature,
+  warpEnabled,
+  filterId,
+  turbulenceSeed,
   width = 72,
+  config = DEFAULT_FISH_MORPH_CONFIG,
   morphGroupRef,
   warpRef,
-  config = DEFAULT_FISH_MORPH_CONFIG
+  bodyRef,
+  eyeRef,
+  mouthRef
 }: FishSpriteProps) {
   const height = (width * 65) / 110;
-  const bodyPath = buildBodyPath(morphProgress);
-  // At warpAmount 0 we omit the filter entirely so the zero-warp configuration
-  // pays no filter cost (pure squash/stretch fallback).
-  const warpEnabled = config.warpAmount > 0;
+  // Neutral first-paint outline; the sim overrides `d` imperatively each frame.
+  const initialPath = buildBodyPath(0);
+  const filterOn = warpEnabled && config.warpAmount > 0;
 
   return (
     <svg
@@ -109,14 +142,15 @@ function FishSpriteImpl({
       aria-hidden="true"
       style={{ display: 'block', overflow: 'visible' }}
     >
-      {warpEnabled && (
+      {filterOn && (
         <defs>
-          {/* Organic outline warp. feTurbulence is static; the brain breathes
-              the displacement `scale` from the attractor each frame, so the
-              outline deforms without a perceptible loop. Region is generous and
-              in user space so displacement up to the ceiling isn't clipped. */}
+          {/* Organic outline warp. feTurbulence is static (per-fish seed varies
+              the field); the sim breathes the displacement `scale` from the
+              attractor each frame, so the outline deforms without a perceptible
+              loop. Region is generous and in user space so displacement up to
+              the ceiling isn't clipped. */}
           <filter
-            id={WARP_FILTER_ID}
+            id={filterId}
             filterUnits="userSpaceOnUse"
             x={-20}
             y={-20}
@@ -127,10 +161,10 @@ function FishSpriteImpl({
               type="fractalNoise"
               baseFrequency={config.warpBaseFrequency}
               numOctaves={config.warpOctaves}
+              seed={turbulenceSeed}
               result="noise"
             />
-            {/* No `scale` attribute here -- it's set only imperatively, so the
-                throttled morph re-render can't reset it. */}
+            {/* No `scale` attribute here -- it's set only imperatively. */}
             <feDisplacementMap
               ref={warpRef}
               in="SourceGraphic"
@@ -142,35 +176,35 @@ function FishSpriteImpl({
         </defs>
       )}
 
-      {/* Morph group -- the brain writes scale/squash/skew to the SVG `transform`
-          ATTRIBUTE here each frame (not CSS style.transform, which is unreliable
-          on WebKit/iOS). No `transform` in JSX so the imperative writes survive
-          re-renders. */}
+      {/* Morph group -- the sim writes scale/squash/skew (incl. baseSize) to the
+          SVG `transform` ATTRIBUTE here each frame (not CSS style.transform,
+          which is unreliable on WebKit/iOS). No `transform` in JSX so the
+          imperative writes survive re-renders. */}
       <g ref={morphGroupRef}>
-        {/* Body -- path d is interpolated between the 5 variants */}
-        <path d={bodyPath} filter={warpEnabled ? `url(#${WARP_FILTER_ID})` : undefined} />
+        {/* Body -- d is interpolated between the 5 variants and written by the sim. */}
+        <path
+          ref={bodyRef}
+          d={initialPath}
+          filter={filterOn ? `url(#${filterId})` : undefined}
+        />
 
-        {/* Eye */}
-        {eyeState === 'open' && (
-          <circle cx="24" cy="28" r="2.2" fill="currentColor" stroke="none" />
-        )}
-        {eyeState === 'half' && (
-          <path d="M 21.5 28.5 Q 24 27, 26.5 28.5" strokeWidth={2.4} />
-        )}
-        {eyeState === 'closed' && <path d="M 21 29 L 27 29" strokeWidth={2.4} />}
+        {/* The fish's unique flourish. Inside the morph group so it tracks the
+            body's squash/skew, but never warp-filtered. */}
+        {feature.shapes.map((shape, i) => (
+          <FeatureShapeEl key={i} shape={shape} />
+        ))}
 
-        {/* Mouth */}
-        {mouthState === 'smile' && (
-          <path d="M 10 38 Q 14 43, 18 39" strokeWidth={2.2} />
-        )}
-        {mouthState === 'o' && (
-          <circle cx="13" cy="40" r="2.2" fill="none" strokeWidth={2} />
-        )}
-        {mouthState === 'flat' && <path d="M 10 40 L 17 40" strokeWidth={2.2} />}
+        {/* Eye -- a circle the sim squashes vertically to blink. */}
+        <g ref={eyeRef}>
+          <circle cx={EYE_CX} cy={EYE_CY} r={2.2} fill="currentColor" stroke="none" />
+        </g>
+
+        {/* Mouth -- the sim swaps its `d` between the mood paths. */}
+        <path ref={mouthRef} d={MOUTH_PATHS.smile} strokeWidth={2.2} />
       </g>
 
-      {/* Ground shadow -- subtle arc under the fish like in the reference
-          drawings. Stays outside the morph group so it doesn't scale/skew. */}
+      {/* Ground shadow -- subtle arc under the fish. Outside the morph group so
+          it doesn't scale/skew. */}
       <path d="M 22 58 Q 52 62, 80 57" strokeWidth={2} opacity={0.25} />
     </svg>
   );
