@@ -7,6 +7,7 @@ import { SiteFooter } from '@/components/site-footer';
 import { JsonLd } from '@/components/json-ld';
 import { TemperatureHud } from '@/components/temperature-hud';
 import { PixFish } from '@/components/pix-fish/pix-fish';
+import { PisciChatMount } from '@/components/pisci-chat-mount';
 import { SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION } from '@/lib/site';
 import { buildWebSiteLd } from '@/lib/seo/jsonld';
 import './globals.css';
@@ -104,6 +105,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             and <Providers> so it never participates in document flow and
             survives every route change (root layout doesn't remount). */}
         <PixFish />
+        {/* feat: Pisci anti-service chat widget. Standalone parody overlay,
+            client-only and code-split (ssr:false) so it never touches SSR or
+            initial paint. Mounted here, outside <main>/<Providers>, like the
+            other ambient overlays. */}
+        <PisciChatMount />
         <JsonLd data={buildWebSiteLd()} />
         <Analytics />
       </body>
