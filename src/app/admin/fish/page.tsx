@@ -63,7 +63,16 @@ export default function AdminFishPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data?.config) setConfig({ ...DEFAULT_FISH_MORPH_CONFIG, ...data.config });
+        if (data?.config) {
+          const next = { ...DEFAULT_FISH_MORPH_CONFIG, ...data.config };
+          setConfig(next);
+          // Nudge any live mascot (this tab + others) to apply without a reload.
+          if (typeof BroadcastChannel !== 'undefined') {
+            const channel = new BroadcastChannel('pix-fish-config');
+            channel.postMessage({ config: next });
+            channel.close();
+          }
+        }
         setDirty(false);
         setError(null);
         setSaved(true);
@@ -78,9 +87,10 @@ export default function AdminFishPage() {
     <div className="max-w-2xl space-y-6">
       <h1 className="font-display text-3xl text-ink-100">fish morph</h1>
       <p className="font-mono text-xs text-ink-500">
-        shape + size of the pix-fish mascot, driven by a lorenz attractor. global
-        for every visitor; changes apply on the next page load. set warp to 0 to
-        turn off the outline-warp filter entirely.
+        shape, size, population, and life events of the pix-fish mascot. global
+        for every visitor; saving applies to any open tab immediately (and to new
+        visitors on load). set warp to 0 to turn off the outline-warp filter; set
+        a weight to 0 to disable that life event.
       </p>
 
       {loading ? (

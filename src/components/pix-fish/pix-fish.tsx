@@ -26,16 +26,36 @@ export function PixFish() {
     setMounted(true);
     setDismissed(readFishDismissed());
     let cancelled = false;
-    fetch('/api/fish-config')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!cancelled && data?.config) setConfig(data.config as FishMorphConfig);
-      })
-      .catch(() => {
-        /* keep defaults on any failure -- the tank still works */
-      });
+
+    const load = () =>
+      fetch('/api/fish-config')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && data?.config) setConfig(data.config as FishMorphConfig);
+        })
+        .catch(() => {
+          /* keep defaults on any failure -- the tank still works */
+        });
+    load();
+
+    // Pick up admin edits without a reload: the /admin/fish page broadcasts the
+    // saved config on the same channel, and we re-pull when the tab refocuses.
+    const channel =
+      typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('pix-fish-config') : null;
+    if (channel) {
+      channel.onmessage = (e) => {
+        if (!cancelled && e.data?.config) setConfig(e.data.config as FishMorphConfig);
+      };
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       cancelled = true;
+      channel?.close();
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 

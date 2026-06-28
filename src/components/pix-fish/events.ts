@@ -18,6 +18,7 @@ import {
   BUD_LOWPOP_THRESHOLD,
   EMIGRATION_BASE_WEIGHT,
   EMIGRATION_WANDERLUST_MIN,
+  FIGHT_PROXIMITY,
   LITTER_MAX,
   LITTER_MIN,
   POP_PRESSURE_GAIN,
@@ -26,13 +27,16 @@ import {
   TWO_PARENT_BIAS
 } from './sim-config';
 
-// Admin-configurable population limits passed in at call time so the sim can
-// honour changes without a redeploy.
+// Admin-configurable population limits + interaction weights passed in at call
+// time so the sim can honour changes without a redeploy.
 export interface SimLimits {
   popMin: number;
   popMax: number;
   popMean: number;
   immigrationWeight: number;
+  predationWeight: number;
+  fightWeight: number;
+  deathWeight: number;
 }
 
 export type LifeEvent =
@@ -40,6 +44,8 @@ export type LifeEvent =
   | { type: 'birth-budding'; parent: number }
   | { type: 'immigration' }
   | { type: 'predation'; predator: number; prey: number }
+  | { type: 'fight'; a: number; b: number }
+  | { type: 'natural-death'; fish: number }
   | { type: 'emigration'; fish: number }
   | { type: 'none' };
 
@@ -53,7 +59,8 @@ function dist(a: EntityRuntime, b: EntityRuntime): number {
 }
 
 export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng, limits: SimLimits): LifeEvent {
-  const { popMin, popMax, popMean, immigrationWeight } = limits;
+  const { popMin, popMax, popMean, immigrationWeight, predationWeight, fightWeight, deathWeight } =
+    limits;
   const count = rts.length;
   const pressure = popMean - count;
   const birthBias = Math.exp(POP_PRESSURE_GAIN * pressure);
@@ -103,7 +110,7 @@ export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng, limits:
 
   // Predation: a big fish overlapping a much smaller neighbor. Removal -> guarded
   // by count > popMin so the tank never empties.
-  if (count > popMin) {
+  if (predationWeight > 0 && count > popMin) {
     let best: { pred: EntityRuntime; prey: EntityRuntime; adv: number } | null = null;
     for (const pred of rts) {
       if (pred.emigrating || now < pred.postMealUntil) continue;
@@ -118,9 +125,39 @@ export function selectEvent(rts: EntityRuntime[], now: number, rng: Rng, limits:
     if (best) {
       candidates.push({
         event: { type: 'predation', predator: best.pred.id, prey: best.prey.id },
-        weight: deathBias
+        weight: predationWeight * deathBias
       });
     }
+  }
+
+  // Fight: the two closest fish within range square off. Roughly matched size is
+  // fine -- the loser shrinks/flees, and only sometimes (lethality, applied at
+  // execution and guarded by popMin) does anyone die. Not pressure-biased:
+  // fighting is temperament, not population control.
+  if (fightWeight > 0 && count >= 2) {
+    let best: { a: EntityRuntime; b: EntityRuntime; d: number } | null = null;
+    for (let i = 0; i < rts.length; i++) {
+      for (let j = i + 1; j < rts.length; j++) {
+        if (now < rts[i].postMealUntil || now < rts[j].postMealUntil) continue;
+        const d = dist(rts[i], rts[j]);
+        if (d <= FIGHT_PROXIMITY && (!best || d < best.d)) {
+          best = { a: rts[i], b: rts[j], d };
+        }
+      }
+    }
+    if (best) {
+      candidates.push({ event: { type: 'fight', a: best.a.id, b: best.b.id }, weight: fightWeight });
+    }
+  }
+
+  // Natural death: the oldest fish passes on. Removal -> guarded by count >
+  // popMin, weighted up when the tank is crowded.
+  if (deathWeight > 0 && count > popMin) {
+    const oldest = rts.reduce((m, r) => (r.bornAt < m.bornAt ? r : m));
+    candidates.push({
+      event: { type: 'natural-death', fish: oldest.id },
+      weight: deathWeight * deathBias
+    });
   }
 
   // Emigration: a restless wanderer leaves for good.
