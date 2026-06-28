@@ -1,14 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { renderTurn, type Fetcher } from '../src/lib/pisci/render';
 import { CANNED, GREETING } from '../src/lib/pisci/canned';
-import { makeSeed } from '../src/lib/pisci/seed';
+import { makeSeedFromInt } from '../src/lib/pisci/seed';
 import type { Beat, FsmState } from '../src/lib/pisci/types';
 
 // Hard-fallback guarantee: with the LLM unreachable, a full session still emits
 // an on-beat canned line for every state -- no empty bubbles, no crashes.
 
-// Deterministic seed (rng -> 0 picks the first option in every pool).
-const seed = makeSeed(() => 0);
+// The client now carries only an integer seed; the persona (for canned-line
+// assertions) is derived from it the same way the widget and server do.
+const SEED_INT = 12345;
+const seed = makeSeedFromInt(SEED_INT);
 const rng = () => 0; // pick the first canned line, deterministically
 
 // A state in a given beat that WOULD use the LLM (so renderTurn attempts a fetch
@@ -32,26 +34,26 @@ const emptyReplyFetcher: Fetcher = async () =>
 describe('renderTurn fallback', () => {
   for (const beat of NON_DORMANT) {
     test(`a thrown fetch error falls back to an on-beat canned line for ${beat}`, async () => {
-      const r = await renderTurn({ state: stateAt(beat), seed, history: [], rng, fetcher: throwingFetcher });
+      const r = await renderTurn({ state: stateAt(beat), seedInt: SEED_INT, history: [], rng, fetcher: throwingFetcher });
       expect(r.source).toBe('canned');
       expect(r.text.length).toBeGreaterThan(0);
     });
 
     test(`a non-200 falls back to canned for ${beat}`, async () => {
-      const r = await renderTurn({ state: stateAt(beat), seed, history: [], rng, fetcher: failingFetcher });
+      const r = await renderTurn({ state: stateAt(beat), seedInt: SEED_INT, history: [], rng, fetcher: failingFetcher });
       expect(r.source).toBe('canned');
       expect(r.text.length).toBeGreaterThan(0);
     });
 
     test(`an empty/whitespace reply falls back to canned for ${beat}`, async () => {
-      const r = await renderTurn({ state: stateAt(beat), seed, history: [], rng, fetcher: emptyReplyFetcher });
+      const r = await renderTurn({ state: stateAt(beat), seedInt: SEED_INT, history: [], rng, fetcher: emptyReplyFetcher });
       expect(r.source).toBe('canned');
       expect(r.text.length).toBeGreaterThan(0);
     });
   }
 
   test('THE_ASK canned fallback interpolates the seed sum and reason', async () => {
-    const r = await renderTurn({ state: stateAt('THE_ASK'), seed, history: [], rng, fetcher: throwingFetcher });
+    const r = await renderTurn({ state: stateAt('THE_ASK'), seedInt: SEED_INT, history: [], rng, fetcher: throwingFetcher });
     expect(r.text).toContain(seed.theSum);
     expect(r.text).toContain(seed.theReason);
     expect(r.text).not.toContain('{{');
@@ -63,7 +65,7 @@ describe('renderTurn fallback', () => {
       called = true;
       return new Response('{}', { status: 200 });
     };
-    const r = await renderTurn({ state: stateAt('DORMANT'), seed, history: [], rng, fetcher: spy });
+    const r = await renderTurn({ state: stateAt('DORMANT'), seedInt: SEED_INT, history: [], rng, fetcher: spy });
     expect(called).toBe(false);
     expect(r.source).toBe('canned');
     expect(r.text).toBe(GREETING);
@@ -75,9 +77,23 @@ describe('renderTurn fallback', () => {
         status: 200,
         headers: { 'content-type': 'application/json' }
       });
-    const r = await renderTurn({ state: stateAt('HOOKED'), seed, history: [], rng, fetcher: okFetcher });
+    const r = await renderTurn({ state: stateAt('HOOKED'), seedInt: SEED_INT, history: [], rng, fetcher: okFetcher });
     expect(r.source).toBe('llm');
     expect(r.text).toBe('oh my gosh hi');
+  });
+
+  test('only the integer seed is sent over the wire (no persona text to inject)', async () => {
+    let sentSeed: unknown;
+    const capture: Fetcher = async (req) => {
+      sentSeed = req.seed;
+      return new Response(JSON.stringify({ reply: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    };
+    await renderTurn({ state: stateAt('HOOKED'), seedInt: SEED_INT, history: [], rng, fetcher: capture });
+    expect(typeof sentSeed).toBe('number');
+    expect(sentSeed).toBe(SEED_INT);
   });
 
   test('every beat has at least one canned line', () => {

@@ -257,6 +257,32 @@ function pick<T>(arr: T[], rng: Rng): T {
   return arr[Math.floor(rng() * arr.length) % arr.length];
 }
 
+// Deterministic, seedable RNG (mulberry32). The client mints one integer per
+// session and sends ONLY that integer; both client and server derive the exact
+// same PersonaSeed from it via makeSeedFromInt. No seed *text* ever crosses the
+// wire, so a hostile caller cannot smuggle instructions into the system prompt
+// through the seed fields -- the injection surface is removed, not just fenced.
+export function rngFromSeed(seedInt: number): Rng {
+  let a = seedInt >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// A fresh random session seed integer (non-negative 31-bit).
+export function randomSeedInt(): number {
+  return Math.floor(Math.random() * 0x7fffffff);
+}
+
+// Derive the session persona from a single integer -- the canonical path used by
+// both the widget (for canned lines) and the server (for the prompt).
+export function makeSeedFromInt(seedInt: number): PersonaSeed {
+  return makeSeed(rngFromSeed(seedInt));
+}
+
 export function makeSeed(rng: Rng = Math.random): PersonaSeed {
   return {
     livingSituation: pick(LIVING_SITUATIONS, rng),

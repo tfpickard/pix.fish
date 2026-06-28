@@ -27,20 +27,14 @@ const MAX_CONTENT = 600;
 const RATE_MAX = 30;
 const RATE_WINDOW_MS = 60_000;
 
-// The client-supplied beat is trusted only to *select* a server-owned directive
-// (below); the directive string itself is never taken from the client, so it
-// can't be used to steer the model. The seed is likewise treated as inert data
-// inside the prompt (see pisci-chat.ts).
+// The client supplies only two non-text levers, neither of which can steer the
+// model: `beat` (an enum, used only to *select* a server-owned directive) and
+// `seed` (an integer; the server reconstructs the fabricated persona from the
+// fixed pools, so no client text is interpolated into the prompt). The directive
+// string is never taken from the client.
 const bodySchema = z.object({
   beat: z.enum(['DORMANT', 'HOOKED', 'OVERSHARE', 'DEPENDENCY', 'THE_ASK', 'SPIRAL']),
-  seed: z.object({
-    livingSituation: z.string().max(300),
-    sobStory: z.string().max(300),
-    pet: z.string().max(300),
-    grievance: z.string().max(300),
-    theSum: z.string().max(40),
-    theReason: z.string().max(300)
-  }),
+  seed: z.number().int().min(0).max(0x7fffffff),
   messages: z
     .array(
       z.object({
@@ -76,7 +70,7 @@ export async function POST(req: Request) {
 
   try {
     const reply = await renderPisciTurn({
-      seed: parsed.data.seed,
+      seedInt: parsed.data.seed,
       beat: parsed.data.beat,
       // Derived server-side from the validated beat -- never trusted from the
       // client, so it can't be used to override pacing or the taste fence.

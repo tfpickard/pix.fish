@@ -9,19 +9,21 @@
 
 import { pickCanned } from './canned';
 import { shouldUseLlm } from './fsm';
-import type { FsmState, PersonaSeed } from './types';
+import { makeSeedFromInt } from './seed';
+import type { FsmState } from './types';
 
 // One chat bubble in the transcript. `role` matches the model's roles so the
 // recent history can be replayed to the server cheaply.
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
-// The payload the client POSTs to /api/chat. No PII: just the fabricated seed,
-// the current beat, and a short slice of recent turns for coherence. Note the
-// beat directive is NOT sent -- the server derives it from `beat` itself, so a
-// client can't hand-craft a directive to steer the model.
+// The payload the client POSTs to /api/chat. No PII and no free text beyond the
+// transcript: just the integer session seed (the server reconstructs the same
+// fabricated persona from it), the current beat, and a short slice of recent
+// turns. The beat directive is NOT sent -- the server derives it from `beat` --
+// and the seed is an integer, not text, so neither is a prompt-injection lever.
 export type ChatRequest = {
   beat: FsmState['beat'];
-  seed: PersonaSeed;
+  seed: number;
   messages: ChatMessage[];
 };
 
@@ -45,18 +47,21 @@ const defaultFetcher: Fetcher = (req, signal) =>
 
 export async function renderTurn(args: {
   state: FsmState;
-  seed: PersonaSeed;
+  // The integer session seed. The persona for canned lines is derived from it
+  // locally; only the integer is sent to the server.
+  seedInt: number;
   history: ChatMessage[];
   rng?: () => number;
   fetcher?: Fetcher;
 }): Promise<RenderResult> {
-  const { state, seed, history, rng = Math.random } = args;
+  const { state, seedInt, history, rng = Math.random } = args;
   const fetcher = args.fetcher ?? defaultFetcher;
+  const persona = makeSeedFromInt(seedInt);
 
   // Spine says no LLM this turn (cap reached, or canned-only): go straight to the
   // pool. No wasted call.
   if (!shouldUseLlm(state)) {
-    return { text: pickCanned(state.beat, seed, rng), source: 'canned' };
+    return { text: pickCanned(state.beat, persona, rng), source: 'canned' };
   }
 
   const controller = new AbortController();
@@ -64,23 +69,19 @@ export async function renderTurn(args: {
   try {
     const req: ChatRequest = {
       beat: state.beat,
-      seed,
+      seed: seedInt,
       messages: history.slice(-HISTORY_WINDOW)
     };
     const res = await fetcher(req, controller.signal);
-    if (!res.ok) return fallback(state, seed, rng);
+    if (!res.ok) return { text: pickCanned(state.beat, persona, rng), source: 'canned' };
     const data = (await res.json().catch(() => null)) as { reply?: unknown } | null;
     const reply = typeof data?.reply === 'string' ? data.reply.trim() : '';
-    if (!reply) return fallback(state, seed, rng);
+    if (!reply) return { text: pickCanned(state.beat, persona, rng), source: 'canned' };
     return { text: reply, source: 'llm' };
   } catch {
     // Timeout, abort, network, or parse error -- the bit must survive all of it.
-    return fallback(state, seed, rng);
+    return { text: pickCanned(state.beat, persona, rng), source: 'canned' };
   } finally {
     clearTimeout(timer);
   }
-}
-
-function fallback(state: FsmState, seed: PersonaSeed, rng: () => number): RenderResult {
-  return { text: pickCanned(state.beat, seed, rng), source: 'canned' };
 }

@@ -11,7 +11,7 @@
 // serves anonymous visitors -- there is no signed-in user to load BYO keys for).
 
 import Anthropic from '@anthropic-ai/sdk';
-import { seedToNarrative } from '@/lib/pisci/seed';
+import { seedToNarrative, makeSeedFromInt } from '@/lib/pisci/seed';
 import type { Beat, PersonaSeed } from '@/lib/pisci/types';
 import type { ChatMessage } from '@/lib/pisci/render';
 
@@ -168,7 +168,9 @@ export function normalizeHistory(messages: ChatMessage[]): ChatMessage[] {
 // fallback). Throws on a genuine API failure; the route catches and does the
 // same. Conversation is ephemeral -- nothing here is persisted or logged.
 export async function renderPisciTurn(args: {
-  seed: PersonaSeed;
+  // The integer session seed. The persona is reconstructed server-side from the
+  // fixed pools, so no client-supplied text is ever interpolated into the prompt.
+  seedInt: number;
   beat: Beat;
   directive: string;
   messages: ChatMessage[];
@@ -176,11 +178,12 @@ export async function renderPisciTurn(args: {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (pisciLlmDisabled() || !apiKey) return null;
 
+  const seed: PersonaSeed = makeSeedFromInt(args.seedInt);
   const client = new Anthropic({ apiKey });
   const res = await client.messages.create({
     model: PISCI_MODEL,
     max_tokens: clampMaxTokens(PISCI_MAX_TOKENS),
-    system: buildSystemPrompt(args.seed, args.beat, args.directive),
+    system: buildSystemPrompt(seed, args.beat, args.directive),
     messages: normalizeHistory(args.messages)
   });
   const block = res.content.find((c) => c.type === 'text');

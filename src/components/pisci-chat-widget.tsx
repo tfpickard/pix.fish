@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { advance, initialState, noteLlmUsed } from '@/lib/pisci/fsm';
-import { makeSeed } from '@/lib/pisci/seed';
+import { makeSeedFromInt, randomSeedInt } from '@/lib/pisci/seed';
 import { GREETING, pickCanned } from '@/lib/pisci/canned';
 import { renderTurn, type ChatMessage } from '@/lib/pisci/render';
 import type { FsmState, PersonaSeed } from '@/lib/pisci/types';
@@ -69,6 +69,9 @@ export function PisciChatWidget() {
   // Latest values for use inside timer callbacks without re-arming effects.
   const fsmRef = useRef(fsm);
   const seedRef = useRef<PersonaSeed | null>(null);
+  // The integer session seed sent to the server; the persona above is derived
+  // from it. Only the integer leaves the browser.
+  const seedIntRef = useRef(0);
   const bubblesRef = useRef<Bubble[]>([]);
   const idRef = useRef(0);
   const ghostsRef = useRef(0);
@@ -99,14 +102,17 @@ export function PisciChatWidget() {
   // mint) the per-session seed.
   useEffect(() => {
     setMounted(true);
-    let s: PersonaSeed;
+    // Restore or mint the integer session seed; the persona is derived from it.
+    let n: number;
     try {
       const raw = window.sessionStorage.getItem(SEED_KEY);
-      s = raw ? (JSON.parse(raw) as PersonaSeed) : makeSeed();
-      window.sessionStorage.setItem(SEED_KEY, JSON.stringify(s));
+      n = raw && /^\d+$/.test(raw) ? Number(raw) : randomSeedInt();
+      window.sessionStorage.setItem(SEED_KEY, String(n));
     } catch {
-      s = makeSeed();
+      n = randomSeedInt();
     }
+    seedIntRef.current = n;
+    const s = makeSeedFromInt(n);
     seedRef.current = s;
     setSeed(s);
   }, []);
@@ -140,7 +146,7 @@ export function PisciChatWidget() {
       const next = advance(state, { type: 'ghost' });
       const result = await renderTurn({
         state: next,
-        seed: seedRef.current as PersonaSeed,
+        seedInt: seedIntRef.current,
         history: bubblesRef.current.map(({ role, content }) => ({ role, content }))
       });
       // Closed while the ghost reply was in flight: drop it.
@@ -262,7 +268,7 @@ export function PisciChatWidget() {
     ];
     let result;
     try {
-      result = await renderTurn({ state: next, seed: seedRef.current, history });
+      result = await renderTurn({ state: next, seedInt: seedIntRef.current, history });
     } catch {
       // renderTurn already swallows failures, but never let a stray throw crash
       // the widget -- fall back to a canned on-beat line.
