@@ -11,7 +11,6 @@ export const dynamic = 'force-dynamic';
 const VISIBILITY_TIMEOUT_MS = 5 * 60_000;
 // Stop claiming new work after this to respect the 60s function budget.
 const WALL_BUDGET_MS = 55_000;
-const BATCH = 10;
 
 async function drain(req: Request) {
   const auth = req.headers.get('authorization') ?? '';
@@ -29,16 +28,23 @@ async function drain(req: Request) {
   let failed = 0;
   let retried = 0;
 
+  // Claim one job at a time rather than a batch. A single long job (a 55s
+  // fuse.render, umap.recompute, etc.) can consume the whole tick; with a batch
+  // claim, the sibling rows moved to 'processing' up front but never reached
+  // would sit stranded until the visibility timeout -- where reclaimStuckJobs now
+  // treats a stuck row as a consumed attempt and would wrongly fail an unstarted
+  // single-attempt job (e.g. fuse.render) that never actually ran. Claiming
+  // as-we-go means a row enters 'processing' only immediately before it runs, so
+  // reclaim only ever sees genuinely-abandoned (crashed mid-run) jobs. The long
+  // jobs that dominate the queue already fill a whole tick each, so this costs no
+  // real throughput.
   while (Date.now() - started < WALL_BUDGET_MS) {
-    const batch = await claimJobs(lockId, BATCH);
-    if (batch.length === 0) break;
-    for (const job of batch) {
-      const result = await runJob(job);
-      if (result === 'done') drained++;
-      else if (result === 'failed') failed++;
-      else retried++;
-      if (Date.now() - started >= WALL_BUDGET_MS) break;
-    }
+    const [job] = await claimJobs(lockId, 1);
+    if (!job) break;
+    const result = await runJob(job);
+    if (result === 'done') drained++;
+    else if (result === 'failed') failed++;
+    else retried++;
   }
 
   return NextResponse.json({ reclaimed, drained, retried, failed });
