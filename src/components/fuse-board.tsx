@@ -50,6 +50,9 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
 
   const busyRef = useRef(false);
   const renderingRef = useRef(false);
+  // Bumped on every new pairing so a slow render from the previous pair can be
+  // ignored when it resolves (it would otherwise show under the new pairing).
+  const renderGenRef = useRef(0);
   const inventoryRef = useRef(inventory);
   inventoryRef.current = inventory;
 
@@ -70,6 +73,7 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
       busyRef.current = true;
       setRenderUrl(''); // a new pairing -- drop any prior render
       setRenderError('');
+      renderGenRef.current += 1; // supersede any in-flight render from the old pair
       setReveal({ a, b, result: null, isNew: false, pending: true });
       try {
         const res = await fetch('/api/fuse', {
@@ -154,6 +158,7 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
     setRendering(true);
     setRenderError('');
     setRenderUrl('');
+    const myGen = renderGenRef.current;
     try {
       const res = await fetch('/api/fuse/render', {
         method: 'POST',
@@ -161,10 +166,13 @@ export function FuseBoard({ initial, isAdmin = false }: Props) {
         body: JSON.stringify({ a: aId, b: bId })
       });
       const data = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      // A new pairing since this render started -- drop the now-stale result so it
+      // can't show under the current pair.
+      if (myGen !== renderGenRef.current) return;
       if (res.ok && data.url) setRenderUrl(data.url);
       else setRenderError(data.error || `render failed (${res.status})`);
     } catch {
-      setRenderError('render failed -- network error');
+      if (myGen === renderGenRef.current) setRenderError('render failed -- network error');
     } finally {
       renderingRef.current = false;
       setRendering(false);

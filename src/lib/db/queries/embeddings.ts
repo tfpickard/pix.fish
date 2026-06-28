@@ -181,13 +181,17 @@ export async function searchByVector(
     nsfwMode === 'only' ? sql`AND i.is_nsfw = true` :
     nsfwMode === 'include' ? sql`` :
     sql`AND i.is_nsfw = false`;
+  // Secondary ORDER BY image_id breaks distance ties deterministically: Postgres
+  // gives no stable order for equal ORDER BY keys, so without it equal-distance
+  // results (e.g. duplicate embeddings) could reorder across replans/reindexes --
+  // which would make a shared /fuse recipe (A+B) resolve to a different image.
   const res = await db.execute<{ image_id: number; distance: number }>(sql`
     SELECT e.image_id, e.vec <=> ${vecLiteral}::vector AS distance
     FROM embeddings e
     JOIN images i ON i.id = e.image_id
     WHERE e.kind = ${kind} AND e.subject_type = 'image' AND i.archived_at IS NULL
     ${nsfwClause}
-    ORDER BY distance ${direction}
+    ORDER BY distance ${direction}, e.image_id ASC
     LIMIT ${limit}
   `);
   return res.rows.map((r) => ({ imageId: Number(r.image_id), distance: Number(r.distance) }));
