@@ -22,7 +22,11 @@ export async function GET(req: Request) {
       {
         headers: {
           'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'public, max-age=300, s-maxage=300'
+          // The result depends on the visitor's NSFW cookie, so it must never
+          // sit in a shared/CDN cache where an opted-in response could be served
+          // to a default hide-NSFW visitor. Keep it per-client and uncached.
+          'cache-control': 'private, no-store',
+          vary: 'Cookie'
         }
       }
     );

@@ -4,17 +4,23 @@ import { deleteAllDistricts } from '@/lib/db/queries/districts';
 import { listAllEvents } from '@/lib/db/queries/events';
 import { deleteAllLoreFragments } from '@/lib/db/queries/lore-fragments';
 import { deleteAllSpecimens } from '@/lib/db/queries/specimens';
-import type { UniverseEvent } from '@/lib/db/schema';
+import { listSpecimenEvents } from '@/lib/db/queries/events';
 import { buildCoordsMap } from './coords';
 import { applyEvent } from './reduce';
 
-// Apply a single freshly-appended event to the projections, without a full
-// rebuild. Used by the Phase 2 evolution loop so an amendment lands in the
-// specimen/lore_fragment projections immediately. Builds a coords map once per
-// call (two cheap projection reads); fine at the loop's low cadence.
-export async function materializeEvent(ev: UniverseEvent): Promise<void> {
+// Rebuild a single specimen's projection by replaying its full event stream
+// (intake + amendments, in order). This is idempotent and order-correct:
+// generation and current dossier are derived by re-folding the whole history,
+// so a retry, a race, or re-applying an already-materialized amendment all
+// converge to the same state -- no generation drift. Preferred over applying a
+// lone amendment event, which would advance generation off already-advanced
+// projection state. Bounded to one specimen's events, so cheap at loop cadence.
+export async function materializeSpecimen(imageId: number): Promise<void> {
   const coords = await buildCoordsMap();
-  await applyEvent(ev, { coords });
+  const events = await listSpecimenEvents(imageId);
+  for (const ev of events) {
+    await applyEvent(ev, { coords });
+  }
 }
 
 // Rebuild every projection from the event log alone. This is the documented

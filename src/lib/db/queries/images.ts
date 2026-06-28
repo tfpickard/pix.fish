@@ -676,6 +676,18 @@ export async function getImagesByIdsOrdered(ids: number[]): Promise<Image[]> {
   return ids.map((id) => byId.get(id)).filter((r): r is Image => !!r);
 }
 
+// True if the image is soft-archived (pulled from circulation by the alive
+// flow). The evolution loop checks this before generating, so neither tick nor
+// ripple spends model calls on archived records.
+export async function isImageArchived(imageId: number): Promise<boolean> {
+  const [row] = await db
+    .select({ archivedAt: images.archivedAt })
+    .from(images)
+    .where(eq(images.id, imageId))
+    .limit(1);
+  return Boolean(row?.archivedAt);
+}
+
 export type ImageRef = { slug: string; handle: string; isNsfw: boolean };
 
 // Slim per-image refs (slug + owner handle + NSFW flag) for a set of ids.

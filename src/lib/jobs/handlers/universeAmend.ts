@@ -5,6 +5,7 @@ import { listClerks } from '@/lib/db/queries/clerks';
 import { getDistrict } from '@/lib/db/queries/districts';
 import { getNeighborsByImageId } from '@/lib/db/queries/embeddings';
 import { appendEvent } from '@/lib/db/queries/events';
+import { isImageArchived } from '@/lib/db/queries/images';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { listLoreFragments } from '@/lib/db/queries/lore-fragments';
 import { getSpecimen } from '@/lib/db/queries/specimens';
@@ -19,7 +20,7 @@ import {
   type Citation,
   type DossierAmendmentPayload
 } from '@/lib/universe/events';
-import { materializeEvent } from '@/lib/universe/materialize';
+import { materializeSpecimen } from '@/lib/universe/materialize';
 
 type Payload = { imageId: number; seed?: number; depth?: number };
 
@@ -34,6 +35,10 @@ export async function universeAmendHandler(job: Job): Promise<void> {
 
   const specimen = await getSpecimen(imageId);
   if (!specimen) return; // not filed yet (bootstrap hasn't reached it); nothing to amend
+
+  // Skip records pulled from circulation. Covers the ripple path too, which
+  // enqueues neighbours directly without the tick's archived filter.
+  if (await isImageArchived(imageId)) return;
 
   const clerks = await listClerks();
   if (clerks.length === 0) return; // no roster commissioned
@@ -106,7 +111,11 @@ export async function universeAmendHandler(job: Job): Promise<void> {
     embedModel = embedder.model;
   }
 
-  const generation = specimen.generation + 1;
+  // The amend job's seed is a stable per-job nonce: all attempts of THIS job
+  // share it (so retries collapse to one canon event), while a different tick
+  // (different seed) produces a distinct amendment. Generation is left to the
+  // projection, derived by replay -- never baked into the dedupe key.
+  const nonce = seed;
   const payload: DossierAmendmentPayload = {
     dossier,
     districtKey: specimen.districtKey,
@@ -119,26 +128,27 @@ export async function universeAmendHandler(job: Job): Promise<void> {
     ...neighbors.map((n) => ({ kind: 'neighbor' as const, ref: n.slug }))
   ];
 
-  const { event, inserted } = await appendEvent({
+  const { inserted } = await appendEvent({
     type: EVENT_TYPE.DossierAmendment,
     subjectType: SUBJECT_TYPE.Specimen,
     subjectId: String(imageId),
     authorClerk: amender.slug,
     payload,
     citations,
-    dedupeKey: dedupeKey.amendment(imageId, generation)
+    dedupeKey: dedupeKey.amendment(imageId, nonce)
   });
 
-  // Always materialize the returned event -- whether we just inserted it or it
-  // was already on the canon from a prior attempt that died before
-  // materializing. applyEvent upserts, so this is idempotent and recovers a
-  // "filed but invisible" amendment without a manual full rebuild.
-  await materializeEvent(event);
+  // Rebuild this specimen's projection by replaying its full event stream.
+  // Idempotent and order-correct, so a retry, a race with another amend, or
+  // re-running over an already-materialized event all converge -- no generation
+  // drift. Runs whether or not we were the inserter, so a partial earlier
+  // failure (event filed, projection not yet built) is recovered.
+  await materializeSpecimen(imageId);
 
   // If this amendment contradicts a prior clerk, file an audit flag for the
-  // chronicle. Dedupe-keyed, so it is safe to (re)attempt on a retry. It is a
-  // pure event-log artifact (the reducer ignores it); the contradiction itself
-  // lives, unreconciled, in the fragments.
+  // chronicle. Dedupe-keyed on the same nonce, so it is safe to (re)attempt on
+  // a retry. It is a pure event-log artifact (the reducer ignores it); the
+  // contradiction itself lives, unreconciled, in the fragments.
   const contradicted = fragments.map((f) => f.clerkSlug).find((s) => s !== amender.slug) ?? null;
   if (contradicted) {
     const audit: AuditFlaggedPayload = {
@@ -152,7 +162,7 @@ export async function universeAmendHandler(job: Job): Promise<void> {
       subjectId: String(imageId),
       authorClerk: amender.slug,
       payload: audit as unknown as Record<string, unknown>,
-      dedupeKey: dedupeKey.audit(imageId, generation)
+      dedupeKey: dedupeKey.audit(imageId, nonce)
     });
   }
 

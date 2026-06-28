@@ -99,10 +99,13 @@ export const dedupeKey = {
   specimenIntake: (imageId: number) => `specimen.intake:${imageId}`,
   crossReference: (srcImageId: number, dstImageId: number) =>
     `cross_reference.filed:${srcImageId}:${dstImageId}`,
-  // Amendments are keyed by the generation they produce, so two concurrent
-  // ticks racing on the same specimen can only ever file one amendment for a
-  // given generation -- the second is absorbed by the unique index.
-  amendment: (imageId: number, generation: number) =>
-    `dossier.amendment:${imageId}:${generation}`,
-  audit: (imageId: number, generation: number) => `audit.flagged:${imageId}:${generation}`
+  // Amendments are keyed by a stable per-job nonce (the amend job's seed), NOT
+  // by live specimen generation. Deriving the key from generation made it
+  // unstable across retries (a retry that reloaded an advanced specimen would
+  // compute a new key and file a duplicate) and across races (the loser would
+  // replay and bump generation again). A fixed nonce means all attempts of one
+  // amend job collapse to a single canon event, while distinct ticks (distinct
+  // seeds) still produce distinct amendments.
+  amendment: (imageId: number, nonce: number) => `dossier.amendment:${imageId}:${nonce}`,
+  audit: (imageId: number, nonce: number) => `audit.flagged:${imageId}:${nonce}`
 };
