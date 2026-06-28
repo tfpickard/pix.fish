@@ -14,6 +14,9 @@ type Props = {
   signature: string[];
   palette: string[];
   matches: PathNode[];
+  // The visitor's own picked ids -- used to mint a "challenge a friend" link
+  // that drops them into a head-to-head comparison after they play.
+  picked: number[];
 };
 
 function detailUrl(node: PathNode): string {
@@ -24,27 +27,37 @@ function hex(c: string): string {
   return c.startsWith('#') ? c : `#${c}`;
 }
 
-export function TasteResult({ archetype, signature, palette, matches }: Props) {
-  const [copied, setCopied] = useState(false);
+export function TasteResult({ archetype, signature, palette, matches, picked }: Props) {
+  const [copied, setCopied] = useState<'' | 'share' | 'challenge'>('');
   const [shareFailed, setShareFailed] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
+  const [origin, setOrigin] = useState('https://pix.fish');
 
-  // The shareable link is just the current URL (it encodes the picks). Read it
-  // on the client so it matches the real environment (preview, self-host).
+  // Read the live URL/origin on the client so links match the real environment
+  // (preview, self-host), not a hardcoded domain.
   useEffect(() => {
     setShareUrl(window.location.href);
+    setOrigin(window.location.origin);
   }, []);
 
-  const share = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(shareUrl || window.location.href);
-      setCopied(true);
-      setShareFailed(false);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setShareFailed(true);
-    }
-  }, [shareUrl]);
+  const challengeUrl = `${origin}/taste?vs=${picked.join(',')}`;
+
+  const copy = useCallback(
+    async (text: string, which: 'share' | 'challenge') => {
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopied(which);
+        setShareFailed(false);
+        window.setTimeout(() => setCopied(''), 1800);
+      } catch {
+        setShareFailed(true);
+      }
+    },
+    []
+  );
+
+  const share = useCallback(() => copy(shareUrl || window.location.href, 'share'), [copy, shareUrl]);
+  const challenge = useCallback(() => copy(challengeUrl, 'challenge'), [copy, challengeUrl]);
 
   return (
     <div className="space-y-6 pt-8">
@@ -112,13 +125,22 @@ export function TasteResult({ archetype, signature, palette, matches }: Props) {
           onClick={share}
           className="rounded border border-primary/50 bg-primary/10 px-4 py-1.5 font-mono text-xs text-primary hover:bg-primary/20"
         >
-          {copied ? 'copied!' : 'share your taste'}
+          {copied === 'share' ? 'copied!' : 'share your taste'}
+        </button>
+        <button
+          type="button"
+          onClick={challenge}
+          className="rounded border border-ink-700 bg-ink-900 px-4 py-1.5 font-mono text-xs text-ink-200 hover:border-primary/50 hover:text-primary"
+        >
+          {copied === 'challenge' ? 'link copied -- send it!' : 'challenge a friend'}
         </button>
         <Link href="/taste" prefetch={false} className="font-mono text-xs text-ink-500 hover:text-ink-300">
           take it again
         </Link>
-        <span className="font-mono text-[11px] text-ink-600">or send a friend the link and compare</span>
       </section>
+      <p className="font-mono text-[11px] text-ink-600">
+        &ldquo;challenge a friend&rdquo; copies a link -- when they finish, you&rsquo;ll see how aligned your tastes are.
+      </p>
 
       {shareFailed ? (
         <div className="space-y-1">

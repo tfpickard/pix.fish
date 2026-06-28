@@ -39,13 +39,14 @@ function parseIds(raw: string | undefined): number[] {
 }
 
 type PageProps = {
-  searchParams: Promise<{ p?: string; s?: string }>;
+  searchParams: Promise<{ p?: string; s?: string; vs?: string }>;
 };
 
 export default async function TastePage({ searchParams }: PageProps) {
-  const { p: rawP, s: rawS } = await searchParams;
+  const { p: rawP, s: rawS, vs: rawVs } = await searchParams;
   const picked = parseIds(rawP);
   const skipped = parseIds(rawS);
+  const challenger = parseIds(rawVs);
   const nsfwMode = await readNsfwMode();
 
   // ---- Result view: a shareable URL of picks -> taste vector -> the gallery
@@ -58,7 +59,7 @@ export default async function TastePage({ searchParams }: PageProps) {
       return null;
     });
     if (result && result.matches.length > 0) {
-      return <TasteResult {...result} />;
+      return <TasteResult {...result} picked={picked} />;
     }
     return (
       <div className="space-y-4 pt-8">
@@ -92,7 +93,7 @@ export default async function TastePage({ searchParams }: PageProps) {
     pairs.push([usable[i]!, usable[i + 1]!]);
   }
 
-  return <TasteQuiz pairs={pairs} />;
+  return <TasteQuiz pairs={pairs} vs={challenger.length ? challenger.join(',') : undefined} />;
 }
 
 type ResultData = {

@@ -1044,3 +1044,29 @@ export type CrossReference = typeof crossReferences.$inferSelect;
 export type NewCrossReference = typeof crossReferences.$inferInsert;
 export type LoreFragment = typeof loreFragments.$inferSelect;
 export type NewLoreFragment = typeof loreFragments.$inferInsert;
+
+// Taste (cycle: taste-vector). Each round of the /taste this-or-that is a
+// pairwise vote -- the picked image beat the passed-over one. Aggregated, these
+// become a crowd "most magnetic" ranking. Raw votes (not a running Elo) keep
+// writes append-only and race-free; the leaderboard aggregates on read.
+export const tasteVotes = pgTable(
+  'taste_votes',
+  {
+    id: serial('id').primaryKey(),
+    winnerId: integer('winner_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    loserId: integer('loser_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    ipHash: text('ip_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    winnerIdx: index('taste_votes_winner_idx').on(t.winnerId),
+    loserIdx: index('taste_votes_loser_idx').on(t.loserId)
+  })
+);
+
+export type TasteVote = typeof tasteVotes.$inferSelect;
+export type NewTasteVote = typeof tasteVotes.$inferInsert;

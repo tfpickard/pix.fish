@@ -71,6 +71,55 @@ export async function topTagsForImages(ids: number[], limit = 8): Promise<{ tag:
   return res.rows.map((r) => ({ tag: r.tag, count: Number(r.count) }));
 }
 
+// --- Crowd votes ("most magnetic") -----------------------------------------
+// Every quiz round is a pairwise vote: the picked image beat the passed-over
+// one. These aggregate into a crowd ranking. Both helpers degrade gracefully:
+// if the taste_votes table isn't migrated yet they no-op / return empty, so the
+// rest of the feature works before `bun run db:push`.
+
+export async function recordTasteVote(winnerId: number, loserId: number, ipHash: string): Promise<boolean> {
+  if (!Number.isInteger(winnerId) || !Number.isInteger(loserId) || winnerId <= 0 || loserId <= 0 || winnerId === loserId) {
+    return false;
+  }
+  try {
+    await db.execute(sql`
+      INSERT INTO taste_votes (winner_id, loser_id, ip_hash)
+      VALUES (${winnerId}, ${loserId}, ${ipHash})
+    `);
+    return true;
+  } catch (err) {
+    console.warn('recordTasteVote unavailable (table not migrated?)', err);
+    return false;
+  }
+}
+
+// Images ranked by win rate, gated by NSFW mode. A min-appearances floor keeps
+// a single lucky win off the top. Returns [] if the table is missing.
+export async function topMagnetic(limit: number, nsfwMode: NsfwMode): Promise<{ id: number; wins: number; total: number }[]> {
+  const lim = Math.min(Math.max(Math.trunc(limit), 1), 48);
+  try {
+    const res = await db.execute<{ id: number; wins: number; total: number }>(sql`
+      WITH agg AS (
+        SELECT id, sum(win)::int AS wins, count(*)::int AS total FROM (
+          SELECT winner_id AS id, 1 AS win FROM taste_votes
+          UNION ALL
+          SELECT loser_id AS id, 0 AS win FROM taste_votes
+        ) v GROUP BY id
+      )
+      SELECT i.id, agg.wins, agg.total
+      FROM agg
+      JOIN images i ON i.id = agg.id
+      WHERE agg.total >= 3 ${nsfwClause(nsfwMode)}
+      ORDER BY (agg.wins::float / agg.total) DESC, agg.wins DESC, i.id ASC
+      LIMIT ${lim}
+    `);
+    return res.rows.map((r) => ({ id: Number(r.id), wins: Number(r.wins), total: Number(r.total) }));
+  } catch (err) {
+    console.warn('topMagnetic unavailable (table not migrated?)', err);
+    return [];
+  }
+}
+
 // Most common palette colors across a set of images -- "your colors". palette
 // is a text[] of hex strings; unnest + group to rank them.
 export async function dominantPalette(ids: number[], limit = 6): Promise<string[]> {

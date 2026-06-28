@@ -1,53 +1,124 @@
 'use client';
 
 // "this or that" -- the taste quiz. Each round shows two images; the visitor
-// picks the one that pulls them. Picks (and the rejected images) accumulate
-// into a URL, and the result page turns them into a taste vector + the gallery
-// re-ranked as you. Pairwise preference is a low-friction, addictive input and
-// builds a clean direction in embedding space.
+// picks the one that pulls them. The first pair is pre-seeded (instant); each
+// subsequent pair is drawn adaptively from the visitor's evolving taste
+// neighbourhood via /api/taste/next, with a fast fallback to the pre-seeded
+// pool so play never blocks. Every pick also fires a pairwise vote that feeds
+// the "most magnetic" ranking. Picks accumulate into a URL; the result page
+// turns them into a taste vector + the gallery re-ranked as you.
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import type { PathNode } from '@/lib/knn-path-types';
 
 type Props = {
   pairs: [PathNode, PathNode][];
+  // When set (a challenger's picked ids, csv), finishing routes to the
+  // head-to-head comparison instead of the solo result.
+  vs?: string;
 };
 
-export function TasteQuiz({ pairs }: Props) {
-  const router = useRouter();
-  const [round, setRound] = useState(0);
-  const [picked, setPicked] = useState<number[]>([]);
-  const [skipped, setSkipped] = useState<number[]>([]);
-  const [leaving, setLeaving] = useState(false);
+const ROUNDS = 10;
+const NEXT_TIMEOUT_MS = 1500;
 
-  const total = pairs.length;
-  const pair = pairs[round];
+export function TasteQuiz({ pairs, vs }: Props) {
+  const router = useRouter();
+  const total = Math.min(ROUNDS, Math.max(2, pairs.length));
+  const [round, setRound] = useState(0);
+  const [pair, setPair] = useState<[PathNode, PathNode] | null>(pairs[0] ?? null);
+  const [busy, setBusy] = useState(false);
+
+  const pickedRef = useRef<number[]>([]);
+  const skippedRef = useRef<number[]>([]);
+  const seenRef = useRef<Set<number>>(
+    new Set(pairs[0] ? [pairs[0][0].imageId, pairs[0][1].imageId] : [])
+  );
+  const poolRef = useRef(1); // next index into the pre-seeded fallback pool
 
   const finish = useCallback(
     (pk: number[], sk: number[]) => {
-      const p = pk.join(',');
-      const s = sk.join(',');
-      router.push(`/taste?p=${p}&s=${s}`);
+      if (vs) {
+        router.push(`/taste/vs?a=${encodeURIComponent(vs)}&b=${pk.join(',')}`);
+        return;
+      }
+      router.push(`/taste?p=${pk.join(',')}&s=${sk.join(',')}`);
     },
-    [router]
+    [router, vs]
   );
 
-  const choose = useCallback(
-    (chosen: PathNode, other: PathNode) => {
-      if (leaving) return;
-      const pk = [...picked, chosen.imageId];
-      const sk = [...skipped, other.imageId];
-      setPicked(pk);
-      setSkipped(sk);
-      if (round + 1 >= total) {
-        setLeaving(true);
-        finish(pk, sk);
-      } else {
-        setRound((r) => r + 1);
+  // Next pre-seeded pair whose images haven't been shown yet.
+  const fallbackPair = useCallback((): [PathNode, PathNode] | null => {
+    while (poolRef.current < pairs.length) {
+      const p = pairs[poolRef.current++]!;
+      if (!seenRef.current.has(p[0].imageId) && !seenRef.current.has(p[1].imageId)) return p;
+    }
+    return null;
+  }, [pairs]);
+
+  // Adaptive next pair, bounded by a short timeout so a slow API never stalls
+  // the quiz -- on timeout/failure/empty we fall back to the pre-seeded pool.
+  const nextPair = useCallback(async (): Promise<[PathNode, PathNode] | null> => {
+    const ctrl = new AbortController();
+    const t = window.setTimeout(() => ctrl.abort(), NEXT_TIMEOUT_MS);
+    try {
+      const params = new URLSearchParams({
+        p: pickedRef.current.join(','),
+        s: skippedRef.current.join(','),
+        seen: [...seenRef.current].join(',')
+      });
+      const res = await fetch(`/api/taste/next?${params.toString()}`, { signal: ctrl.signal });
+      if (res.ok) {
+        const data = (await res.json()) as { a?: PathNode; b?: PathNode };
+        if (data.a && data.b) return [data.a, data.b];
       }
+    } catch {
+      /* timeout or network error -- fall through to the pool */
+    } finally {
+      window.clearTimeout(t);
+    }
+    return fallbackPair();
+  }, [fallbackPair]);
+
+  const choose = useCallback(
+    async (chosen: PathNode, other: PathNode) => {
+      if (busy || !pair) return;
+      setBusy(true);
+
+      // Pairwise vote -> "most magnetic". Fire-and-forget; keepalive lets the
+      // final vote survive the navigation away on finish.
+      void fetch('/api/taste/vote', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ winner: chosen.imageId, loser: other.imageId }),
+        keepalive: true
+      }).catch(() => {});
+
+      pickedRef.current = [...pickedRef.current, chosen.imageId];
+      skippedRef.current = [...skippedRef.current, other.imageId];
+      seenRef.current.add(chosen.imageId);
+      seenRef.current.add(other.imageId);
+
+      const nextRound = round + 1;
+      if (nextRound >= total) {
+        finish(pickedRef.current, skippedRef.current);
+        return; // stay busy through navigation
+      }
+
+      const np = await nextPair();
+      if (!np) {
+        // Ran out of fresh images -- end with what we have rather than stall.
+        finish(pickedRef.current, skippedRef.current);
+        return;
+      }
+      seenRef.current.add(np[0].imageId);
+      seenRef.current.add(np[1].imageId);
+      setPair(np);
+      setRound(nextRound);
+      setBusy(false);
     },
-    [leaving, picked, skipped, round, total, finish]
+    [busy, pair, round, total, finish, nextPair]
   );
 
   const progress = useMemo(() => Math.round((round / total) * 100), [round, total]);
@@ -66,7 +137,7 @@ export function TasteQuiz({ pairs }: Props) {
       <section className="space-y-1">
         <h1 className="font-fungal-lite text-3xl text-ink-100">what&rsquo;s your taste?</h1>
         <p className="font-mono text-xs text-ink-500">
-          pick the one that pulls you. {total} rounds, then the gallery re-ranked as you.
+          pick the one that pulls you. it learns as you go, then re-ranks the gallery as you.
         </p>
       </section>
 
@@ -81,15 +152,15 @@ export function TasteQuiz({ pairs }: Props) {
       </div>
 
       {/* The pair */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-5">
+      <div className={'grid grid-cols-2 gap-3 transition-opacity sm:gap-5 ' + (busy ? 'opacity-60' : '')}>
         {[pair[0], pair[1]].map((node, i) => (
           <button
             key={node.imageId}
             type="button"
-            disabled={leaving}
+            disabled={busy}
             onClick={() => choose(node, pair[i === 0 ? 1 : 0]!)}
             title={node.caption || node.slug}
-            className="group relative aspect-[4/5] overflow-hidden rounded-lg border border-ink-800/80 bg-ink-950 transition-colors hover:border-primary/70 focus:border-primary focus:outline-none disabled:opacity-60"
+            className="group relative aspect-[4/5] overflow-hidden rounded-lg border border-ink-800/80 bg-ink-950 transition-colors hover:border-primary/70 focus:border-primary focus:outline-none disabled:cursor-default"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -106,7 +177,12 @@ export function TasteQuiz({ pairs }: Props) {
         ))}
       </div>
 
-      <p className="text-center font-mono text-[11px] text-ink-600">tap an image &middot; no wrong answers</p>
+      <p className="text-center font-mono text-[11px] text-ink-600">
+        tap an image &middot; no wrong answers &middot;{' '}
+        <Link href="/taste/popular" prefetch={false} className="hover:text-ink-300">
+          most magnetic
+        </Link>
+      </p>
     </div>
   );
 }
