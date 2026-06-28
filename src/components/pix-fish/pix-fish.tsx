@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { FishEntity } from './fish-entity';
+import { FishStatsBanner } from './fish-stats-banner';
 import { readFishDismissed, writeFishDismissed } from './prefs';
 import { useFishSim } from './use-fish-sim';
 import { DEBUG_FAST_EVENTS, MAX_FILTERED_FISH } from './sim-config';
@@ -69,14 +70,14 @@ export function PixFish() {
     writeFishDismissed(false);
   }, []);
 
-  const { entities, register, unregister, scatter, debug } = useFishSim({
+  const { entities, register, unregister, scatter, stats, debug } = useFishSim({
     paused: !mounted || dismissed,
     config
   });
 
-  // Pre-mount and dismissed: render only a tiny reopen affordance in the
-  // bottom-left corner (HUD owns bottom-right at z-40).
-  if (!mounted || dismissed) {
+  // Pre-mount (SSR): render only the tiny reopen affordance, no banner -- keeps
+  // the server output minimal and avoids a hydration mismatch on the stats.
+  if (!mounted) {
     return (
       <button
         type="button"
@@ -89,8 +90,28 @@ export function PixFish() {
     );
   }
 
+  // Dismissed: no fish, but the banner stays (forced open) to state they're
+  // hidden. The bottom-left reopen affordance remains as well.
+  if (dismissed) {
+    return (
+      <>
+        <FishStatsBanner stats={stats} fishHidden onShowFish={reopen} />
+        <button
+          type="button"
+          onClick={reopen}
+          aria-label="show pix fish"
+          className="fixed bottom-4 left-4 z-40 h-7 w-7 rounded-full border border-ink-800/70 bg-ink-950/80 font-mono text-[10px] text-ink-500 backdrop-blur transition-colors hover:text-ink-200"
+        >
+          ~
+        </button>
+      </>
+    );
+  }
+
   return (
     <>
+      <FishStatsBanner stats={stats} fishHidden={false} onShowFish={reopen} />
+
       {entities.map((view, i) => (
         <FishEntity
           key={view.id}

@@ -12,6 +12,13 @@ import { buildBodyPath, EYE_CX, EYE_CY, MOUTH_PATHS, NUM_FISH_VARIANTS } from '.
 import { deriveMorph, lorenzStep, morphTransform, seedLorenz, type MorphOutputs } from './lorenz';
 import { randRange, simRng } from './prng';
 import {
+  newStatsAccum,
+  sampleStats,
+  snapshotStats,
+  type FishStats,
+  type FishStatsAccum
+} from './stats';
+import {
   COUPLING_STRENGTH,
   DEBUG_FAST_EVENTS,
   ENTER_MS,
@@ -126,6 +133,7 @@ interface SimAPI {
   register: (id: number, refs: EntityRefs) => void;
   unregister: (id: number) => void;
   scatter: (x: number, y: number) => void;
+  stats: FishStats | null;
   debug: SimDebug;
 }
 
@@ -148,6 +156,45 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
   const [reducedMotion, setReducedMotion] = useState(false);
   const reducedMotionRef = useRef(false);
   reducedMotionRef.current = reducedMotion;
+
+  // Statistics: a single mutable accumulator (ref) the loop feeds, snapshotted
+  // to React state on a ~1Hz throttle so the banner updates without per-frame
+  // re-renders. lastSampleAt/lastStatsAt gate the sampling + push cadence.
+  const statsRef = useRef<FishStatsAccum | null>(null);
+  const lastSampleAtRef = useRef(0);
+  const lastStatsPushRef = useRef(0);
+  const [statsView, setStatsView] = useState<FishStats | null>(null);
+  const getStats = useCallback((): FishStatsAccum => {
+    if (!statsRef.current) statsRef.current = newStatsAccum(performance.now());
+    return statsRef.current;
+  }, []);
+  const recordArrival = useCallback(
+    (kind: 'born' | 'immigrated', now: number) => {
+      const s = getStats();
+      if (kind === 'born') s.born++;
+      else s.immigrated++;
+      s.flow.push({ t: now, kind: 'arrival' });
+    },
+    [getStats]
+  );
+  const recordDeparture = useCallback(
+    (kind: 'eaten' | 'fight' | 'natural' | 'emigrated', now: number) => {
+      const s = getStats();
+      if (kind === 'eaten') s.eaten++;
+      else if (kind === 'fight') s.fightKills++;
+      else if (kind === 'natural') s.naturalDeaths++;
+      else s.emigrated++;
+      s.flow.push({ t: now, kind: 'departure' });
+    },
+    [getStats]
+  );
+  const recordFight = useCallback(
+    (now: number) => {
+      getStats().fights++;
+      void now;
+    },
+    [getStats]
+  );
 
   // --- tunable selectors (fast-mode aware) ----------------------------------
   const eventInterval = useCallback(() => {
@@ -668,6 +715,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       if (wasLoser) {
         r.baseSize = Math.max(r.baseSize * FIGHT_LOSER_SHRINK, FIGHT_MIN_BASESIZE);
         if (lethal) {
+          recordDeparture('fight', now);
           startDeath(r, now);
           return;
         }
@@ -678,7 +726,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         enterBehavior(r, 'wandering', now);
       }
     },
-    [setMouth, startDeath, enterBehavior]
+    [setMouth, startDeath, enterBehavior, recordDeparture]
   );
 
   // --- event execution -------------------------------------------------------
@@ -699,6 +747,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
             y: (pa.pos.y + pb.pos.y) / 2 + randRange(simRng, -40, 40)
           };
           views.push(spawn(genotype, pos));
+          recordArrival('born', now);
         }
         pa.reproCooldownUntil = now + reproCooldown();
         pb.reproCooldownUntil = now + reproCooldown();
@@ -710,21 +759,25 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         const pos: Vec2 = { x: p.pos.x + randRange(simRng, -36, 36), y: p.pos.y + randRange(simRng, -36, 36) };
         p.reproCooldownUntil = now + reproCooldown();
         addEntities([spawn(genotype, pos)]);
+        recordArrival('born', now);
       } else if (ev.type === 'immigration') {
         if (count() >= configRef.current.popMax) return;
         const { pos, target } = immigrantStart();
         addEntities([spawn(randomGenotype(simRng), pos, { target })]);
+        recordArrival('immigrated', now);
       } else if (ev.type === 'predation') {
         const pred = rts.get(ev.predator);
         const prey = rts.get(ev.prey);
         if (!pred || !prey) return;
         pred.baseSize = Math.min(pred.baseSize * PREDATION_GROWTH, PREDATION_MAX_BASESIZE);
         pred.postMealUntil = now + postMealCooldown();
+        recordDeparture('eaten', now);
         removeEntity(prey.id, 'chomp');
       } else if (ev.type === 'fight') {
         const a = rts.get(ev.a);
         const b = rts.get(ev.b);
         if (!a || !b) return;
+        recordFight(now);
         // Loser = the smaller fish (tie -> coin flip). Lethal only while the
         // tank is above its floor, so a fight can never empty it.
         const aLoses =
@@ -746,10 +799,12 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       } else if (ev.type === 'natural-death') {
         const f = rts.get(ev.fish);
         if (!f) return;
+        recordDeparture('natural', now);
         startDeath(f, now);
       } else if (ev.type === 'emigration') {
         const f = rts.get(ev.fish);
         if (!f) return;
+        recordDeparture('emigrated', now);
         f.emigrating = true;
         f.target = offPageTarget();
         f.behavior = 'wandering';
@@ -764,7 +819,10 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       immigrantStart,
       offPageTarget,
       setMouth,
-      startDeath
+      startDeath,
+      recordArrival,
+      recordDeparture,
+      recordFight
     ]
   );
 
@@ -907,6 +965,20 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       // Event clock.
       if (t >= nextEventAtRef.current) runEventStep(t);
 
+      // Stats: sample the live population (excluding fish on their way out) and
+      // push a snapshot to React on a coarse throttle, so the banner stays live
+      // without re-rendering per frame.
+      const s = getStats();
+      const alive = rts.reduce((n, r) => (r.dying || r.emigrating ? n : n + 1), 0);
+      if (t - lastSampleAtRef.current >= 500) {
+        lastSampleAtRef.current = t;
+        sampleStats(s, alive, t);
+      }
+      if (t - lastStatsPushRef.current >= 1000) {
+        lastStatsPushRef.current = t;
+        setStatsView(snapshotStats(s, alive, t));
+      }
+
       raf = requestAnimationFrame(tick);
     };
 
@@ -932,7 +1004,8 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     runEventStep,
     eventInterval,
     bounds,
-    removeEntity
+    removeEntity,
+    getStats
   ]);
 
   // --- live config reconciliation --------------------------------------------
@@ -1044,5 +1117,12 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     [enterBehavior]
   );
 
-  return { entities, register, unregister, scatter, debug: { population: entities.length, lastEvent } };
+  return {
+    entities,
+    register,
+    unregister,
+    scatter,
+    stats: statsView,
+    debug: { population: entities.length, lastEvent }
+  };
 }
