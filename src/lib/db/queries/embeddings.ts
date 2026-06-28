@@ -195,8 +195,9 @@ export async function searchByVector(
 
 // Random image slugs drawn from the caption-embedded set -- i.e. the actual
 // nodes of the kNN graph -- so a "surprise me" pair is almost always
-// connectable. Gated by the visitor's NSFW mode so the same is_nsfw rule that
-// scopes the path search also scopes which images we hand back as a seed.
+// connectable. Gated by the visitor's NSFW mode AND archived_at (a deleted row
+// keeps its embedding, so without that gate it could be handed back as a seed)
+// so the same rules that scope the path search also scope the seeds.
 export async function getRandomCaptionImageSlugs(
   count: number,
   nsfwMode: NsfwMode = 'hide'
@@ -210,7 +211,7 @@ export async function getRandomCaptionImageSlugs(
     SELECT i.slug
     FROM embeddings e
     JOIN images i ON i.id = e.image_id
-    WHERE e.kind = 'caption' ${nsfwClause}
+    WHERE e.kind = 'caption' AND i.archived_at IS NULL ${nsfwClause}
     ORDER BY random()
     LIMIT ${limit}
   `);

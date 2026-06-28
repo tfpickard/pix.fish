@@ -14,8 +14,10 @@ import type { PathNode } from '@/lib/knn-path-types';
 // (node ids + adjacency + image metadata) for a single day so the whole game
 // can run client-side from one embedded payload -- no per-move API.
 
-// Image ids that are kNN graph nodes (caption-embedded) AND visible under the
-// visitor's NSFW mode. Ordered by id so a date-seeded shuffle is deterministic.
+// Image ids that are kNN graph nodes (caption-embedded), not archived, AND
+// visible under the visitor's NSFW mode (archived rows keep their embedding, so
+// without the archived_at gate a deleted image could resurface as a puzzle
+// node). Ordered by id so a date-seeded shuffle is deterministic.
 export async function getGraphNodeIds(nsfwMode: NsfwMode): Promise<number[]> {
   const nsfwClause =
     nsfwMode === 'only' ? sql`AND i.is_nsfw = true` :
@@ -25,7 +27,7 @@ export async function getGraphNodeIds(nsfwMode: NsfwMode): Promise<number[]> {
     SELECT DISTINCT i.id
     FROM images i
     JOIN embeddings e ON e.image_id = i.id AND e.kind = 'caption'
-    WHERE true ${nsfwClause}
+    WHERE i.archived_at IS NULL ${nsfwClause}
     ORDER BY i.id
   `);
   return res.rows.map((r) => Number(r.id));
