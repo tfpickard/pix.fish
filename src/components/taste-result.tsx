@@ -5,7 +5,7 @@
 // only NSFW-gated matches (computed on the server), plus the tag signature and
 // dominant palette aggregated over those matches.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import type { PathNode } from '@/lib/knn-path-types';
 
@@ -14,9 +14,11 @@ type Props = {
   signature: string[];
   palette: string[];
   matches: PathNode[];
-  // The visitor's own picked ids -- used to mint a "challenge a friend" link
-  // that drops them into a head-to-head comparison after they play.
+  // The visitor's own picks and rejects -- used to mint a "challenge a friend"
+  // link that carries BOTH (so the comparison's taste vectors match the solo
+  // result's, which also factors in what you passed on).
   picked: number[];
+  skipped: number[];
 };
 
 function detailUrl(node: PathNode): string {
@@ -27,37 +29,29 @@ function hex(c: string): string {
   return c.startsWith('#') ? c : `#${c}`;
 }
 
-export function TasteResult({ archetype, signature, palette, matches, picked }: Props) {
+export function TasteResult({ archetype, signature, palette, matches, picked, skipped }: Props) {
   const [copied, setCopied] = useState<'' | 'share' | 'challenge'>('');
-  const [shareFailed, setShareFailed] = useState(false);
-  const [shareUrl, setShareUrl] = useState('');
-  const [origin, setOrigin] = useState('https://pix.fish');
+  const [failedText, setFailedText] = useState('');
 
-  // Read the live URL/origin on the client so links match the real environment
-  // (preview, self-host), not a hardcoded domain.
-  useEffect(() => {
-    setShareUrl(window.location.href);
-    setOrigin(window.location.origin);
+  // Build the links from window.location at click time (handlers only run on the
+  // client, post-hydration), so a copied URL always matches the real
+  // environment (preview, self-host) -- never a stale hardcoded origin.
+  const copy = useCallback(async (text: string, which: 'share' | 'challenge') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      setFailedText('');
+      window.setTimeout(() => setCopied(''), 1800);
+    } catch {
+      setFailedText(text);
+    }
   }, []);
 
-  const challengeUrl = `${origin}/taste?vs=${picked.join(',')}`;
-
-  const copy = useCallback(
-    async (text: string, which: 'share' | 'challenge') => {
-      try {
-        await navigator.clipboard.writeText(text);
-        setCopied(which);
-        setShareFailed(false);
-        window.setTimeout(() => setCopied(''), 1800);
-      } catch {
-        setShareFailed(true);
-      }
-    },
-    []
+  const share = useCallback(() => copy(window.location.href, 'share'), [copy]);
+  const challenge = useCallback(
+    () => copy(`${window.location.origin}/taste?vs=${picked.join(',')}&vsk=${skipped.join(',')}`, 'challenge'),
+    [copy, picked, skipped]
   );
-
-  const share = useCallback(() => copy(shareUrl || window.location.href, 'share'), [copy, shareUrl]);
-  const challenge = useCallback(() => copy(challengeUrl, 'challenge'), [copy, challengeUrl]);
 
   return (
     <div className="space-y-6 pt-8">
@@ -142,12 +136,12 @@ export function TasteResult({ archetype, signature, palette, matches, picked }: 
         &ldquo;challenge a friend&rdquo; copies a link -- when they finish, you&rsquo;ll see how aligned your tastes are.
       </p>
 
-      {shareFailed ? (
+      {failedText ? (
         <div className="space-y-1">
           <p className="font-mono text-[10px] text-ink-500">copy didn&rsquo;t work -- select and copy this:</p>
           <textarea
             readOnly
-            value={shareUrl}
+            value={failedText}
             rows={2}
             onFocus={(e) => e.currentTarget.select()}
             className="w-full resize-none rounded border border-ink-700 bg-ink-950 p-2 font-mono text-[11px] text-ink-300"

@@ -10,11 +10,16 @@ export function meanVector(vectors: number[][]): number[] | null {
   if (vectors.length === 0) return null;
   const dim = vectors[0]!.length;
   const out = new Array<number>(dim).fill(0);
+  // Divide by the number of vectors actually summed, not the input length, so
+  // a skipped mismatched-dim vector can't deflate the centroid toward zero.
+  let n = 0;
   for (const v of vectors) {
     if (v.length !== dim) continue;
     for (let i = 0; i < dim; i++) out[i]! += v[i]!;
+    n++;
   }
-  for (let i = 0; i < dim; i++) out[i]! /= vectors.length;
+  if (n === 0) return null;
+  for (let i = 0; i < dim; i++) out[i]! /= n;
   return out;
 }
 

@@ -16,20 +16,27 @@ import type { PathNode } from '@/lib/knn-path-types';
 type Props = {
   pairs: [PathNode, PathNode][];
   // When set (a challenger's picked ids, csv), finishing routes to the
-  // head-to-head comparison instead of the solo result.
+  // head-to-head comparison instead of the solo result. vsSkip carries the
+  // challenger's rejected ids so both taste vectors factor in what each person
+  // passed on (matching the solo result's math).
   vs?: string;
+  vsSkip?: string;
 };
 
 const ROUNDS = 10;
 const NEXT_TIMEOUT_MS = 1500;
 
-export function TasteQuiz({ pairs, vs }: Props) {
+export function TasteQuiz({ pairs, vs, vsSkip }: Props) {
   const router = useRouter();
   const total = Math.min(ROUNDS, Math.max(2, pairs.length));
   const [round, setRound] = useState(0);
   const [pair, setPair] = useState<[PathNode, PathNode] | null>(pairs[0] ?? null);
   const [busy, setBusy] = useState(false);
 
+  // Synchronous guard: setBusy is async, so a fast double-tap (both images
+  // before React re-renders) would otherwise pass the `busy` check twice and
+  // record two votes / corrupt the picks. The ref flips before any await.
+  const busyRef = useRef(false);
   const pickedRef = useRef<number[]>([]);
   const skippedRef = useRef<number[]>([]);
   const seenRef = useRef<Set<number>>(
@@ -40,12 +47,13 @@ export function TasteQuiz({ pairs, vs }: Props) {
   const finish = useCallback(
     (pk: number[], sk: number[]) => {
       if (vs) {
-        router.push(`/taste/vs?a=${encodeURIComponent(vs)}&b=${pk.join(',')}`);
+        const as = vsSkip ? `&as=${encodeURIComponent(vsSkip)}` : '';
+        router.push(`/taste/vs?a=${encodeURIComponent(vs)}${as}&b=${pk.join(',')}&bs=${sk.join(',')}`);
         return;
       }
       router.push(`/taste?p=${pk.join(',')}&s=${sk.join(',')}`);
     },
-    [router, vs]
+    [router, vs, vsSkip]
   );
 
   // Next pre-seeded pair whose images haven't been shown yet.
@@ -83,7 +91,8 @@ export function TasteQuiz({ pairs, vs }: Props) {
 
   const choose = useCallback(
     async (chosen: PathNode, other: PathNode) => {
-      if (busy || !pair) return;
+      if (busyRef.current || !pair) return;
+      busyRef.current = true;
       setBusy(true);
 
       // Pairwise vote -> "most magnetic". Fire-and-forget; keepalive lets the
@@ -116,9 +125,10 @@ export function TasteQuiz({ pairs, vs }: Props) {
       seenRef.current.add(np[1].imageId);
       setPair(np);
       setRound(nextRound);
+      busyRef.current = false;
       setBusy(false);
     },
-    [busy, pair, round, total, finish, nextPair]
+    [pair, round, total, finish, nextPair]
   );
 
   const progress = useMemo(() => Math.round((round / total) * 100), [round, total]);

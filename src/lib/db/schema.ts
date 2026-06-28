@@ -1064,7 +1064,10 @@ export const tasteVotes = pgTable(
   },
   (t) => ({
     winnerIdx: index('taste_votes_winner_idx').on(t.winnerId),
-    loserIdx: index('taste_votes_loser_idx').on(t.loserId)
+    loserIdx: index('taste_votes_loser_idx').on(t.loserId),
+    // A vote is always between two distinct images. Enforce it at the DB so a
+    // bad row can't slip in even if some future writer bypasses the route guard.
+    distinct: check('taste_votes_distinct', sql`winner_id <> loser_id`)
   })
 );
 

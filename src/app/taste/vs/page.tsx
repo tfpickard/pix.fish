@@ -29,16 +29,18 @@ function parseIds(raw: string | undefined): number[] {
 }
 
 type PageProps = {
-  searchParams: Promise<{ a?: string; b?: string }>;
+  searchParams: Promise<{ a?: string; as?: string; b?: string; bs?: string }>;
 };
 
 export default async function TasteVsPage({ searchParams }: PageProps) {
-  const { a: rawA, b: rawB } = await searchParams;
-  const aIds = parseIds(rawA);
-  const bIds = parseIds(rawB);
+  const { a: rawA, as: rawAs, b: rawB, bs: rawBs } = await searchParams;
+  const aPicked = parseIds(rawA);
+  const aSkipped = parseIds(rawAs);
+  const bPicked = parseIds(rawB);
+  const bSkipped = parseIds(rawBs);
   const nsfwMode = await readNsfwMode();
 
-  const data = await buildVersus(aIds, bIds, nsfwMode).catch((err) => {
+  const data = await buildVersus(aPicked, aSkipped, bPicked, bSkipped, nsfwMode).catch((err) => {
     console.error('/taste/vs: buildVersus failed', err);
     return null;
   });
@@ -66,26 +68,38 @@ type VersusData = {
 };
 
 async function buildVersus(
-  aIds: number[],
-  bIds: number[],
+  aPicked: number[],
+  aSkipped: number[],
+  bPicked: number[],
+  bSkipped: number[],
   nsfwMode: Awaited<ReturnType<typeof readNsfwMode>>
 ): Promise<VersusData | null> {
-  if (aIds.length === 0 || bIds.length === 0) return null;
-  const vecs = await getCaptionVectorsForIds([...new Set([...aIds, ...bIds])]);
-  const aVecs = aIds.map((id) => vecs.get(id)).filter((v): v is number[] => !!v);
-  const bVecs = bIds.map((id) => vecs.get(id)).filter((v): v is number[] => !!v);
-  const tasteA = tasteVector(aVecs, []);
-  const tasteB = tasteVector(bVecs, []);
+  if (aPicked.length === 0 || bPicked.length === 0) return null;
+  const vecs = await getCaptionVectorsForIds([
+    ...new Set([...aPicked, ...aSkipped, ...bPicked, ...bSkipped])
+  ]);
+  const get = (ids: number[]) => ids.map((id) => vecs.get(id)).filter((v): v is number[] => !!v);
+  const aVecs = get(aPicked);
+  const bVecs = get(bPicked);
+  const aSkipVecs = get(aSkipped);
+  const bSkipVecs = get(bSkipped);
+  // Factor in what each person passed on, exactly like the solo result -- so
+  // two people who picked alike but rejected opposite vibes aren't over-scored.
+  const tasteA = tasteVector(aVecs, aSkipVecs);
+  const tasteB = tasteVector(bVecs, bSkipVecs);
   if (!tasteA || !tasteB) return null;
 
   const score = alignment(tasteA, tasteB);
 
   // Each person's gallery, plus a blended "you'd both love" from the centroid
   // of both sets of picks. All three go through the NSFW-gated searchByVector.
+  // tasteA/tasteB are non-null here so `blended` is too, but guard rather than
+  // assert -- a thrown non-null would turn into the generic failure UI.
+  const blended = tasteVector([...aVecs, ...bVecs], [...aSkipVecs, ...bSkipVecs]);
   const [rankedA, rankedB, rankedBoth] = await Promise.all([
     searchByVector(tasteA, { limit: 18, kind: 'caption', nsfwMode }),
     searchByVector(tasteB, { limit: 18, kind: 'caption', nsfwMode }),
-    searchByVector(tasteVector([...aVecs, ...bVecs], [])!, { limit: 10, kind: 'caption', nsfwMode })
+    blended ? searchByVector(blended, { limit: 10, kind: 'caption', nsfwMode }) : Promise.resolve([])
   ]);
 
   const idsA = rankedA.map((m) => m.imageId);

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { hashIp, getRequestIp } from '@/lib/hash';
 import { rateLimit } from '@/lib/rate-limit';
-import { recordTasteVote } from '@/lib/db/queries/taste';
+import { recordTasteVote, embeddedSubset } from '@/lib/db/queries/taste';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,6 +27,18 @@ export async function POST(req: Request): Promise<NextResponse> {
   // A full quiz is ~10 votes; 60/min leaves generous headroom while bounding abuse.
   if (!rateLimit(`tastevote:${ipHash}`, 60, 60_000)) {
     return NextResponse.json({ ok: false, error: 'rate limited' }, { status: 429 });
+  }
+
+  // Only rank images the quiz actually serves: both sides must be caption-
+  // embedded, so a scripted client can't forge votes for non-quiz images.
+  try {
+    const embedded = await embeddedSubset([winner, loser]);
+    if (!embedded.has(winner) || !embedded.has(loser)) {
+      return NextResponse.json({ ok: false }, { status: 422 });
+    }
+  } catch {
+    // Embeddings table unreachable -- skip the check rather than block play;
+    // recordTasteVote is itself best-effort and degrades gracefully.
   }
 
   const ok = await recordTasteVote(winner, loser, ipHash);

@@ -2,6 +2,14 @@ import { sql } from 'drizzle-orm';
 import { db } from '../client';
 import type { NsfwMode } from '@/lib/nsfw';
 
+// Must match the caption embedding dimensionality (see embeddings.ts).
+const EMBED_DIMENSIONS = 1536;
+
+// Postgres "undefined_table" -- expected before the taste_votes migration runs.
+function isMissingTable(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { code?: string }).code === '42P01';
+}
+
 // Data layer for /taste -- the aesthetic-vector quiz. Reuses the same caption
 // embedding space as search/connect/daily; the only new reads are random
 // quiz seeds, a batch vector fetch, and tag/palette aggregation over a set of
@@ -51,7 +59,12 @@ export async function getCaptionVectorsForIds(ids: number[]): Promise<Map<number
   `);
   for (const r of res.rows) {
     const inner = r.vec.startsWith('[') ? r.vec.slice(1, -1) : r.vec;
-    out.set(Number(r.image_id), inner.split(',').map(Number));
+    const arr = inner.split(',').map(Number);
+    // Drop malformed vectors (wrong dim / NaN) so a single bad row can't make
+    // tasteVector or searchByVector throw and break the whole page.
+    if (arr.length === EMBED_DIMENSIONS && arr.every((n) => Number.isFinite(n))) {
+      out.set(Number(r.image_id), arr);
+    }
   }
   return out;
 }
@@ -77,6 +90,23 @@ export async function topTagsForImages(ids: number[], limit = 8): Promise<{ tag:
 // if the taste_votes table isn't migrated yet they no-op / return empty, so the
 // rest of the feature works before `bun run db:push`.
 
+// Which of the given ids are caption-embedded -- i.e. real, quiz-eligible
+// nodes. The vote route uses this to reject forged pairs for images the quiz
+// would never serve (the FK already forces real image ids; this additionally
+// forbids ranking non-embedded ones). Ballot-stuffing among real images is the
+// inherent property of any anonymous vote and is bounded by the rate limit and
+// the min-appearances floor in topMagnetic.
+export async function embeddedSubset(ids: number[]): Promise<Set<number>> {
+  const out = new Set<number>();
+  if (ids.length === 0) return out;
+  const res = await db.execute<{ image_id: number }>(sql`
+    SELECT image_id FROM embeddings
+    WHERE kind = 'caption' AND subject_type = 'image' AND image_id IN (${idList(ids)})
+  `);
+  for (const r of res.rows) out.add(Number(r.image_id));
+  return out;
+}
+
 export async function recordTasteVote(winnerId: number, loserId: number, ipHash: string): Promise<boolean> {
   if (!Number.isInteger(winnerId) || !Number.isInteger(loserId) || winnerId <= 0 || loserId <= 0 || winnerId === loserId) {
     return false;
@@ -88,7 +118,8 @@ export async function recordTasteVote(winnerId: number, loserId: number, ipHash:
     `);
     return true;
   } catch (err) {
-    console.warn('recordTasteVote unavailable (table not migrated?)', err);
+    // Silent no-op before the migration runs; only surface real failures.
+    if (!isMissingTable(err)) console.warn('recordTasteVote failed', err);
     return false;
   }
 }
@@ -115,7 +146,8 @@ export async function topMagnetic(limit: number, nsfwMode: NsfwMode): Promise<{ 
     `);
     return res.rows.map((r) => ({ id: Number(r.id), wins: Number(r.wins), total: Number(r.total) }));
   } catch (err) {
-    console.warn('topMagnetic unavailable (table not migrated?)', err);
+    // Silent empty before the migration runs; only surface real failures.
+    if (!isMissingTable(err)) console.warn('topMagnetic failed', err);
     return [];
   }
 }
@@ -124,13 +156,15 @@ export async function topMagnetic(limit: number, nsfwMode: NsfwMode): Promise<{ 
 // is a text[] of hex strings; unnest + group to rank them.
 export async function dominantPalette(ids: number[], limit = 6): Promise<string[]> {
   if (ids.length === 0) return [];
-  const res = await db.execute<{ hex: string }>(sql`
+  const res = await db.execute<{ hex: string | null }>(sql`
     SELECT lower(hex) AS hex
     FROM images i, unnest(i.palette) AS hex
-    WHERE i.id IN (${idList(ids)}) AND i.palette IS NOT NULL
+    WHERE i.id IN (${idList(ids)}) AND i.palette IS NOT NULL AND hex IS NOT NULL
     GROUP BY lower(hex)
     ORDER BY count(*) DESC
     LIMIT ${limit}
   `);
-  return res.rows.map((r) => r.hex).filter((h) => /^#?[0-9a-f]{3,8}$/i.test(h));
+  return res.rows
+    .map((r) => r.hex)
+    .filter((h): h is string => typeof h === 'string' && /^#?[0-9a-f]{3,8}$/i.test(h));
 }
