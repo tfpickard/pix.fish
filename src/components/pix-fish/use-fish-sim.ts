@@ -10,11 +10,10 @@ import { featureFromSeed } from './feature';
 import { applyGenotypeToConfig, blendGenotype, mutateGenotype, randomGenotype, type FishGenotype } from './genotype';
 import { buildBodyPath, EYE_CX, EYE_CY, MOUTH_PATHS, NUM_FISH_VARIANTS } from './fish-sprite';
 import { deriveMorph, lorenzStep, morphTransform, seedLorenz, type MorphOutputs } from './lorenz';
-import { randInt, randRange, simRng } from './prng';
+import { randRange, simRng } from './prng';
 import {
   COUPLING_STRENGTH,
   DEBUG_FAST_EVENTS,
-  EDGE_MARGIN,
   ENTER_MS,
   EVENT_INTERVAL_MAX,
   EVENT_INTERVAL_MAX_FAST,
@@ -275,14 +274,16 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     (views: EntityView[]) => {
       if (views.length === 0) return;
       setEntities((prev) => [...prev, ...views]);
-      // Promote 'entering' -> 'alive' after the enter animation.
+      // Promote 'entering' -> 'alive' on the next tick so the browser paints the
+      // initial opacity:0/scale:0.5 state first and the CSS transition plays from
+      // there. Without this the delay equals ENTER_MS and the fish just pops in.
       const ids = new Set(views.map((v) => v.id));
       const t = setTimeout(() => {
         timeoutsRef.current.delete(t);
         setEntities((prev) =>
           prev.map((e) => (ids.has(e.id) && e.phase === 'entering' ? { ...e, phase: 'alive' } : e))
         );
-      }, ENTER_MS);
+      }, 16);
       track(t);
     },
     [track]
@@ -367,8 +368,10 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         if (el) {
           r.zRestore = el.style.zIndex || '30';
           el.style.zIndex = '1';
-          el.style.pointerEvents = 'none';
         }
+        // Disable clicks on the facing layer (which is pointer-events-auto) so a
+        // hiding fish doesn't intercept page clicks or trigger scatter.
+        if (r.refs.facing) r.refs.facing.style.pointerEvents = 'none';
       } else if (next === 'excursion') {
         r.target = pickExcursionTarget();
         r.speed = randRange(simRng, 60, 100);
@@ -388,9 +391,9 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         r.nextBlinkAt = now + 2000 + simRng() * 3000;
       }
       // Restore z + pointer-events when leaving hiding.
-      if (prev === 'hiding' && next !== 'hiding' && el) {
-        el.style.zIndex = r.zRestore || '30';
-        el.style.pointerEvents = '';
+      if (prev === 'hiding' && next !== 'hiding') {
+        if (el) el.style.zIndex = r.zRestore || '30';
+        if (r.refs.facing) r.refs.facing.style.pointerEvents = '';
       }
 
       r.behavior = next;
@@ -467,8 +470,9 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       const b = bounds();
 
       if (reduced) {
-        // Damped: drift gently toward a wander target, no boids/chase.
-        seekTarget(r, dt, MAX_SPEED * 0.12);
+        // Essentially parked: drift at 4% of normal speed so the fish stay nearly
+        // still (honoring prefers-reduced-motion) while avoiding a fully frozen layout.
+        seekTarget(r, dt, MAX_SPEED * 0.04);
         if (Math.hypot(r.target.x - r.pos.x, r.target.y - r.pos.y) < WANDER_RETARGET_DIST) {
           r.target = pickWanderTarget();
         }
