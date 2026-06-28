@@ -459,7 +459,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       const ny = (dy / dist) * step;
       r.pos.x += nx;
       r.pos.y += ny;
-      r.vel = { x: nx / dt, y: ny / dt };
+      r.vel = dt > 0 ? { x: nx / dt, y: ny / dt } : r.vel;
     } else {
       r.vel = { x: 0, y: 0 };
     }
@@ -712,7 +712,10 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     };
 
     raf = requestAnimationFrame((t) => {
-      lastFrameRef.current = t;
+      // Do NOT pre-set lastFrameRef here: tick reads it to compute dt, and
+      // setting it to t before the call makes dt=0 on the very first frame,
+      // which causes seekTarget to write NaN velocity (nx/0) and
+      // commitTransform to place fish at translate3d(NaN,NaN,0).
       if (!nextEventAtRef.current) nextEventAtRef.current = t + eventInterval();
       tick(t);
     });

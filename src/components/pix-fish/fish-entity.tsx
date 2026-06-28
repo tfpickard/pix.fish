@@ -88,7 +88,7 @@ function FishEntityImpl({ view, warpEnabled, config, register, unregister, onSca
     <div
       ref={containerRef}
       aria-hidden="true"
-      className="pointer-events-none fixed left-0 top-0 z-30 text-ink-100"
+      className="pointer-events-none fixed left-0 top-0 z-30 text-ink-400"
       style={{ width: SPRITE_W, height: SPRITE_H, willChange: 'transform' }}
     >
       <div
