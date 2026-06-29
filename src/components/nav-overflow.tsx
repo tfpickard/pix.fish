@@ -155,27 +155,32 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
 function ExploreMenu({ items, pathname }: { items: NavItem[]; pathname: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  // Highlight the trigger when the current route is one of the grouped items.
-  const active = items.some((it) => pathname === it.href);
+  // Match the current route to a nav item, including nested pages (e.g.
+  // /taste/popular highlights /taste), so the trigger + item highlight on
+  // sub-routes too.
+  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+  const active = items.some((it) => isActive(it.href));
 
   // Close on route change.
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
 
-  // Close on outside click / Escape while open.
+  // Close on outside click / Escape while open. Listen for `click` rather than
+  // `mousedown` so touch-only pointers behave consistently. Clicks inside the
+  // wrapper (the trigger + the menu) are ignored, so the toggle still works.
   useEffect(() => {
     if (!open) return;
-    function onPointer(e: MouseEvent) {
+    function onClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false);
     }
-    window.addEventListener('mousedown', onPointer);
+    window.addEventListener('click', onClick);
     window.addEventListener('keydown', onKey);
     return () => {
-      window.removeEventListener('mousedown', onPointer);
+      window.removeEventListener('click', onClick);
       window.removeEventListener('keydown', onKey);
     };
   }, [open]);
@@ -204,7 +209,7 @@ function ExploreMenu({ items, pathname }: { items: NavItem[]; pathname: string }
               prefetch={false}
               role="menuitem"
               onClick={() => setOpen(false)}
-              className={`block px-3 py-1.5 transition-colors hover:text-ink-100 ${pathname === it.href ? 'text-ink-100' : 'text-ink-400'}`}
+              className={`block px-3 py-1.5 transition-colors hover:text-ink-100 ${isActive(it.href) ? 'text-ink-100' : 'text-ink-400'}`}
             >
               {it.label}
             </Link>

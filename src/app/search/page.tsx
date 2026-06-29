@@ -135,7 +135,7 @@ export default async function SearchPage({ searchParams }: PageProps) {
       const shownImageIds = new Set(hydrated.map((h) => h.id));
       const [refs, bodies] = await Promise.all([
         imageRefsByIds([...new Set(loreRanked.map((m) => m.specimenImageId))]),
-        getLoreFragmentBodies(loreRanked.map((m) => m.loreFragmentId))
+        getLoreFragmentBodies([...new Set(loreRanked.map((m) => m.loreFragmentId))])
       ]);
       const seen = new Set<number>();
       for (const m of loreRanked) {
