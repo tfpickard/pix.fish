@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { auth, canEdit } from '@/lib/auth';
 import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
 import { getCaptionVector, getNeighborsByImageId } from '@/lib/db/queries/embeddings';
+import { readNsfwMode } from '@/lib/nsfw';
 import { countReactions } from '@/lib/db/queries/reactions';
 import { listApprovedComments } from '@/lib/db/queries/comments';
 import { pickOne } from '@/lib/random';
@@ -142,12 +143,17 @@ export async function ImageDetail({
     ? await listRemixIdiomsSampled().catch(() => [])
     : [];
 
+  // Gate the neighbor strips by the visitor's NSFW mode and exclude archived
+  // (deleted) images: these render blob URLs on a public page, so without the
+  // gate an opted-out visitor could be shown NSFW neighbors or a resurfaced
+  // deleted image.
+  const nsfwMode = await readNsfwMode();
   let neighbors: Awaited<ReturnType<typeof hydrateImages>> = [];
   let opposites: Awaited<ReturnType<typeof hydrateImages>> = [];
   try {
     const [near, far] = await Promise.all([
-      getNeighborsByImageId(img.id, { limit: 6, kind: 'caption', order: 'nearest' }),
-      getNeighborsByImageId(img.id, { limit: 6, kind: 'caption', order: 'farthest' })
+      getNeighborsByImageId(img.id, { limit: 6, kind: 'caption', order: 'nearest', nsfwMode }),
+      getNeighborsByImageId(img.id, { limit: 6, kind: 'caption', order: 'farthest', nsfwMode })
     ]);
     if (near.length > 0) {
       const rows = await getImagesByIdsOrdered(near.map((m) => m.imageId));

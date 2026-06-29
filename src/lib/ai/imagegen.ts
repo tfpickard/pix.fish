@@ -17,6 +17,10 @@ export type ImageGenRequest = {
   height?: number;
   // Optional determinism hint for adapters that support it.
   seed?: number;
+  // Optional cancellation. Long, paid renders (fuse.render) abort the in-flight
+  // fetch on a time budget rather than leaving it dangling when the function is
+  // killed at the wall.
+  signal?: AbortSignal;
 };
 
 export type ImageGenResult = {
@@ -86,7 +90,8 @@ export class OpenRouterImageGenerator implements ImageGenerator {
         'HTTP-Referer': process.env.NEXT_PUBLIC_SITE_URL ?? 'https://pix.fish',
         'X-Title': 'pix.fish'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: req.signal
     });
 
     if (!res.ok) {
@@ -108,6 +113,79 @@ export class OpenRouterImageGenerator implements ImageGenerator {
   }
 }
 
+// OpenAI adapter -- text-to-image via the Images API with the gpt-image-2 model
+// (POST https://api.openai.com/v1/images/generations). This is the target the
+// /fuse composite prompt (src/lib/fuse/composite-prompt.ts) is written for. The
+// gpt-image family always returns base64 image data (no url option), which we
+// decode into a Buffer ready for Vercel Blob. Site-level key from
+// OPENAI_API_KEY, the same env var the caption/embedding providers fall back to.
+export class OpenAIImageGenerator implements ImageGenerator {
+  readonly name = 'openai';
+  readonly model: string;
+  private apiKey: string;
+
+  constructor(apiKey: string, model?: string) {
+    this.apiKey = apiKey;
+    this.model = model ?? 'gpt-image-2';
+  }
+
+  async generate(req: ImageGenRequest): Promise<ImageGenResult> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      prompt: req.prompt,
+      n: 1
+    };
+    // gpt-image takes a `size` string (e.g. "1024x1024"), not width/height. Only
+    // send it when both dims are given; otherwise omit it so the model uses its
+    // default (safer than guessing a value it might reject). We deliberately do
+    // NOT send `response_format`: the gpt-image family rejects that parameter and
+    // always returns base64 (`b64_json`), so requesting it would error.
+    if (req.width && req.height) {
+      body.size = `${Math.round(req.width)}x${Math.round(req.height)}`;
+    }
+
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`
+      },
+      body: JSON.stringify(body),
+      signal: req.signal
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`OpenAI image gen failed (${res.status}): ${text}`);
+    }
+
+    // gpt-image returns b64_json; tolerate a `url` too (in case a routed model
+    // returns one) by fetching the bytes.
+    type OpenAIImageResponse = { data: { b64_json?: string; url?: string }[] };
+    const json = (await res.json()) as OpenAIImageResponse;
+    const item = json.data?.[0];
+    if (item?.b64_json) {
+      return {
+        bytes: Buffer.from(item.b64_json, 'base64'),
+        mime: 'image/png',
+        provider: 'openai',
+        model: this.model
+      };
+    }
+    if (item?.url) {
+      const imgRes = await fetch(item.url, { signal: req.signal });
+      if (!imgRes.ok) throw new Error(`OpenAI image url fetch failed (${imgRes.status})`);
+      return {
+        bytes: Buffer.from(await imgRes.arrayBuffer()),
+        mime: imgRes.headers.get('content-type') ?? 'image/png',
+        provider: 'openai',
+        model: this.model
+      };
+    }
+    throw new Error('OpenAI returned no image data');
+  }
+}
+
 // Factory. Accepts the resolved config from loadImageGenConfig() so the
 // provider/model come from the DB (editable at /admin/ai), with the API key
 // pulled from the env. Never returns null: the alive pipeline always has
@@ -122,6 +200,14 @@ export function getImageGenerator(cfg?: { provider: string; model: string }): Im
       return new StubImageGenerator();
     }
     return new OpenRouterImageGenerator(key, model);
+  }
+  if (provider === 'openai') {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) {
+      console.warn('[imagegen] provider=openai but OPENAI_API_KEY is not set -- falling back to stub');
+      return new StubImageGenerator();
+    }
+    return new OpenAIImageGenerator(key, model);
   }
   return new StubImageGenerator();
 }

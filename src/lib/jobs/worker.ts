@@ -29,9 +29,18 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'universe.tick': 20_000, // score + enqueue only; no generation
   'universe.amend': 55_000, // one vision-less text call + one embed; fills the tick
   'universe.ripple': 10_000, // fan-out enqueue only
+  'fuse.render': 55_000, // one gpt-image-2 call + blob upload; fills the tick
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;
+
+// Worst-case wall time a job of this type may run (its per-type timeout, or the
+// default). The cron drain uses this to avoid starting a job it cannot finish
+// before the 60s function wall -- which for a single-attempt paid job would mean
+// a wall-kill mid-run followed by a reclaim-to-failed, losing the paid result.
+export function jobBudgetMs(type: string): number {
+  return JOB_TIMEOUT_MS[type] ?? JOB_TIMEOUT_DEFAULT_MS;
+}
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -59,7 +68,7 @@ export async function runJob(job: Job): Promise<'done' | 'retry' | 'failed'> {
     return 'failed';
   }
   try {
-    const timeoutMs = JOB_TIMEOUT_MS[job.type] ?? JOB_TIMEOUT_DEFAULT_MS;
+    const timeoutMs = jobBudgetMs(job.type);
     await withTimeout(handler(job), timeoutMs, `job ${job.id} (${job.type})`);
     await markJobDone(job.id);
     return 'done';

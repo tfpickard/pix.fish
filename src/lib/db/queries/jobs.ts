@@ -21,11 +21,24 @@ export async function enqueueJob(row: {
 }
 
 // Reclaim rows whose visibility-timeout lease expired. Runs at the top of the
-// cron tick so a handler that died mid-flight can retry on the next pass.
+// cron tick. A row still 'processing' past the timeout means the worker that
+// claimed it died mid-flight -- on Vercel the function is killed at the 60s wall,
+// so it is definitely not still running. Count that as a consumed attempt: bump
+// attempts and, if that reaches maxAttempts, mark the job 'failed' instead of
+// re-queuing it. This stops a single-attempt paid job (fuse.render,
+// maxAttempts: 1) from being re-claimed and BILLED A SECOND TIME after a crash
+// or deploy, while still letting multi-attempt idempotent jobs retry as before.
 export async function reclaimStuckJobs(olderThan: Date): Promise<number> {
   const res = await db
     .update(jobs)
-    .set({ status: 'pending', lockedBy: null, lockedAt: null })
+    .set({
+      attempts: sql`${jobs.attempts} + 1`,
+      status: sql`CASE WHEN ${jobs.attempts} + 1 >= ${jobs.maxAttempts} THEN 'failed' ELSE 'pending' END`,
+      finishedAt: sql`CASE WHEN ${jobs.attempts} + 1 >= ${jobs.maxAttempts} THEN NOW() ELSE ${jobs.finishedAt} END`,
+      lastError: sql`CASE WHEN ${jobs.attempts} + 1 >= ${jobs.maxAttempts} THEN 'reclaimed after visibility timeout (worker died mid-job); not retried' ELSE ${jobs.lastError} END`,
+      lockedBy: null,
+      lockedAt: null
+    })
     .where(and(eq(jobs.status, 'processing'), sql`${jobs.lockedAt} < ${olderThan.toISOString()}`))
     .returning({ id: jobs.id });
   return res.length;
@@ -86,6 +99,35 @@ export async function claimJobs(lockId: string, limit: number): Promise<Job[]> {
     RETURNING j.*
   `);
   return res.rows.map(normalizeJob);
+}
+
+// Read one job by id. Used by the /fuse render poll to report status + result.
+export async function getJob(id: number): Promise<Job | null> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1);
+  return row ?? null;
+}
+
+// Overwrite a job's payload. A handler uses this to stash its result (e.g. the
+// rendered blob URL) on the job so a poll endpoint can hand it back; the worker
+// then marks the job done.
+export async function updateJobPayload(id: number, payload: unknown): Promise<void> {
+  await db
+    .update(jobs)
+    .set({ payload: payload as Job['payload'] })
+    .where(eq(jobs.id, id));
+}
+
+// Return a claimed job to the queue WITHOUT consuming an attempt or rescheduling
+// it. Used by the cron drain to defer a job it claimed but cannot finish within
+// the remaining function budget, so a long single-attempt job (fuse.render) is
+// never started just to be killed by the wall and reclaimed as failed. Its runAt
+// is left in the past, so it stays the oldest eligible row and is claimed first
+// on the next tick (where it has the full budget).
+export async function releaseJob(id: number): Promise<void> {
+  await db
+    .update(jobs)
+    .set({ status: 'pending', lockedBy: null, lockedAt: null })
+    .where(eq(jobs.id, id));
 }
 
 export async function markJobDone(id: number): Promise<void> {

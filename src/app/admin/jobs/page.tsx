@@ -14,6 +14,9 @@ type Row = {
   finishedAt: string | null;
   lastError: string | null;
   createdAt: string;
+  // Handlers stash their result here; fuse.render leaves the rendered blob url so
+  // a paid render is recoverable even after the client stopped polling.
+  payload: { url?: string } | null;
 };
 
 function statusClass(s: string): string {
@@ -87,6 +90,16 @@ export default function AdminJobsPage() {
                 <span className="ml-auto text-ink-500">{new Date(r.createdAt).toLocaleString()}</span>
               </div>
               {r.lastError ? <p className="mt-1 text-destructive">{r.lastError}</p> : null}
+              {r.type === 'fuse.render' && r.payload?.url ? (
+                <a
+                  href={r.payload.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 block text-primary underline"
+                >
+                  view render
+                </a>
+              ) : null}
             </div>
           ))}
         </div>
