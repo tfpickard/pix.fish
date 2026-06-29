@@ -125,6 +125,47 @@ export async function searchLoreByVector(
   }));
 }
 
+// Display-oriented lore search: applies the same NSFW/archived visibility rules
+// AND collapses to the nearest fragment per specimen IN THE QUERY, so the LIMIT
+// is spent on visible, distinct specimens rather than being eaten by hidden or
+// duplicate rows (which would otherwise leave /search with too few dossier
+// results). Archived specimens are always excluded; nsfwMode gates the rest.
+export async function searchVisibleLoreByVector(
+  vec: number[],
+  opts: { limit?: number; nsfwMode?: NsfwMode } = {}
+): Promise<LoreVectorMatch[]> {
+  assertVector(vec);
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 24), 1), 100);
+  const nsfwMode = opts.nsfwMode ?? 'hide';
+  const vecLiteral = `[${vec.join(',')}]`;
+  const nsfwClause =
+    nsfwMode === 'only' ? sql`AND i.is_nsfw = true` :
+    nsfwMode === 'include' ? sql`` :
+    sql`AND i.is_nsfw = false`;
+  const res = await db.execute<{
+    lore_fragment_id: number;
+    specimen_image_id: number;
+    distance: number;
+  }>(sql`
+    SELECT lore_fragment_id, specimen_image_id, distance FROM (
+      SELECT DISTINCT ON (lf.specimen_image_id)
+        e.lore_fragment_id, lf.specimen_image_id, e.vec <=> ${vecLiteral}::vector AS distance
+      FROM embeddings e
+      JOIN lore_fragments lf ON lf.id = e.lore_fragment_id
+      JOIN images i ON i.id = lf.specimen_image_id
+      WHERE e.subject_type = 'lore' AND i.archived_at IS NULL ${nsfwClause}
+      ORDER BY lf.specimen_image_id, distance ASC
+    ) sub
+    ORDER BY distance ASC
+    LIMIT ${limit}
+  `);
+  return res.rows.map((r) => ({
+    loreFragmentId: Number(r.lore_fragment_id),
+    specimenImageId: Number(r.specimen_image_id),
+    distance: Number(r.distance)
+  }));
+}
+
 // Fetch a single lore fragment's embedding by fragment id. Returns null if the
 // fragment has no embedding yet. Parallels getCaptionVector.
 export async function getLoreFragmentVector(loreFragmentId: number): Promise<number[] | null> {
