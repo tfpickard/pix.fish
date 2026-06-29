@@ -60,13 +60,22 @@ export async function listVisibleCharacters(opts: {
         ? eq(images.isNsfw, true)
         : undefined;
   const visibleCount = sql<number>`count(${characterAppearances.imageId})::int`;
+  // Headshot must come from a VISIBLE appearance: the stored canonicalCropUrl can
+  // point at a crop whose source image was since deleted/hidden. Keep the stored
+  // canonical when it's still among the visible crops, else fall back to the
+  // first visible crop by image id (null if none has a crop url).
+  const visibleCanonical = sql<string | null>`coalesce(
+    max(${characters.canonicalCropUrl}) FILTER (WHERE ${characterAppearances.cropUrl} = ${characters.canonicalCropUrl}),
+    (array_agg(${characterAppearances.cropUrl} ORDER BY ${characterAppearances.imageId})
+       FILTER (WHERE ${characterAppearances.cropUrl} IS NOT NULL))[1]
+  )`;
   const rows = await db
     .select({
       key: characters.key,
       name: characters.name,
       dossier: characters.dossier,
       clerkSlug: characters.clerkSlug,
-      canonicalCropUrl: characters.canonicalCropUrl,
+      canonicalCropUrl: visibleCanonical,
       censusEventId: characters.censusEventId,
       generation: characters.generation,
       createdAt: characters.createdAt,

@@ -1,4 +1,4 @@
-import { put } from '@vercel/blob';
+import { del, put } from '@vercel/blob';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { getEmbedder, getProvider, loadUserProviderKeys } from '@/lib/ai';
@@ -7,6 +7,7 @@ import { parseDetectionsJson } from '@/lib/ai/types';
 import { db } from '@/lib/db/client';
 import {
   countCropsForImage,
+  cropBlobKeysForImage,
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
@@ -17,6 +18,17 @@ type Payload = { imageId: number; force?: boolean };
 
 const MAX_FIGURES = 6;
 const HEADSHOT_MAX = 384; // px, longest edge of the saved crop
+
+// Clear an image's crops on a forced re-detect, deleting the Blob objects BEFORE
+// the rows -- the rows hold the only copy of each crop's blob key, so dropping
+// them first would orphan the public headshots beyond reach of any cleanup.
+async function clearCrops(imageId: number): Promise<void> {
+  const keys = await cropBlobKeysForImage(imageId).catch(() => [] as string[]);
+  if (keys.length > 0) {
+    await del(keys).catch((err) => console.error(`characters.detect: blob cleanup for image ${imageId} failed`, err));
+  }
+  await deleteCropsForImage(imageId);
+}
 
 // Detect the figures in one image, crop a headshot of each, embed its
 // description, and store as character_crops evidence. Skips NSFW/archived
@@ -63,7 +75,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   const detections = parseDetectionsJson(raw).slice(0, MAX_FIGURES);
   if (detections.length === 0) {
     // Re-run with force should clear stale crops even when nothing is found now.
-    if (force) await deleteCropsForImage(imageId);
+    if (force) await clearCrops(imageId);
     return;
   }
 
@@ -77,7 +89,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   const imgH = meta.height ?? 0;
   if (imgW < 2 || imgH < 2) return;
 
-  if (force) await deleteCropsForImage(imageId);
+  if (force) await clearCrops(imageId);
 
   let idx = 0;
   for (const d of detections) {
@@ -86,12 +98,15 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
     const top = Math.max(0, Math.min(imgH - 1, Math.round(d.box.top * imgH)));
     const width = Math.max(1, Math.min(imgW - left, Math.round(d.box.width * imgW)));
     const height = Math.max(1, Math.min(imgH - top, Math.round(d.box.height * imgH)));
+    let uploadedUrl: string | null = null;
     try {
       const cropBuf = await sharp(upright)
         .extract({ left, top, width, height })
         .resize({ width: HEADSHOT_MAX, height: HEADSHOT_MAX, fit: 'inside', withoutEnlargement: true })
         .webp({ quality: 80 })
         .toBuffer();
+      // Embed BEFORE uploading so an embedder failure never strands a blob.
+      const vec = await embedder.embed(d.description);
       // Let blob mint a unique object (random suffix) and persist the actual
       // returned pathname as the key, rather than a deterministic name that a
       // re-detect would silently overwrite or that could collide across runs.
@@ -100,7 +115,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         contentType: 'image/webp',
         addRandomSuffix: true
       });
-      const vec = await embedder.embed(d.description);
+      uploadedUrl = blob.url;
       await insertCharacterCrop({
         imageId,
         label: d.label,
@@ -115,6 +130,9 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
       idx++;
     } catch (err) {
       console.error(`characters.detect: crop ${idx} for image ${imageId} failed`, err);
+      // If the upload landed but the row write didn't, the key was never
+      // persisted, so clean up the orphaned public headshot here.
+      if (uploadedUrl) await del(uploadedUrl).catch(() => {});
       // best-effort per figure; continue with the rest
     }
   }
