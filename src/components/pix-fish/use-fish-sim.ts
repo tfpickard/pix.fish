@@ -12,19 +12,30 @@ import { buildBodyPath, EYE_CX, EYE_CY, MOUTH_PATHS, NUM_FISH_VARIANTS } from '.
 import { deriveMorph, lorenzStep, morphTransform, seedLorenz, type MorphOutputs } from './lorenz';
 import { randRange, simRng } from './prng';
 import {
+  newStatsAccum,
+  sampleStats,
+  snapshotStats,
+  type FishStats,
+  type FishStatsAccum
+} from './stats';
+import {
   COUPLING_STRENGTH,
   DEBUG_FAST_EVENTS,
   ENTER_MS,
-  EVENT_INTERVAL_MAX,
   EVENT_INTERVAL_MAX_FAST,
-  EVENT_INTERVAL_MIN,
   EVENT_INTERVAL_MIN_FAST,
   EVENT_RETRY_MAX,
   EVENT_RETRY_MAX_FAST,
   EVENT_RETRY_MIN,
   EVENT_RETRY_MIN_FAST,
   EXIT_MS,
-  INITIAL_POP,
+  FIGHT_DURATION,
+  FIGHT_JITTER,
+  FIGHT_LOSER_SHRINK,
+  FIGHT_LUNGE_SPEED,
+  FIGHT_MIN_BASESIZE,
+  FIGHT_WINNER_COOLDOWN,
+  FIGHT_WINNER_GROWTH,
   MAX_SPEED,
   MIN_SPEED,
   NEIGHBOR_K,
@@ -41,6 +52,11 @@ import {
   REPRO_COOLDOWN_FAST,
   SCATTER_RADIUS,
   SCATTER_SPEED,
+  SINK_DRIFT_DAMP,
+  SINK_FADE_MS,
+  SINK_GRAVITY,
+  SINK_MAX_MS,
+  SINK_TILT_DEG,
   SPRITE_H,
   SPRITE_W,
   WANDER_RETARGET_DIST
@@ -117,6 +133,7 @@ interface SimAPI {
   register: (id: number, refs: EntityRefs) => void;
   unregister: (id: number) => void;
   scatter: (x: number, y: number) => void;
+  stats: FishStats | null;
   debug: SimDebug;
 }
 
@@ -140,14 +157,51 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
   const reducedMotionRef = useRef(false);
   reducedMotionRef.current = reducedMotion;
 
-  // --- tunable selectors (fast-mode aware) ----------------------------------
-  const eventInterval = useCallback(
-    () =>
-      DEBUG_FAST_EVENTS
-        ? randRange(simRng, EVENT_INTERVAL_MIN_FAST, EVENT_INTERVAL_MAX_FAST)
-        : randRange(simRng, EVENT_INTERVAL_MIN, EVENT_INTERVAL_MAX),
-    []
+  // Statistics: a single mutable accumulator (ref) the loop feeds, snapshotted
+  // to React state on a ~1Hz throttle so the banner updates without per-frame
+  // re-renders. lastSampleAt/lastStatsAt gate the sampling + push cadence.
+  const statsRef = useRef<FishStatsAccum | null>(null);
+  const lastSampleAtRef = useRef(0);
+  const lastStatsPushRef = useRef(0);
+  const [statsView, setStatsView] = useState<FishStats | null>(null);
+  const getStats = useCallback((): FishStatsAccum => {
+    if (!statsRef.current) statsRef.current = newStatsAccum(performance.now());
+    return statsRef.current;
+  }, []);
+  const recordArrival = useCallback(
+    (kind: 'born' | 'immigrated', now: number) => {
+      const s = getStats();
+      if (kind === 'born') s.born++;
+      else s.immigrated++;
+      s.flow.push({ t: now, kind: 'arrival' });
+    },
+    [getStats]
   );
+  const recordDeparture = useCallback(
+    (kind: 'eaten' | 'fight' | 'natural' | 'emigrated', now: number) => {
+      const s = getStats();
+      if (kind === 'eaten') s.eaten++;
+      else if (kind === 'fight') s.fightKills++;
+      else if (kind === 'natural') s.naturalDeaths++;
+      else s.emigrated++;
+      s.flow.push({ t: now, kind: 'departure' });
+    },
+    [getStats]
+  );
+  const recordFight = useCallback(() => {
+    getStats().fights++;
+  }, [getStats]);
+
+  // --- tunable selectors (fast-mode aware) ----------------------------------
+  const eventInterval = useCallback(() => {
+    if (DEBUG_FAST_EVENTS) return randRange(simRng, EVENT_INTERVAL_MIN_FAST, EVENT_INTERVAL_MAX_FAST);
+    // Admin-tunable cadence, stored in seconds. The two sliders move
+    // independently, so normalize in case min was dragged above max.
+    const cfg = configRef.current;
+    const lo = Math.min(cfg.eventIntervalMin, cfg.eventIntervalMax) * 1000;
+    const hi = Math.max(cfg.eventIntervalMin, cfg.eventIntervalMax) * 1000;
+    return randRange(simRng, lo, hi);
+  }, []);
   const retryInterval = useCallback(
     () =>
       DEBUG_FAST_EVENTS
@@ -245,6 +299,12 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         reproCooldownUntil: 0,
         postMealUntil: 0,
         emigrating: opts?.emigrating ?? false,
+        dying: false,
+        deathStartAt: 0,
+        fightingUntil: 0,
+        fightOpponent: 0,
+        fightLoser: false,
+        fightLethal: false,
         behavior: 'wandering',
         behaviorEndsAt: now + randInRange(DWELL.wandering),
         nextBlinkAt: now + 1500 + simRng() * 3000,
@@ -482,6 +542,48 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     (r: EntityRuntime, others: EntityRuntime[], dt: number, now: number, reduced: boolean) => {
       const b = bounds();
 
+      if (r.dying) {
+        // Belly-up sink: gravity pulls it down, horizontal drift damps out, and
+        // it fades + tilts as it goes. No edge clamp -- it must clear the bottom.
+        r.vel.y += SINK_GRAVITY * dt;
+        r.vel.x *= SINK_DRIFT_DAMP;
+        r.pos.x += r.vel.x * dt;
+        r.pos.y += r.vel.y * dt;
+        const el = r.refs.container;
+        if (el) {
+          const prog = clamp((now - r.deathStartAt) / SINK_FADE_MS, 0, 1);
+          el.style.opacity = (1 - prog).toFixed(3);
+          el.style.transform = `translate3d(${r.pos.x.toFixed(2)}px, ${r.pos.y.toFixed(2)}px, 0) rotate(${(prog * SINK_TILT_DEG).toFixed(1)}deg)`;
+        }
+        return;
+      }
+
+      if (r.fightingUntil) {
+        // Lunge at the opponent with jitter so the clash reads as a scuffle.
+        const opp = others.find((o) => o.id === r.fightOpponent);
+        if (opp) {
+          const dx = opp.pos.x - r.pos.x;
+          const dy = opp.pos.y - r.pos.y;
+          const d = Math.hypot(dx, dy) || 1;
+          r.vel.x = (dx / d) * FIGHT_LUNGE_SPEED + (simRng() - 0.5) * FIGHT_JITTER;
+          r.vel.y = (dy / d) * FIGHT_LUNGE_SPEED + (simRng() - 0.5) * FIGHT_JITTER;
+          r.pos.x += r.vel.x * dt;
+          r.pos.y += r.vel.y * dt;
+          const want: 1 | -1 = dx < 0 ? -1 : 1;
+          if (want !== r.facing) {
+            r.facing = want;
+            applyFacing(r);
+          }
+        }
+        // Keep the brawl on-screen.
+        r.pos.x = clamp(r.pos.x, -SPRITE_W * 0.5, b.w - SPRITE_W * 0.5);
+        r.pos.y = clamp(r.pos.y, -SPRITE_H * 0.5, b.h - SPRITE_H * 0.5);
+        if (r.refs.container) {
+          r.refs.container.style.transform = `translate3d(${r.pos.x.toFixed(2)}px, ${r.pos.y.toFixed(2)}px, 0)`;
+        }
+        return;
+      }
+
       if (r.emigrating) {
         // Heading out for good; ignore social forces, edges, and reduced-motion.
         // Emigrants must clear the screen promptly -- they're already excluded from
@@ -577,6 +679,55 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     [setEye]
   );
 
+  // --- death + fight resolution ----------------------------------------------
+  // Begin a death. By explodeRatio it's either an instant burst exit or a
+  // sim-driven sink: the fish is flagged `dying` and the loop drifts it down,
+  // fading, then despawns it. Either way it leaves the gene pool now.
+  const startDeath = useCallback(
+    (r: EntityRuntime, now: number) => {
+      if (r.dying || pendingRemovalRef.current.has(r.id)) return;
+      r.fightingUntil = 0;
+      r.emigrating = false;
+      if (simRng() < configRef.current.explodeRatio) {
+        removeEntity(r.id, 'burst');
+        return;
+      }
+      r.dying = true;
+      r.deathStartAt = now;
+      setMouth(r, 'o');
+      setEye(r, 1);
+    },
+    [removeEntity, setMouth, setEye]
+  );
+
+  // A fight's clock ran out for this fish. The loser shrinks and flees -- or
+  // dies if the bout was flagged lethal; the winner grows a touch and rests.
+  const resolveFight = useCallback(
+    (r: EntityRuntime, now: number) => {
+      const wasLoser = r.fightLoser;
+      const lethal = r.fightLethal;
+      r.fightingUntil = 0;
+      r.fightOpponent = 0;
+      r.fightLoser = false;
+      r.fightLethal = false;
+      setMouth(r, 'smile');
+      if (wasLoser) {
+        r.baseSize = Math.max(r.baseSize * FIGHT_LOSER_SHRINK, FIGHT_MIN_BASESIZE);
+        if (lethal) {
+          recordDeparture('fight', now);
+          startDeath(r, now);
+          return;
+        }
+        enterBehavior(r, 'startled', now);
+      } else {
+        r.baseSize = Math.min(r.baseSize * FIGHT_WINNER_GROWTH, PREDATION_MAX_BASESIZE);
+        r.postMealUntil = now + FIGHT_WINNER_COOLDOWN;
+        enterBehavior(r, 'wandering', now);
+      }
+    },
+    [setMouth, startDeath, enterBehavior, recordDeparture]
+  );
+
   // --- event execution -------------------------------------------------------
   const executeEvent = useCallback(
     (ev: LifeEvent, now: number) => {
@@ -595,6 +746,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
             y: (pa.pos.y + pb.pos.y) / 2 + randRange(simRng, -40, 40)
           };
           views.push(spawn(genotype, pos));
+          recordArrival('born', now);
         }
         pa.reproCooldownUntil = now + reproCooldown();
         pb.reproCooldownUntil = now + reproCooldown();
@@ -606,37 +758,87 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
         const pos: Vec2 = { x: p.pos.x + randRange(simRng, -36, 36), y: p.pos.y + randRange(simRng, -36, 36) };
         p.reproCooldownUntil = now + reproCooldown();
         addEntities([spawn(genotype, pos)]);
+        recordArrival('born', now);
       } else if (ev.type === 'immigration') {
         if (count() >= configRef.current.popMax) return;
         const { pos, target } = immigrantStart();
         addEntities([spawn(randomGenotype(simRng), pos, { target })]);
+        recordArrival('immigrated', now);
       } else if (ev.type === 'predation') {
         const pred = rts.get(ev.predator);
         const prey = rts.get(ev.prey);
         if (!pred || !prey) return;
         pred.baseSize = Math.min(pred.baseSize * PREDATION_GROWTH, PREDATION_MAX_BASESIZE);
         pred.postMealUntil = now + postMealCooldown();
+        recordDeparture('eaten', now);
         removeEntity(prey.id, 'chomp');
+      } else if (ev.type === 'fight') {
+        const a = rts.get(ev.a);
+        const b = rts.get(ev.b);
+        if (!a || !b) return;
+        recordFight();
+        // Loser = the smaller fish (tie -> coin flip). Lethal only while the
+        // tank is above its floor, so a fight can never empty it.
+        const aLoses =
+          a.currentSize < b.currentSize ||
+          (a.currentSize === b.currentSize && simRng() < 0.5);
+        const loser = aLoses ? a : b;
+        const lethal = count() > configRef.current.popMin && simRng() < configRef.current.fightLethalChance;
+        const until = now + FIGHT_DURATION;
+        for (const f of [a, b]) {
+          const opp = f === a ? b : a;
+          f.fightingUntil = until;
+          f.fightOpponent = opp.id;
+          f.fightLoser = f === loser;
+          f.fightLethal = f === loser && lethal;
+          f.emigrating = false;
+          f.target = { ...opp.pos };
+          setMouth(f, 'o');
+        }
+      } else if (ev.type === 'natural-death') {
+        const f = rts.get(ev.fish);
+        if (!f) return;
+        recordDeparture('natural', now);
+        startDeath(f, now);
       } else if (ev.type === 'emigration') {
         const f = rts.get(ev.fish);
         if (!f) return;
+        recordDeparture('emigrated', now);
         f.emigrating = true;
         f.target = offPageTarget();
         f.behavior = 'wandering';
       }
     },
-    [spawn, addEntities, removeEntity, reproCooldown, postMealCooldown, immigrantStart, offPageTarget]
+    [
+      spawn,
+      addEntities,
+      removeEntity,
+      reproCooldown,
+      postMealCooldown,
+      immigrantStart,
+      offPageTarget,
+      setMouth,
+      startDeath,
+      recordArrival,
+      recordDeparture,
+      recordFight
+    ]
   );
 
   const runEventStep = useCallback(
     (now: number) => {
-      const rts = Array.from(runtimesRef.current.values()).filter((r) => !pendingRemovalRef.current.has(r.id) && !r.emigrating);
+      const rts = Array.from(runtimesRef.current.values()).filter(
+        (r) => !pendingRemovalRef.current.has(r.id) && !r.emigrating && !r.dying && !r.fightingUntil
+      );
       const cfg = configRef.current;
       const limits: SimLimits = {
         popMin: cfg.popMin,
         popMax: cfg.popMax,
         popMean: cfg.popMean,
-        immigrationWeight: cfg.immigrationWeight
+        immigrationWeight: cfg.immigrationWeight,
+        predationWeight: cfg.predationWeight,
+        fightWeight: cfg.fightWeight,
+        deathWeight: cfg.deathWeight
       };
       const ev = selectEvent(rts, now, simRng, limits);
       if (ev.type === 'none') {
@@ -651,23 +853,39 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
   );
 
   // --- founders --------------------------------------------------------------
+  // The population the tank wants right now: the admin's target (popMean),
+  // clamped to the [popMin, popMax] band. Read live so the sliders matter.
+  const targetPopulation = useCallback(() => {
+    const cfg = configRef.current;
+    return Math.max(1, Math.round(clamp(cfg.popMean, cfg.popMin, cfg.popMax)));
+  }, []);
+
+  // Remove a fish with no death animation -- used when reconciling to a new
+  // target on a config change, so dragging a slider doesn't spray explosions.
+  const despawnQuiet = useCallback((id: number) => {
+    runtimesRef.current.delete(id);
+    pendingRemovalRef.current.delete(id);
+    setEntities((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
   const ensureSeeded = useCallback(() => {
     if (seededRef.current) return;
     seededRef.current = true;
     const w = window.innerWidth;
     const h = window.innerHeight;
+    const n = targetPopulation();
     const views: EntityView[] = [];
-    for (let i = 0; i < INITIAL_POP; i++) {
+    for (let i = 0; i < n; i++) {
       const genotype = randomGenotype(simRng);
       const pos: Vec2 = {
-        x: ((i + 0.5) / INITIAL_POP) * Math.max(w - SPRITE_W, 1),
+        x: ((i + 0.5) / n) * Math.max(w - SPRITE_W, 1),
         y: h * 0.3 + simRng() * h * 0.4
       };
       const v = spawn(genotype, pos);
       views.push({ ...v, phase: 'alive' });
     }
     setEntities(views);
-  }, [spawn]);
+  }, [spawn, targetPopulation]);
 
   // --- main rAF loop ---------------------------------------------------------
   useEffect(() => {
@@ -705,6 +923,23 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       for (const r of rts) {
         const others = rts.filter((o) => o.id !== r.id);
         stepMotion(r, others, dt, t, reduced);
+
+        // A sinking fish just drifts + fades; despawn once it clears the bottom
+        // (or after a hard cap, so it can never get stuck rendered).
+        if (r.dying) {
+          if (t - r.deathStartAt > SINK_MAX_MS || r.pos.y > bounds().h + SPRITE_H * 2) {
+            removeEntity(r.id, 'sink');
+          }
+          continue;
+        }
+
+        // A fight resolves when its clock runs out (loser shrinks/flees or dies,
+        // winner grows). Until then the fish is locked into the scuffle.
+        if (r.fightingUntil) {
+          if (t >= r.fightingUntil) resolveFight(r, t);
+          continue;
+        }
+
         stepBlink(r, t);
 
         // Behavior expiry (skip while emigrating / reduced).
@@ -729,6 +964,20 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       // Event clock.
       if (t >= nextEventAtRef.current) runEventStep(t);
 
+      // Stats: sample the live population (excluding fish on their way out) and
+      // push a snapshot to React on a coarse throttle, so the banner stays live
+      // without re-rendering per frame.
+      const s = getStats();
+      const alive = rts.reduce((n, r) => (r.dying || r.emigrating ? n : n + 1), 0);
+      if (t - lastSampleAtRef.current >= 500) {
+        lastSampleAtRef.current = t;
+        sampleStats(s, alive, t);
+      }
+      if (t - lastStatsPushRef.current >= 1000) {
+        lastStatsPushRef.current = t;
+        setStatsView(snapshotStats(s, alive, t));
+      }
+
       raf = requestAnimationFrame(tick);
     };
 
@@ -750,11 +999,46 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     stepMotion,
     stepBlink,
     enterBehavior,
+    resolveFight,
     runEventStep,
     eventInterval,
     bounds,
-    removeEntity
+    removeEntity,
+    getStats
   ]);
+
+  // --- live config reconciliation --------------------------------------------
+  // When the admin changes min/max/target, nudge the live population to the new
+  // target immediately (spawn fade-ins or quiet removals) so the sliders have a
+  // visible effect without waiting on the slow event clock or a page reload.
+  const reconcilePopulation = useCallback(() => {
+    if (!seededRef.current) return;
+    const alive = Array.from(runtimesRef.current.values()).filter(
+      (r) => !pendingRemovalRef.current.has(r.id) && !r.emigrating && !r.dying
+    );
+    const target = targetPopulation();
+    if (alive.length < target) {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const views: EntityView[] = [];
+      for (let i = alive.length; i < target; i++) {
+        const pos: Vec2 = {
+          x: 40 + simRng() * Math.max(w - SPRITE_W - 80, 1),
+          y: h * 0.25 + simRng() * h * 0.5
+        };
+        views.push(spawn(randomGenotype(simRng), pos));
+      }
+      addEntities(views);
+    } else if (alive.length > target) {
+      // Drop the youngest extras first so elders persist.
+      const extra = alive.sort((a, z) => z.bornAt - a.bornAt).slice(0, alive.length - target);
+      for (const r of extra) despawnQuiet(r.id);
+    }
+  }, [spawn, addEntities, despawnQuiet, targetPopulation]);
+
+  useEffect(() => {
+    reconcilePopulation();
+  }, [config.popMin, config.popMax, config.popMean, reconcilePopulation]);
 
   // --- cursor + reduced-motion + resize listeners ----------------------------
   useEffect(() => {
@@ -819,7 +1103,7 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
       if (reducedMotionRef.current) return;
       const now = performance.now();
       for (const r of runtimesRef.current.values()) {
-        if (r.emigrating || pendingRemovalRef.current.has(r.id)) continue;
+        if (r.emigrating || r.dying || r.fightingUntil || pendingRemovalRef.current.has(r.id)) continue;
         const dx = r.pos.x - x;
         const dy = r.pos.y - y;
         const dist = Math.hypot(dx, dy);
@@ -832,5 +1116,12 @@ export function useFishSim({ paused, config = DEFAULT_FISH_MORPH_CONFIG }: SimOp
     [enterBehavior]
   );
 
-  return { entities, register, unregister, scatter, debug: { population: entities.length, lastEvent } };
+  return {
+    entities,
+    register,
+    unregister,
+    scatter,
+    stats: statsView,
+    debug: { population: entities.length, lastEvent }
+  };
 }
