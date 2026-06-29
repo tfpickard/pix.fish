@@ -1,8 +1,9 @@
-import { asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, notInArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import {
   characterAppearances,
   characters,
+  images,
   type Character,
   type NewCharacter,
   type NewCharacterAppearance
@@ -43,6 +44,51 @@ export async function insertAppearance(input: NewCharacterAppearance): Promise<v
 
 export async function listCharacters(): Promise<Character[]> {
   return db.select().from(characters).orderBy(desc(characters.appearanceCount), asc(characters.key));
+}
+
+// Gallery view: only characters with at least one publicly-visible appearance
+// for the viewer's NSFW mode, and with appearanceCount reflecting just those
+// visible appearances (so the gallery count matches the detail page). A
+// character whose every appearance is NSFW/archived is omitted entirely.
+export async function listVisibleCharacters(opts: {
+  nsfwMode: 'hide' | 'include' | 'only';
+}): Promise<Character[]> {
+  const nsfwCond =
+    opts.nsfwMode === 'hide'
+      ? eq(images.isNsfw, false)
+      : opts.nsfwMode === 'only'
+        ? eq(images.isNsfw, true)
+        : undefined;
+  const visibleCount = sql<number>`count(${characterAppearances.imageId})::int`;
+  const rows = await db
+    .select({
+      key: characters.key,
+      name: characters.name,
+      dossier: characters.dossier,
+      clerkSlug: characters.clerkSlug,
+      canonicalCropUrl: characters.canonicalCropUrl,
+      censusEventId: characters.censusEventId,
+      generation: characters.generation,
+      createdAt: characters.createdAt,
+      visibleCount
+    })
+    .from(characters)
+    .innerJoin(characterAppearances, eq(characterAppearances.characterKey, characters.key))
+    .innerJoin(images, eq(images.id, characterAppearances.imageId))
+    .where(and(isNull(images.archivedAt), nsfwCond))
+    .groupBy(characters.key)
+    .orderBy(desc(visibleCount), asc(characters.key));
+  return rows.map((r) => ({
+    key: r.key,
+    name: r.name,
+    dossier: r.dossier,
+    clerkSlug: r.clerkSlug,
+    canonicalCropUrl: r.canonicalCropUrl,
+    appearanceCount: r.visibleCount,
+    censusEventId: r.censusEventId,
+    generation: r.generation,
+    createdAt: r.createdAt
+  }));
 }
 
 export async function getCharacter(key: string): Promise<Character | null> {
@@ -101,14 +147,51 @@ export async function appearanceImageIds(): Promise<number[]> {
   return rows.map((r) => r.imageId);
 }
 
-// Rebuild support: a census clears and replaces, so the reducer wipes these
-// before writing the newest roster. DELETE (not TRUNCATE) to respect FKs.
+// Rebuild support: a full rebuild wipes these before replaying the log. DELETE
+// (not TRUNCATE) to respect FKs.
 export async function deleteAllCharacters(): Promise<void> {
   await db.delete(characters);
 }
 
 export async function deleteAllAppearances(): Promise<void> {
   await db.delete(characterAppearances);
+}
+
+// Census write-then-prune support. The HTTP DB driver has no multi-statement
+// transaction, so applying a census as "clear all, then repopulate" risks
+// leaving the projection empty if the process dies mid-apply. Instead the
+// reducer upserts the new roster first, then prunes whatever isn't in it --
+// the projection is never blank, and a re-apply converges to the same rows.
+
+// Drop appearances of a character that aren't in its newest appearance set.
+export async function pruneAppearancesForCharacter(
+  characterKey: string,
+  keepImageIds: number[]
+): Promise<void> {
+  if (keepImageIds.length === 0) {
+    await db.delete(characterAppearances).where(eq(characterAppearances.characterKey, characterKey));
+    return;
+  }
+  await db
+    .delete(characterAppearances)
+    .where(
+      and(
+        eq(characterAppearances.characterKey, characterKey),
+        notInArray(characterAppearances.imageId, keepImageIds)
+      )
+    );
+}
+
+// Drop characters (and their appearances -- no FK cascade on character_key)
+// whose key isn't in the newest census roster. An empty roster clears both.
+export async function pruneCharactersNotIn(keepKeys: string[]): Promise<void> {
+  if (keepKeys.length === 0) {
+    await db.delete(characterAppearances);
+    await db.delete(characters);
+    return;
+  }
+  await db.delete(characterAppearances).where(notInArray(characterAppearances.characterKey, keepKeys));
+  await db.delete(characters).where(notInArray(characters.key, keepKeys));
 }
 
 // Filter a set of appearance image ids down to publicly-visible specimens.

@@ -98,13 +98,23 @@ function cosineDist(a: number[], b: number[]): number {
   return 1 - dot / denom;
 }
 
+// Above this cosine distance two crop descriptions are treated as unrelated and
+// never linked, no matter how few crops there are. Without a cutoff, a corpus
+// with fewer than k+1 crops links every crop to every other (kNN degenerates to
+// "all of them"), and community detection then fuses two unrelated figures into
+// one false "recurring" character. Tunable; conservative by default so sparse
+// corpora under-cluster (miss a character) rather than invent one.
+export const DEFAULT_CROP_EDGE_MAX_DIST = 0.45;
+
 // Build a cosine kNN graph over crop description-embeddings: each crop gets
-// edges to its `k` nearest other crops. The result feeds detectCommunities()
-// (each community = one recurring character). O(n^2) over a few hundred crops
-// is fine. Deterministic: ties broken by crop id.
+// edges to its `k` nearest other crops, dropping any neighbour farther than
+// maxDist. The result feeds detectCommunities() (each community = one recurring
+// character). O(n^2) over a few hundred crops is fine. Deterministic: ties
+// broken by crop id.
 export function buildCropEdges(
   crops: { cropId: number; vec: number[] }[],
-  k = 5
+  k = 5,
+  maxDist = DEFAULT_CROP_EDGE_MAX_DIST
 ): ClusterEdge[] {
   const edges: ClusterEdge[] = [];
   for (let i = 0; i < crops.length; i++) {
@@ -112,7 +122,9 @@ export function buildCropEdges(
     const dists: { dst: number; dist: number }[] = [];
     for (let j = 0; j < crops.length; j++) {
       if (j === i) continue;
-      dists.push({ dst: crops[j]!.cropId, dist: cosineDist(src.vec, crops[j]!.vec) });
+      const dist = cosineDist(src.vec, crops[j]!.vec);
+      if (dist > maxDist) continue; // unrelated; never an edge
+      dists.push({ dst: crops[j]!.cropId, dist });
     }
     dists.sort((a, b) => a.dist - b.dist || a.dst - b.dst);
     for (const nb of dists.slice(0, k)) {

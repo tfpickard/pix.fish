@@ -1,7 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { listCharacters } from '@/lib/db/queries/characters';
+import { listVisibleCharacters } from '@/lib/db/queries/characters';
 import type { Character } from '@/lib/db/schema';
+import { readNsfwMode } from '@/lib/nsfw';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -14,11 +15,12 @@ export const metadata: Metadata = {
 };
 
 export default async function CharactersPage() {
+  const nsfwMode = await readNsfwMode();
   let chars: Character[] = [];
   try {
-    chars = await listCharacters();
+    chars = await listVisibleCharacters({ nsfwMode });
   } catch (err) {
-    console.error('characters page: listCharacters failed', err);
+    console.error('characters page: listVisibleCharacters failed', err);
   }
 
   return (

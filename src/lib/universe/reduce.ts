@@ -8,12 +8,13 @@ import {
   latestLoreFragment,
   upsertLoreFragment
 } from '@/lib/db/queries/lore-fragments';
+import { latestEventIdOfType } from '@/lib/db/queries/events';
 import { getSpecimen, upsertSpecimen } from '@/lib/db/queries/specimens';
 import { coordsFor, type CoordsMap } from './coords';
 import {
-  deleteAllAppearances,
-  deleteAllCharacters,
   insertAppearance,
+  pruneAppearancesForCharacter,
+  pruneCharactersNotIn,
   upsertCharacter
 } from '@/lib/db/queries/characters';
 import {
@@ -169,12 +170,21 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
     }
 
     case EVENT_TYPE.CharacterCensus: {
-      // A census defines the entire recurring-character roster. Clear and
-      // replace the projection so the newest census wins; on a full rebuild,
-      // replaying censuses in order leaves the last one in effect.
+      // A census defines the entire recurring-character roster; the newest one
+      // wins. Guard against applying a STALE census: if a later census event is
+      // already on file (overlapping cluster jobs, or replaying older censuses
+      // during a rebuild), skip this one so live pages don't regress to an older
+      // roster. The check reads the append-only log, so it holds even when the
+      // newest census left an empty roster.
+      const latestCensusId = await latestEventIdOfType(EVENT_TYPE.CharacterCensus);
+      if (latestCensusId !== null && latestCensusId > ev.id) break;
+
+      // Apply write-then-prune rather than clear-then-repopulate: upsert the
+      // whole roster first, then drop anything not in it. The HTTP DB driver has
+      // no multi-statement transaction, so a clear-first apply could blank the
+      // canon if the process died mid-apply; this way the projection is never
+      // empty and a re-apply of the same census is idempotent.
       const p = ev.payload as unknown as CharacterCensusPayload;
-      await deleteAllAppearances();
-      await deleteAllCharacters();
       for (const c of p.characters) {
         await upsertCharacter({
           key: c.key,
@@ -196,7 +206,14 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
             createdAt: ev.createdAt
           });
         }
+        // Drop stale appearances this character shed since the prior census.
+        await pruneAppearancesForCharacter(
+          c.key,
+          c.appearances.map((a) => a.imageId)
+        );
       }
+      // Drop characters dropped from the roster entirely (and their appearances).
+      await pruneCharactersNotIn(p.characters.map((c) => c.key));
       break;
     }
 

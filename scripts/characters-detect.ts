@@ -43,7 +43,9 @@ async function main() {
   }
 
   console.log('clustering crops into recurring characters...');
-  await charactersClusterHandler(asJob({ minAppearances: 2, stamp: 1 }));
+  // No stamp -- let the handler mint a unique per-run census stamp so repeated
+  // runs file distinct events instead of colliding on the same dedupe key.
+  await charactersClusterHandler(asJob({ minAppearances: 2 }));
   console.log('done.');
 }
 

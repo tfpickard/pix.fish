@@ -10,7 +10,6 @@ import {
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
-import { getSiteAdminId } from '@/lib/db/queries/users';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
 
@@ -28,6 +27,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
 
   const [img] = await db
     .select({
+      ownerId: images.ownerId,
       blobUrl: images.blobUrl,
       blobKey: images.blobKey,
       mime: images.mime,
@@ -43,7 +43,11 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   if (!force && (await countCropsForImage(imageId)) > 0) return; // already detected
 
   const cfg = await loadAiConfig();
-  const keys = await loadUserProviderKeys(getSiteAdminId());
+  // BYO keys: detection is a per-image vision+embed call, so it bills to the
+  // image owner's provider (matching enrich.image / reprocess.image), not the
+  // site admin's. loadUserProviderKeys falls back to env keys when the owner has
+  // none, preserving the single-owner deployment.
+  const keys = await loadUserProviderKeys(img.ownerId);
   const provider = getProvider('captions', cfg, keys);
   if (!provider || !provider.vision) throw new Error('characters.detect: no vision-capable provider');
   const embedder = getEmbedder(cfg, keys);
@@ -63,7 +67,12 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
     return;
   }
 
-  const meta = await sharp(buf).metadata();
+  // Bake EXIF orientation into pixels ONCE, up front. The vision model reported
+  // boxes against the upright image, so dimensions and extraction must both use
+  // the rotated buffer; reading pre-rotation metadata would scale boxes against
+  // swapped axes for 90/270-degree orientations.
+  const upright = await sharp(buf).rotate().toBuffer();
+  const meta = await sharp(upright).metadata();
   const imgW = meta.width ?? 0;
   const imgH = meta.height ?? 0;
   if (imgW < 2 || imgH < 2) return;
@@ -78,17 +87,18 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
     const width = Math.max(1, Math.min(imgW - left, Math.round(d.box.width * imgW)));
     const height = Math.max(1, Math.min(imgH - top, Math.round(d.box.height * imgH)));
     try {
-      const cropBuf = await sharp(buf)
-        .rotate()
+      const cropBuf = await sharp(upright)
         .extract({ left, top, width, height })
         .resize({ width: HEADSHOT_MAX, height: HEADSHOT_MAX, fit: 'inside', withoutEnlargement: true })
         .webp({ quality: 80 })
         .toBuffer();
-      const key = `${img.blobKey}__char${idx}.webp`;
-      const blob = await put(key, cropBuf, {
+      // Let blob mint a unique object (random suffix) and persist the actual
+      // returned pathname as the key, rather than a deterministic name that a
+      // re-detect would silently overwrite or that could collide across runs.
+      const blob = await put(`${img.blobKey}__char${idx}.webp`, cropBuf, {
         access: 'public',
         contentType: 'image/webp',
-        addRandomSuffix: false
+        addRandomSuffix: true
       });
       const vec = await embedder.embed(d.description);
       await insertCharacterCrop({
@@ -97,7 +107,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         description: d.description,
         box: { left, top, width, height },
         blobUrl: blob.url,
-        blobKey: key,
+        blobKey: blob.pathname,
         vec,
         provider: embedder.name,
         model: embedder.model

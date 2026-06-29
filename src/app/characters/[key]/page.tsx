@@ -41,6 +41,10 @@ export default async function CharacterPage({ params }: { params: { key: string 
     getClerk(character.clerkSlug).catch(() => null)
   ]);
   const visible = appearances.filter((a) => visibleIds.has(a.imageId));
+  // A character whose every appearance is now NSFW/archived for this viewer has
+  // no public footprint -- treat it as not found rather than surfacing a dossier
+  // that links to nothing (and leaks the character's existence past the gate).
+  if (visible.length === 0) notFound();
 
   return (
     <article className="mx-auto max-w-2xl space-y-8 pt-10 pb-16">

@@ -65,6 +65,20 @@ export async function getEvent(id: number): Promise<UniverseEvent | null> {
   return row ?? null;
 }
 
+// Highest event id of a given type in the log. Used by the character.census
+// reducer to ignore a stale census whose newer successor is already on file --
+// the authoritative "newest wins" check reads the append-only log, so it holds
+// even when the newest census left an empty roster (no projection rows to read).
+export async function latestEventIdOfType(type: string): Promise<number | null> {
+  const [row] = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(eq(events.type, type))
+    .orderBy(desc(events.id))
+    .limit(1);
+  return row ? Number(row.id) : null;
+}
+
 // All events in canonical (insert) order. The rebuild replays this slice
 // through the reducers; ordering by id makes the replay deterministic.
 export async function listAllEvents(): Promise<UniverseEvent[]> {

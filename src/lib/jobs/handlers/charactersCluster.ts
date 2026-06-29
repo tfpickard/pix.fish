@@ -61,29 +61,41 @@ export async function charactersClusterHandler(job: Job): Promise<void> {
   const stamp = payload.stamp ?? Math.floor(Date.now() % 2_147_483_647);
 
   const crops = await allCropVectors();
-  if (crops.length < 2) return;
 
+  // Do NOT early-return on a sparse/empty corpus. If characters were previously
+  // published and the crops have since dropped below the threshold (images
+  // deleted/hidden, or a forced re-detect found fewer figures), we still file an
+  // empty-roster census so the reducer clears the stale projection -- otherwise
+  // /characters would keep showing subjects that can no longer recur.
   const byCrop = new Map<number, CropVector>(crops.map((c) => [c.cropId, c]));
-  const edges = buildCropEdges(crops.map((c) => ({ cropId: c.cropId, vec: c.vec })));
-  const communities = detectCommunities(
-    crops.map((c) => c.cropId),
-    edges
-  );
-
-  const cfg = await loadAiConfig();
-  const keys = await loadUserProviderKeys(getSiteAdminId());
-  const provider = getProvider('captions', cfg, keys);
-  const clerks = await listClerks();
+  const communities =
+    crops.length >= 2
+      ? detectCommunities(
+          crops.map((c) => c.cropId),
+          buildCropEdges(crops.map((c) => ({ cropId: c.cropId, vec: c.vec })))
+        )
+      : [];
 
   // Build the roster, keeping only communities that recur across >= N distinct
   // specimens, ordered by smallest member crop id for stable keys.
   const kept = communities
     .map((c) => c.memberImageIds) // these are crop ids
     .filter((memberCropIds) => {
-      const imageIds = new Set(memberCropIds.map((id) => byCrop.get(id)?.imageId));
-      imageIds.delete(undefined as unknown as number);
+      // Count distinct specimens this community spans, collecting only defined
+      // numeric image ids (a crop id with no loaded vector is simply skipped).
+      const imageIds = new Set<number>();
+      for (const id of memberCropIds) {
+        const crop = byCrop.get(id);
+        if (crop) imageIds.add(crop.imageId);
+      }
       return imageIds.size >= minAppearances;
     });
+
+  // Only reach for the AI provider/clerk roster when there is something to name.
+  const cfg = kept.length > 0 ? await loadAiConfig() : null;
+  const keys = cfg ? await loadUserProviderKeys(getSiteAdminId()) : null;
+  const provider = cfg && keys ? getProvider('captions', cfg, keys) : null;
+  const clerks = kept.length > 0 ? await listClerks() : [];
 
   const rosterChars: CharacterCensusPayload['characters'] = [];
   for (let i = 0; i < kept.length; i++) {

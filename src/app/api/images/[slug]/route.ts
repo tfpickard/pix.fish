@@ -5,6 +5,7 @@ import { del } from '@vercel/blob';
 import { auth, canEdit, isSiteAdmin } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags, type Image } from '@/lib/db/schema';
+import { cropBlobKeysForImage } from '@/lib/db/queries/character-crops';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { lookupRedirect, pushSlugToHistory, uniquifySlug } from '@/lib/db/queries/slugs';
 import { slugify } from '@/lib/slug';
@@ -217,19 +218,28 @@ export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
-  // Delete the DB row first. Captions/descriptions/tags/embeddings cascade via
-  // FKs; slug_history is an array column on the same row. If blob cleanup below
-  // fails we'd rather have an orphaned blob than a dangling row that still
+  // Capture character-crop blob keys BEFORE the delete: character_crops rows
+  // cascade away with the image (FK onDelete cascade), taking their blob_key
+  // with them, so we must read them first to clean up the public crop headshots.
+  const cropKeys = await cropBlobKeysForImage(img.id).catch(() => []);
+
+  // Delete the DB row first. Captions/descriptions/tags/embeddings/crops cascade
+  // via FKs; slug_history is an array column on the same row. If blob cleanup
+  // below fails we'd rather have an orphaned blob than a dangling row that still
   // appears in the gallery.
   await db.delete(images).where(eq(images.id, img.id));
 
-  // Best-effort blob cleanup: the original plus any generated WebP derivatives,
-  // so deleting an image doesn't orphan its `.w*.webp` objects. `del` accepts
-  // pathnames or full URLs (we store the original's pathname in blob_key and the
-  // derivatives' URLs in `derivatives`) and a single call takes an array. The
-  // URLs come from the in-memory row captured before the delete above. A
-  // missing-blob 404 is fine; log and move on.
-  const blobTargets = [img.blobKey, ...(img.derivatives ?? []).map((d) => d.url)];
+  // Best-effort blob cleanup: the original, any generated WebP derivatives, and
+  // any character-crop headshots, so deleting an image doesn't orphan its blob
+  // objects (or leave crops of a now-private image publicly reachable). `del`
+  // accepts pathnames or full URLs (we store the original's pathname in blob_key,
+  // the derivatives' URLs in `derivatives`, and each crop's pathname in blob_key)
+  // and a single call takes an array. A missing-blob 404 is fine; log and move on.
+  const blobTargets = [
+    img.blobKey,
+    ...(img.derivatives ?? []).map((d) => d.url),
+    ...cropKeys
+  ];
   try {
     await del(blobTargets);
   } catch (err) {
