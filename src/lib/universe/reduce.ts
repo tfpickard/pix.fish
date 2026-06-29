@@ -11,7 +11,14 @@ import {
 import { getSpecimen, upsertSpecimen } from '@/lib/db/queries/specimens';
 import { coordsFor, type CoordsMap } from './coords';
 import {
+  deleteAllAppearances,
+  deleteAllCharacters,
+  insertAppearance,
+  upsertCharacter
+} from '@/lib/db/queries/characters';
+import {
   EVENT_TYPE,
+  type CharacterCensusPayload,
   type ClerkCommissionedPayload,
   type CrossReferenceFiledPayload,
   type DistrictIntakePayload,
@@ -161,8 +168,40 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
       break;
     }
 
+    case EVENT_TYPE.CharacterCensus: {
+      // A census defines the entire recurring-character roster. Clear and
+      // replace the projection so the newest census wins; on a full rebuild,
+      // replaying censuses in order leaves the last one in effect.
+      const p = ev.payload as unknown as CharacterCensusPayload;
+      await deleteAllAppearances();
+      await deleteAllCharacters();
+      for (const c of p.characters) {
+        await upsertCharacter({
+          key: c.key,
+          name: c.name,
+          dossier: c.dossier,
+          clerkSlug: c.clerkSlug,
+          canonicalCropUrl: c.canonicalCropUrl ?? null,
+          appearanceCount: c.appearances.length,
+          censusEventId: ev.id,
+          generation: 0,
+          createdAt: ev.createdAt
+        });
+        for (const a of c.appearances) {
+          await insertAppearance({
+            characterKey: c.key,
+            imageId: a.imageId,
+            cropUrl: a.cropUrl ?? null,
+            box: a.box ?? null,
+            createdAt: ev.createdAt
+          });
+        }
+      }
+      break;
+    }
+
     default:
-      // Unknown/reserved types are ignored by the Phase 1 reducer.
+      // Unknown/reserved types are ignored by the reducer.
       break;
   }
 }
