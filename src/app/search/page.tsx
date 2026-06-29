@@ -2,15 +2,16 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getEmbedder, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
-import { searchByVector } from '@/lib/db/queries/embeddings';
+import { searchByVector, searchVisibleLoreByVector } from '@/lib/db/queries/embeddings';
 import {
   DEFAULT_SEARCH_SIM_THRESHOLD,
   getGalleryDefaults
 } from '@/lib/db/queries/gallery-config';
-import { getImagesByIdsOrdered, hydrateImages } from '@/lib/db/queries/images';
+import { getImagesByIdsOrdered, hydrateImages, imageRefsByIds } from '@/lib/db/queries/images';
+import { getLoreFragmentBodies } from '@/lib/db/queries/lore-fragments';
 import { tagCloud } from '@/lib/db/queries/tags';
 import { getSiteAdminId } from '@/lib/db/queries/users';
-import { readNsfwMode } from '@/lib/nsfw';
+import { readNsfwMode, type NsfwMode } from '@/lib/nsfw';
 import { ImageGrid } from '@/components/image-grid';
 
 export const dynamic = 'force-dynamic';
@@ -92,15 +93,25 @@ export default async function SearchPage({ searchParams }: PageProps) {
   let totalScored = 0;
   let rankedCount = 0;
   let failed = false;
+  // Lore matches: images whose clerk-authored dossier (not just its caption)
+  // is close to the query. Shown in their own section so the archive's writing
+  // is searchable alongside the pictures.
+  type LoreResult = { imageId: number; slug: string; handle: string | null; excerpt: string };
+  let loreResults: LoreResult[] = [];
+  // Hoisted so the lore lookup (a separate, best-effort step) can reuse the
+  // query vector + visibility mode without re-embedding.
+  let vec: number[] | null = null;
+  let nsfwMode: NsfwMode = 'hide';
   try {
-    const [cfg, adminKeys, nsfwMode] = await Promise.all([
+    const [cfg, adminKeys, mode] = await Promise.all([
       loadAiConfig(),
       loadUserProviderKeys(getSiteAdminId()),
       readNsfwMode()
     ]);
+    nsfwMode = mode;
     const embedder = getEmbedder(cfg, adminKeys);
     if (!embedder) throw new Error('embedder unavailable');
-    const vec = await embedder.embed(q);
+    vec = await embedder.embed(q);
     const matches = await searchByVector(vec, { limit: 60, kind: 'caption', nsfwMode });
     totalScored = matches.length;
     // Cosine distance is in [0, 2] (0 = identical, 2 = opposite), so the
@@ -122,6 +133,48 @@ export default async function SearchPage({ searchParams }: PageProps) {
     failed = true;
   }
 
+  // Lore matches: images whose clerk-authored dossier matched. Best-effort and
+  // in its OWN try so a lore failure (e.g. the universe isn't migrated on this
+  // deployment) never hides the image results above. Visibility + per-specimen
+  // dedupe happen IN the query, so the limit isn't eaten by hidden/duplicate
+  // rows; here we only drop specimens already shown as image matches.
+  if (!failed && vec) {
+    try {
+      // Exclude specimens already shown as image matches in the query itself,
+      // so the cap is spent on dossier-only specimens (the interesting delta)
+      // rather than rows we would skip below.
+      const shownImageIds = new Set(hydrated.map((h) => h.id));
+      const loreMatches = await searchVisibleLoreByVector(vec, {
+        nsfwMode,
+        limit: 24,
+        excludeImageIds: [...shownImageIds]
+      });
+      const loreRanked = loreMatches
+        .map((m) => ({ ...m, similarity: Math.max(0, Math.min(1, 1 - m.distance)) }))
+        .filter((m) => m.similarity >= simThreshold);
+      if (loreRanked.length > 0) {
+        const [refs, bodies] = await Promise.all([
+          imageRefsByIds([...new Set(loreRanked.map((m) => m.specimenImageId))]),
+          getLoreFragmentBodies([...new Set(loreRanked.map((m) => m.loreFragmentId))])
+        ]);
+        for (const m of loreRanked) {
+          if (shownImageIds.has(m.specimenImageId)) continue;
+          const ref = refs.get(m.specimenImageId);
+          if (!ref) continue;
+          const body = (bodies.get(m.loreFragmentId) ?? '').trim().replace(/\s+/g, ' ');
+          loreResults.push({
+            imageId: m.specimenImageId,
+            slug: ref.slug,
+            handle: ref.handle,
+            excerpt: body.length > 220 ? `${body.slice(0, 219)}…` : body
+          });
+        }
+      }
+    } catch (err) {
+      console.error('lore search failed (best-effort, image results kept)', err);
+    }
+  }
+
   // "too far to bother" counts only matches dropped by the threshold,
   // not rows that were missing during hydration (deletes, etc).
   const trimmed = totalScored - rankedCount;
@@ -133,12 +186,40 @@ export default async function SearchPage({ searchParams }: PageProps) {
         <p className="font-mono text-xs text-ink-500">
           {failed
             ? 'search is currently unavailable'
-            : hydrated.length === 0
+            : hydrated.length === 0 && loreResults.length === 0
               ? `nothing close enough for "${q}"`
-              : `ranked by closeness -- ${hydrated.length} result${hydrated.length === 1 ? '' : 's'} for "${q}"${trimmed > 0 ? ` (+${trimmed} too far to bother)` : ''}`}
+              : hydrated.length === 0
+                ? `dossier matches for "${q}"`
+                : `ranked by closeness -- ${hydrated.length} result${hydrated.length === 1 ? '' : 's'} for "${q}"${trimmed > 0 ? ` (+${trimmed} too far to bother)` : ''}`}
         </p>
       </section>
-      {!failed ? <ImageGrid images={hydrated} similarities={similarities} /> : null}
+      {/* Only render the grid when there are image matches; an empty grid would
+          show "no pictures here yet" above valid dossier results. */}
+      {!failed && hydrated.length > 0 ? (
+        <ImageGrid images={hydrated} similarities={similarities} />
+      ) : null}
+
+      {!failed && loreResults.length > 0 ? (
+        <section className="space-y-3 border-t border-ink-800 pt-6">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">
+            from the dossiers
+          </h2>
+          <ul className="space-y-3">
+            {loreResults.map((r) => (
+              <li key={r.imageId} className="space-y-1 border-b border-ink-800/60 pb-3">
+                <Link
+                  href={r.handle ? `/u/${r.handle}/${r.slug}` : `/${r.slug}`}
+                  prefetch={false}
+                  className="font-mono text-xs text-ink-300 underline-offset-2 hover:text-ink-100 hover:underline"
+                >
+                  {r.slug}
+                </Link>
+                <p className="prose-caption text-sm leading-relaxed text-ink-300">{r.excerpt}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }

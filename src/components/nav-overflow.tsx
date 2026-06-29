@@ -56,6 +56,7 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
     { href: '/daily', label: 'daily' },
     { href: '/taste', label: 'taste' },
     { href: '/drift', label: 'drift' },
+    { href: '/chronicle', label: 'chronicle' },
     { href: '/search', label: 'search' },
     { href: '/about', label: 'about' },
     ...(signedIn ? [{ href: '/admin/upload', label: 'upload' }] : []),
