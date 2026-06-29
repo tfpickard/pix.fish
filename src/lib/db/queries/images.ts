@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
 import {
@@ -686,6 +686,17 @@ export async function isImageArchived(imageId: number): Promise<boolean> {
     .where(eq(images.id, imageId))
     .limit(1);
   return Boolean(row?.archivedAt);
+}
+
+// Image ids eligible for character detection: publicly visible (not NSFW, not
+// archived). The detect admin route enqueues one job per id.
+export async function listDetectableImageIds(): Promise<number[]> {
+  const rows = await db
+    .select({ id: images.id })
+    .from(images)
+    .where(and(eq(images.isNsfw, false), isNull(images.archivedAt)))
+    .orderBy(asc(images.id));
+  return rows.map((r) => r.id);
 }
 
 export type ImageRef = { slug: string; handle: string; isNsfw: boolean; archived: boolean };

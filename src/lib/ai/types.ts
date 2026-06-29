@@ -24,6 +24,11 @@ export interface AIProvider {
   // page copy, etc.). Optional because an embeddings-only provider instance
   // doesn't need it.
   text?(prompt: string): Promise<string>;
+  // Raw vision call: send an image + prompt, return the model's text verbatim
+  // (no shape assumptions). Used by callers that want their own structured
+  // output, e.g. character detection asking for bounding-box JSON. Parsing is
+  // the caller's job (see parseDetectionsJson).
+  vision?(image: Buffer, mime: string, prompt: string, imageUrl?: string): Promise<string>;
   // Optional. Embedding providers expose a distinct model from the vision
   // model, so callers should read `embedModel` when persisting a provenance
   // stamp on an embedding row.
@@ -78,6 +83,55 @@ export function parseTagsJson(raw: string): TagsAndNsfw {
     tags: [...byTag.values()],
     nsfw: obj?.nsfw === true
   };
+}
+
+// A detected figure in an image: a short label, a rich visual description
+// (embedded for clustering), and a NORMALIZED bounding box (each in 0..1, so
+// it is resolution-independent and gets converted to pixels at crop time).
+export type Detection = {
+  label: string;
+  description: string;
+  box: { left: number; top: number; width: number; height: number };
+};
+
+function clamp01(n: number): number {
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}
+
+// Parse the character-detection response: `{ figures: [{label, description,
+// box: {left, top, width, height}}] }`, boxes normalized 0..1. Tolerates fenced
+// JSON and drops malformed/out-of-range entries rather than throwing.
+export function parseDetectionsJson(raw: string): Detection[] {
+  const obj = tryParseJson(raw);
+  const list = Array.isArray(obj?.figures)
+    ? obj.figures
+    : Array.isArray(obj?.detections)
+      ? obj.detections
+      : Array.isArray(obj)
+        ? obj
+        : [];
+  const out: Detection[] = [];
+  for (const entry of list) {
+    if (!entry || typeof entry.label !== 'string' || typeof entry.description !== 'string') continue;
+    const b = entry.box ?? entry.bbox ?? entry.boundingBox;
+    if (!b) continue;
+    const left = clamp01(Number(b.left ?? b.x));
+    const top = clamp01(Number(b.top ?? b.y));
+    let width = Number(b.width ?? b.w);
+    let height = Number(b.height ?? b.h);
+    if (![left, top, width, height].every((n) => Number.isFinite(n))) continue;
+    // Keep the box inside the image.
+    width = clamp01(width);
+    height = clamp01(height);
+    if (left + width > 1) width = 1 - left;
+    if (top + height > 1) height = 1 - top;
+    if (width <= 0 || height <= 0) continue;
+    const label = entry.label.trim();
+    const description = entry.description.trim();
+    if (!label || !description) continue;
+    out.push({ label, description, box: { left, top, width, height } });
+  }
+  return out;
 }
 
 function tryParseJson(raw: string): any {

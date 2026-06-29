@@ -74,6 +74,10 @@ export function createOpenAIProvider(
       return parseTagsJson(text);
     },
 
+    async vision(image, mime, prompt, imageUrl) {
+      return callVision(apiKey, visionModel, image, mime, prompt, imageUrl);
+    },
+
     async text(prompt: string): Promise<string> {
       const res = await getClient(apiKey).chat.completions.create({
         model: visionModel,
