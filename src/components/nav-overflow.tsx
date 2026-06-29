@@ -17,11 +17,10 @@ type Props = {
   authed: boolean;
 };
 
-// Below sm, the navbar's link row overflows the viewport (gallery, about,
-// upload, /u/handle, admin, sign in/out, NSFW, share, theme). This component
-// is the inline row at md+ and a popover-from-hamburger below it. The
-// individual link components are duplicated rather than abstracted so the
-// inline row can stay light and the popover can adopt a different layout.
+// The whole nav lives behind a hamburger at every width: the header stays just
+// logo + search + (share/theme) + menu, and all the links (gallery, about,
+// upload, /u/handle, admin, sign in/out, NSFW) live in a slide-down popover.
+// ShareButton + ThemeToggle stay inline since they're already icon-only.
 export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
@@ -58,6 +57,7 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
     { href: '/taste', label: 'taste' },
     { href: '/drift', label: 'drift' },
     { href: '/fuse', label: 'fuse' },
+    { href: '/chronicle', label: 'chronicle' },
     { href: '/search', label: 'search' },
     { href: '/about', label: 'about' },
     ...(signedIn ? [{ href: '/admin/upload', label: 'upload' }] : []),
@@ -71,26 +71,10 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
 
   return (
     <>
-      {/* Inline at md+: same flat row as before. */}
-      <nav className="hidden items-center gap-4 font-mono text-xs text-ink-400 md:flex">
-        {/* prefetch={false}: these targets are `force-dynamic`, so the whole
-            row sitting in the viewport at the top of every page would otherwise
-            re-prefetch on a loop under Next 14.2's `staleTimes.dynamic: 0`
-            default -- that was the `--` GET / request storm. See nav-bar.tsx. */}
-        {items.map((it) => (
-          <Link key={it.href} href={it.href} prefetch={false} className="transition-colors hover:text-ink-100">
-            {it.label}
-          </Link>
-        ))}
-        <NsfwToggle />
-        <ShareButton />
-        <ThemeToggle />
-      </nav>
-
-      {/* Below md: hamburger + slide-down popover. ShareButton + ThemeToggle
-          stay in the bar since they're already icon-only. NSFW moves into
-          the popover so the bar stays under viewport width. */}
-      <div className="flex items-center gap-3 md:hidden">
+      {/* Hamburger + slide-down popover at every width. ShareButton +
+          ThemeToggle stay inline since they're icon-only; everything else
+          (links + NSFW) lives in the popover. */}
+      <div className="ml-auto flex items-center gap-3">
         <ShareButton />
         <ThemeToggle />
         <button
@@ -108,7 +92,7 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
       {open ? (
         <div
           id="nav-overflow-panel"
-          className="absolute inset-x-0 top-14 z-30 border-b border-ink-800/60 bg-ink-950/95 px-4 py-3 backdrop-blur md:hidden"
+          className="absolute inset-x-0 top-14 z-30 border-b border-ink-800/60 bg-ink-950/95 px-4 py-3 backdrop-blur"
         >
           <ul className="flex flex-col gap-3 font-mono text-sm text-ink-300">
             {items.map((it) => (

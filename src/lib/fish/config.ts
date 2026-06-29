@@ -35,6 +35,22 @@ export interface FishMorphConfig {
   popMean: number;
   // Immigration weight (0 disables; 0.25 is the default rate).
   immigrationWeight: number;
+  // Life-event cadence, in SECONDS. The clock fires on a uniform draw in
+  // [eventIntervalMin, eventIntervalMax]; lower => a livelier tank.
+  eventIntervalMin: number;
+  eventIntervalMax: number;
+  // Relative weight of a fish eating a much smaller neighbor (0 disables).
+  predationWeight: number;
+  // Relative weight of two close fish fighting (0 disables).
+  fightWeight: number;
+  // Probability (0..1) a fight escalates and kills the loser (guarded so the
+  // tank never empties).
+  fightLethalChance: number;
+  // Relative weight of a fish dying of natural causes (0 disables).
+  deathWeight: number;
+  // Probability (0..1) a death (natural or lethal fight) is a burst/explode
+  // rather than a slow sink-and-fade.
+  explodeRatio: number;
 }
 
 export interface FishParamSpec {
@@ -185,6 +201,79 @@ export const FISH_PARAMS: FishParamSpec[] = [
     max: 2,
     step: 0.05,
     hint: 'relative weight of new fish swimming in from off-screen; 0 disables'
+  },
+  // Life-event cadence + interaction weights
+  {
+    key: 'eventIntervalMin',
+    field: 'event_interval_min',
+    label: 'event gap min (s)',
+    default: 25,
+    min: 3,
+    max: 600,
+    step: 1,
+    integer: true,
+    hint: 'shortest wait between life events -- lower means a livelier tank'
+  },
+  {
+    key: 'eventIntervalMax',
+    field: 'event_interval_max',
+    label: 'event gap max (s)',
+    default: 70,
+    min: 5,
+    max: 1200,
+    step: 1,
+    integer: true,
+    hint: 'longest wait between life events'
+  },
+  {
+    key: 'predationWeight',
+    field: 'predation_weight',
+    label: 'eat',
+    default: 1,
+    min: 0,
+    max: 4,
+    step: 0.1,
+    hint: 'relative weight of a big fish eating a much smaller neighbor; 0 disables'
+  },
+  {
+    key: 'fightWeight',
+    field: 'fight_weight',
+    label: 'fight',
+    default: 0.8,
+    min: 0,
+    max: 4,
+    step: 0.1,
+    hint: 'relative weight of two close fish scuffling; 0 disables'
+  },
+  {
+    key: 'fightLethalChance',
+    field: 'fight_lethal_chance',
+    label: 'fight lethality',
+    default: 0.25,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    hint: 'chance a fight kills the loser (never below min fish); 0 = always survivable'
+  },
+  {
+    key: 'deathWeight',
+    field: 'death_weight',
+    label: 'natural death',
+    default: 0.5,
+    min: 0,
+    max: 4,
+    step: 0.1,
+    hint: 'relative weight of a fish dying of old age (never below min fish); 0 disables'
+  },
+  {
+    key: 'explodeRatio',
+    field: 'explode_ratio',
+    label: 'explode vs sink',
+    default: 0.5,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    hint: 'of deaths, the fraction that burst/explode rather than sink and fade'
   }
 ];
 

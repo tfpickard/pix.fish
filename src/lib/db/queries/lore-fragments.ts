@@ -82,6 +82,19 @@ export async function countImagesWithLoreFragments(): Promise<number> {
   return Number(res.rows?.[0]?.n ?? 0);
 }
 
+// Fragment bodies by id, for rendering search excerpts. Returns a Map so the
+// caller can preserve its own (distance-ranked) ordering.
+export async function getLoreFragmentBodies(ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({ id: loreFragments.id, body: loreFragments.body })
+    .from(loreFragments)
+    .where(inArray(loreFragments.id, ids));
+  for (const r of rows) out.set(r.id, r.body);
+  return out;
+}
+
 export type LoreSummary = { imageId: number; fragments: number };
 
 // Fragment counts per image for a set of ids. Used by the map/manifold lore
