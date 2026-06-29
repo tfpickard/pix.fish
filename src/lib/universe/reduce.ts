@@ -9,6 +9,7 @@ import {
   upsertLoreFragment
 } from '@/lib/db/queries/lore-fragments';
 import { latestEventIdOfType } from '@/lib/db/queries/events';
+import { existingImageIds } from '@/lib/db/queries/images';
 import { getSpecimen, upsertSpecimen } from '@/lib/db/queries/specimens';
 import { coordsFor, type CoordsMap } from './coords';
 import {
@@ -185,19 +186,24 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
       // canon if the process died mid-apply; this way the projection is never
       // empty and a re-apply of the same census is idempotent.
       const p = ev.payload as unknown as CharacterCensusPayload;
+      // Drop appearances whose source image was hard-deleted after this census
+      // was filed: the census payload is immutable, but the image FK is not, so
+      // a blind replay would trip the FK and abort the rebuild. Filter once.
+      const live = await existingImageIds(p.characters.flatMap((c) => c.appearances.map((a) => a.imageId)));
       for (const c of p.characters) {
+        const appearances = c.appearances.filter((a) => live.has(a.imageId));
         await upsertCharacter({
           key: c.key,
           name: c.name,
           dossier: c.dossier,
           clerkSlug: c.clerkSlug,
           canonicalCropUrl: c.canonicalCropUrl ?? null,
-          appearanceCount: c.appearances.length,
+          appearanceCount: appearances.length,
           censusEventId: ev.id,
           generation: 0,
           createdAt: ev.createdAt
         });
-        for (const a of c.appearances) {
+        for (const a of appearances) {
           await insertAppearance({
             characterKey: c.key,
             imageId: a.imageId,
@@ -209,7 +215,7 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
         // Drop stale appearances this character shed since the prior census.
         await pruneAppearancesForCharacter(
           c.key,
-          c.appearances.map((a) => a.imageId)
+          appearances.map((a) => a.imageId)
         );
       }
       // Drop characters dropped from the roster entirely (and their appearances).

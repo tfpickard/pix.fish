@@ -149,5 +149,12 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
     }
   }
 
-  await markDetected(imageId); // examined; subsequent non-force runs skip it
+  // Figures were detected but EVERY one failed to persist (transient embed/blob/
+  // DB outage). Do NOT stamp the marker -- that would make non-force runs skip
+  // this image forever. Throw so the queue retries with backoff.
+  if (idx === 0) {
+    throw new Error(`characters.detect: all ${detections.length} figure(s) failed to persist for image ${imageId}`);
+  }
+
+  await markDetected(imageId); // at least one crop persisted; non-force runs skip it
 }

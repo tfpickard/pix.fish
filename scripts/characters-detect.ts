@@ -7,9 +7,10 @@
  * idempotent per image (skips images that already have crops unless --force);
  * clustering files a new census each run (newest wins).
  *
- *   bun scripts/characters-detect.ts            # detect new + cluster
- *   bun scripts/characters-detect.ts --force    # re-detect all + cluster
+ *   bun scripts/characters-detect.ts                 # detect new + cluster
+ *   bun scripts/characters-detect.ts --force         # re-detect all + cluster
  *   bun scripts/characters-detect.ts --cluster-only
+ *   bun scripts/characters-detect.ts --allow-partial # cluster even if some detects failed
  */
 import { listDetectableImageIds } from '../src/lib/db/queries/images';
 import type { Job } from '../src/lib/db/schema';
@@ -23,6 +24,7 @@ function asJob(payload: Record<string, unknown>): Job {
 async function main() {
   const force = process.argv.includes('--force');
   const clusterOnly = process.argv.includes('--cluster-only');
+  const allowPartial = process.argv.includes('--allow-partial');
 
   if (!clusterOnly) {
     const ids = await listDetectableImageIds();
@@ -40,6 +42,16 @@ async function main() {
       }
     }
     console.log(`detect: ${ok} ok, ${fail} failed`);
+
+    // The census is newest-wins, so clustering after a partial detect run would
+    // replace the canon with a roster built from incomplete evidence. Abort
+    // unless the operator explicitly opted into a partial census.
+    if (fail > 0 && !allowPartial) {
+      console.error(
+        `\naborting before clustering: ${fail} detection(s) failed. Re-run to retry, or pass --allow-partial to cluster anyway.`
+      );
+      process.exit(1);
+    }
   }
 
   console.log('clustering crops into recurring characters...');

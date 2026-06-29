@@ -699,6 +699,19 @@ export async function listDetectableImageIds(): Promise<number[]> {
   return rows.map((r) => r.id);
 }
 
+// Which of the given image ids still exist. The character.census reducer uses
+// this to skip appearances whose source image was hard-deleted after the census
+// was filed -- otherwise replaying the (append-only, immutable) census during a
+// rebuild would trip the image FK and abort the whole rebuild.
+export async function existingImageIds(ids: number[]): Promise<Set<number>> {
+  const out = new Set<number>();
+  const unique = [...new Set(ids.filter((n) => Number.isInteger(n)))];
+  if (unique.length === 0) return out;
+  const rows = await db.select({ id: images.id }).from(images).where(inArray(images.id, unique));
+  for (const r of rows) out.add(r.id);
+  return out;
+}
+
 export type ImageRef = { slug: string; handle: string; isNsfw: boolean; archived: boolean };
 
 // Slim per-image refs (slug + owner handle + NSFW + archived flags) for a set
