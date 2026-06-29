@@ -917,6 +917,73 @@ export const loreFragments = pgTable(
   })
 );
 
+// ----------------------------------------------------------------------------
+// Universe (Phase U3): recurring characters ("persons of interest")
+// ----------------------------------------------------------------------------
+//
+// A detected figure cropped from an image, with a vision-LLM description and
+// its 1536-d text embedding (same space as captions/lore). This is EVIDENCE /
+// working data, produced by the characters.detect job -- NOT a projection. The
+// canonical interpretation (which crops are the same character) is decided by
+// the clustering census and lives in the projection tables below.
+export const characterCrops = pgTable(
+  'character_crops',
+  {
+    id: serial('id').primaryKey(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    label: text('label').notNull(), // the model's short per-image label
+    description: text('description').notNull(), // rich visual description (embedded)
+    box: jsonb('box').$type<{ left: number; top: number; width: number; height: number }>().notNull(),
+    blobUrl: text('blob_url').notNull(),
+    blobKey: text('blob_key').notNull(),
+    vec: vector('vec', { dimensions: 1536 }).notNull(),
+    provider: text('provider'),
+    model: text('model'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    imageIdx: index('character_crops_image_idx').on(t.imageId)
+  })
+);
+
+// PROJECTION. One row per recurring character, materialized from the latest
+// character.census event (newest census wins). Identity is interpretation:
+// re-clustering supersedes via a new census, never by mutating canon facts.
+export const characters = pgTable('characters', {
+  key: text('key').primaryKey(), // stable per-census slot, e.g. 'character-3'
+  name: text('name').notNull(),
+  dossier: text('dossier').notNull(),
+  clerkSlug: text('clerk_slug').notNull(),
+  canonicalCropUrl: text('canonical_crop_url'),
+  appearanceCount: integer('appearance_count').notNull().default(0),
+  censusEventId: bigint('census_event_id', { mode: 'number' }).notNull(),
+  generation: integer('generation').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// PROJECTION. The character<->specimen cross-references: which images each
+// character appears in, with the per-image crop. Materialized from the census.
+export const characterAppearances = pgTable(
+  'character_appearances',
+  {
+    id: serial('id').primaryKey(),
+    characterKey: text('character_key').notNull(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    cropUrl: text('crop_url'),
+    box: jsonb('box').$type<{ left: number; top: number; width: number; height: number } | null>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    characterIdx: index('character_appearances_character_idx').on(t.characterKey),
+    imageIdx: index('character_appearances_image_idx').on(t.imageId),
+    charImageUniq: uniqueIndex('character_appearances_char_image_uniq').on(t.characterKey, t.imageId)
+  })
+);
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   images: many(images),
@@ -1044,6 +1111,13 @@ export type CrossReference = typeof crossReferences.$inferSelect;
 export type NewCrossReference = typeof crossReferences.$inferInsert;
 export type LoreFragment = typeof loreFragments.$inferSelect;
 export type NewLoreFragment = typeof loreFragments.$inferInsert;
+// Universe (Phase U3) character types
+export type CharacterCrop = typeof characterCrops.$inferSelect;
+export type NewCharacterCrop = typeof characterCrops.$inferInsert;
+export type Character = typeof characters.$inferSelect;
+export type NewCharacter = typeof characters.$inferInsert;
+export type CharacterAppearance = typeof characterAppearances.$inferSelect;
+export type NewCharacterAppearance = typeof characterAppearances.$inferInsert;
 
 // Taste (cycle: taste-vector). Each round of the /taste this-or-that is a
 // pairwise vote -- the picked image beat the passed-over one. Aggregated, these
