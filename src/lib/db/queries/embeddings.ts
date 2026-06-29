@@ -132,7 +132,7 @@ export async function searchLoreByVector(
 // results). Archived specimens are always excluded; nsfwMode gates the rest.
 export async function searchVisibleLoreByVector(
   vec: number[],
-  opts: { limit?: number; nsfwMode?: NsfwMode } = {}
+  opts: { limit?: number; nsfwMode?: NsfwMode; excludeImageIds?: number[] } = {}
 ): Promise<LoreVectorMatch[]> {
   assertVector(vec);
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 24), 1), 100);
@@ -142,6 +142,15 @@ export async function searchVisibleLoreByVector(
     nsfwMode === 'only' ? sql`AND i.is_nsfw = true` :
     nsfwMode === 'include' ? sql`` :
     sql`AND i.is_nsfw = false`;
+  // Exclude specimens already surfaced as image matches IN the query, so the
+  // limit is spent on dossier-only specimens rather than rows the caller would
+  // skip anyway (which could otherwise leave the section empty). Values are
+  // trusted DB integers; filter to be safe before inlining.
+  const exclude = (opts.excludeImageIds ?? []).filter((n) => Number.isInteger(n));
+  const excludeClause =
+    exclude.length > 0
+      ? sql`AND lf.specimen_image_id <> ALL(ARRAY[${sql.raw(exclude.join(','))}]::int[])`
+      : sql``;
   const res = await db.execute<{
     lore_fragment_id: number;
     specimen_image_id: number;
@@ -153,7 +162,7 @@ export async function searchVisibleLoreByVector(
       FROM embeddings e
       JOIN lore_fragments lf ON lf.id = e.lore_fragment_id
       JOIN images i ON i.id = lf.specimen_image_id
-      WHERE e.subject_type = 'lore' AND i.archived_at IS NULL ${nsfwClause}
+      WHERE e.subject_type = 'lore' AND i.archived_at IS NULL ${nsfwClause} ${excludeClause}
       ORDER BY lf.specimen_image_id, distance ASC
     ) sub
     ORDER BY distance ASC

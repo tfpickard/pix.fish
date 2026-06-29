@@ -140,12 +140,19 @@ export default async function SearchPage({ searchParams }: PageProps) {
   // rows; here we only drop specimens already shown as image matches.
   if (!failed && vec) {
     try {
-      const loreMatches = await searchVisibleLoreByVector(vec, { nsfwMode, limit: 24 });
+      // Exclude specimens already shown as image matches in the query itself,
+      // so the cap is spent on dossier-only specimens (the interesting delta)
+      // rather than rows we would skip below.
+      const shownImageIds = new Set(hydrated.map((h) => h.id));
+      const loreMatches = await searchVisibleLoreByVector(vec, {
+        nsfwMode,
+        limit: 24,
+        excludeImageIds: [...shownImageIds]
+      });
       const loreRanked = loreMatches
         .map((m) => ({ ...m, similarity: Math.max(0, Math.min(1, 1 - m.distance)) }))
         .filter((m) => m.similarity >= simThreshold);
       if (loreRanked.length > 0) {
-        const shownImageIds = new Set(hydrated.map((h) => h.id));
         const [refs, bodies] = await Promise.all([
           imageRefsByIds([...new Set(loreRanked.map((m) => m.specimenImageId))]),
           getLoreFragmentBodies([...new Set(loreRanked.map((m) => m.loreFragmentId))])
