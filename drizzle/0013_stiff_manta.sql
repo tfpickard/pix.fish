@@ -1,0 +1,1 @@
+ALTER TABLE "images" ADD COLUMN "characters_detected_at" timestamp with time zone;

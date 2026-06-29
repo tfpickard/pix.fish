@@ -82,7 +82,13 @@ export const images = pgTable(
     // offline by scripts/generate-derivatives.ts. Null == not yet processed;
     // consumers fall back to the original blobUrl. Additive and best-effort: the
     // grid serves the small derivative so it never ships the full-res original.
-    derivatives: jsonb('derivatives').$type<ImageDerivatives>()
+    derivatives: jsonb('derivatives').$type<ImageDerivatives>(),
+    // Phase 3 character detection: stamped when characters.detect has examined
+    // this image, INCLUDING when it found no figures. Null == never examined.
+    // Lets non-force detect runs skip figureless images (which produce no crop
+    // rows) instead of re-billing a vision call every pass; --force re-detects
+    // regardless.
+    charactersDetectedAt: timestamp('characters_detected_at', { withTimezone: true })
   },
   (t) => ({
     uploadedAtIdx: index('images_uploaded_at_idx').on(t.uploadedAt),

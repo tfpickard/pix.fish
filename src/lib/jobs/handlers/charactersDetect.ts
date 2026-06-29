@@ -30,6 +30,12 @@ async function clearCrops(imageId: number): Promise<void> {
   await deleteCropsForImage(imageId);
 }
 
+// Mark this image as examined (even when no figures were found) so non-force
+// runs don't re-detect it.
+async function markDetected(imageId: number): Promise<void> {
+  await db.update(images).set({ charactersDetectedAt: new Date() }).where(eq(images.id, imageId));
+}
+
 // Detect the figures in one image, crop a headshot of each, embed its
 // description, and store as character_crops evidence. Skips NSFW/archived
 // images (their characters would leak through the public character pages).
@@ -44,7 +50,8 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
       blobKey: images.blobKey,
       mime: images.mime,
       isNsfw: images.isNsfw,
-      archivedAt: images.archivedAt
+      archivedAt: images.archivedAt,
+      charactersDetectedAt: images.charactersDetectedAt
     })
     .from(images)
     .where(eq(images.id, imageId))
@@ -52,7 +59,11 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   if (!img) return;
   if (img.archivedAt || img.isNsfw) return; // out of public circulation / hidden
 
-  if (!force && (await countCropsForImage(imageId)) > 0) return; // already detected
+  // Already examined? Skip unless forced. The timestamp marker (set even when no
+  // figures were found) means a figureless image isn't re-billed a vision call
+  // on every later detect-all; the crop-count check keeps pre-marker rows from
+  // being needlessly re-detected once after the column was added.
+  if (!force && (img.charactersDetectedAt != null || (await countCropsForImage(imageId)) > 0)) return;
 
   const cfg = await loadAiConfig();
   // BYO keys: detection is a per-image vision+embed call, so it bills to the
@@ -76,6 +87,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   if (detections.length === 0) {
     // Re-run with force should clear stale crops even when nothing is found now.
     if (force) await clearCrops(imageId);
+    await markDetected(imageId); // figureless, but examined -- don't re-bill next pass
     return;
   }
 
@@ -136,4 +148,6 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
       // best-effort per figure; continue with the rest
     }
   }
+
+  await markDetected(imageId); // examined; subsequent non-force runs skip it
 }
