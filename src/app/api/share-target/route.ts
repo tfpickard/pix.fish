@@ -13,7 +13,7 @@ export async function POST(req: Request) {
   const session = await auth();
   if (!isSiteAdmin(session)) {
     // Bounce to login so a signed-out share intent doesn't silently drop.
-    return NextResponse.redirect(new URL('/api/auth/signin?callbackUrl=/admin/upload', req.url), 303);
+    return NextResponse.redirect(new URL('/signin?callbackUrl=/admin/upload', req.url), 303);
   }
 
   let incoming: FormData;

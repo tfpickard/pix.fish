@@ -22,8 +22,11 @@ import type { ImageDerivatives } from '@/lib/images/derivatives';
 // Phase 1 tables
 // ----------------------------------------------------------------------------
 
-// Users. One row per signed-in identity. PK is provider-scoped:
-// for GitHub it's the numeric `profile.id` as text. `handle` is the
+// Users. One row per signed-in identity. PK is provider-scoped so identities
+// from different providers can never collide: GitHub keeps its bare numeric
+// `profile.id` as text (preserving existing rows + the OWNER_GITHUB_ID match),
+// while newer providers are namespaced -- `google:<sub>`, `apple:<sub>`, and
+// email/password users key on `email:<lowercased-email>`. `handle` is the
 // public, URL-safe identifier used in /u/<handle>/<slug>; collisions get a
 // numeric suffix at first sign-in. `role` gates site-admin features:
 // the bootstrap user (`OWNER_GITHUB_ID`) is upserted as 'admin' on first run.
@@ -35,6 +38,10 @@ export const users = pgTable('users', {
   email: text('email'),
   provider: text('provider').notNull().default('github'),
   role: text('role').notNull().default('user'), // 'user' | 'admin'
+  // Only set for email/password ('email' provider) users: scrypt digest in the
+  // `scrypt$<salt-hex>$<hash-hex>` format written by src/lib/password.ts. Null
+  // for OAuth identities (GitHub/Google/Apple), which have no local password.
+  passwordHash: text('password_hash'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });

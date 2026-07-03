@@ -48,7 +48,7 @@ const ADMIN_NAV = [
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
-  if (!session) redirect('/api/auth/signin?callbackUrl=/admin/upload');
+  if (!session) redirect('/signin?callbackUrl=/admin/upload');
   // Phase F: layout no longer redirects non-admins. /admin/upload and
   // /admin/keys are per-user; the platform-config pages self-gate. Admin
   // links are hidden in the sidebar for non-admins so they aren't tempted
