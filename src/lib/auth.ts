@@ -72,6 +72,17 @@ function emailLocalPart(email: string | null | undefined): string {
   return (email ?? '').split('@')[0] || 'user';
 }
 
+// Postgres unique-constraint violation (SQLSTATE 23505). Plain error-code check
+// -- no node:crypto -- so it stays safe in this Edge-reachable module.
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    'code' in err &&
+    (err as { code?: unknown }).code === '23505'
+  );
+}
+
 // Build the normalized identity from whichever sign-in shape we got. Returns
 // null for a provider/profile combo we don't recognize (sign-in then proceeds
 // on the token as-is).
@@ -236,22 +247,37 @@ const config: NextAuthConfig = {
 
       try {
         const existing = await getUserById(identity.id);
-        const handle = existing?.handle ?? (await resolveHandle(identity.handleSeed, identity.id));
         const role: 'user' | 'admin' = existing?.role === 'admin' ? 'admin' : fallbackRole;
-        await upsertUser({
-          id: identity.id,
-          handle,
-          // Apple (and any provider) may omit name/email/avatar on sign-ins
-          // after the first, sending null. Fall back to the stored values so a
-          // later login doesn't wipe the profile captured on first sign-in.
-          displayName: identity.displayName ?? existing?.displayName ?? null,
-          email: identity.email ?? existing?.email ?? null,
-          avatarUrl: identity.avatarUrl ?? existing?.avatarUrl ?? null,
-          provider: identity.provider,
-          role
-        });
-        t.handle = handle;
-        t.role = role;
+        // Existing users keep their handle; a new user resolves a fresh one.
+        // Two new users whose seeds slugify the same can resolve the same free
+        // handle concurrently, so the loser hits users.handle unique (23505) in
+        // the insert. Retry with a re-resolved handle (mirrors /api/register) so
+        // we never mint a session with no user row -- which would fail the
+        // images.ownerId FK on the next upload.
+        let handle = existing?.handle ?? null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (!handle) handle = await resolveHandle(identity.handleSeed, identity.id);
+          try {
+            await upsertUser({
+              id: identity.id,
+              handle,
+              // Apple (and any provider) may omit name/email/avatar on sign-ins
+              // after the first, sending null. Fall back to the stored values so
+              // a later login doesn't wipe the profile captured on first sign-in.
+              displayName: identity.displayName ?? existing?.displayName ?? null,
+              email: identity.email ?? existing?.email ?? null,
+              avatarUrl: identity.avatarUrl ?? existing?.avatarUrl ?? null,
+              provider: identity.provider,
+              role
+            });
+            t.handle = handle;
+            t.role = role;
+            break;
+          } catch (err) {
+            if (!isUniqueViolation(err)) throw err; // real failure -> outer catch
+            handle = null; // handle race -- re-resolve on the next iteration
+          }
+        }
       } catch (err) {
         // Sign-in proceeds with the deterministic role + no handle. The
         // next successful sign-in repairs the JWT once the DB recovers.
