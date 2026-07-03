@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { users, type User, type NewUser } from '../schema';
 
@@ -20,6 +20,20 @@ export async function getUserById(id: string): Promise<User | null> {
 
 export async function getUserByHandle(handle: string): Promise<User | null> {
   const [row] = await db.select().from(users).where(eq(users.handle, handle)).limit(1);
+  return row ?? null;
+}
+
+// Look up an email/password user by address (case-insensitive). The email id is
+// opaque (`email:<uuid>`) and no longer derived from the address, so the
+// credentials sign-in and the registration duplicate-check resolve users this
+// way. Scoped to provider='email' so it never returns an OAuth row that happens
+// to share the address -- those have no password and must not be login targets.
+export async function getEmailUserByEmail(email: string): Promise<User | null> {
+  const [row] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.provider, 'email'), sql`lower(${users.email}) = ${email.toLowerCase()}`))
+    .limit(1);
   return row ?? null;
 }
 

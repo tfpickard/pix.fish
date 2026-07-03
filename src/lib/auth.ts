@@ -4,12 +4,14 @@ import GitHub from 'next-auth/providers/github';
 import Google from 'next-auth/providers/google';
 import Apple from 'next-auth/providers/apple';
 import Credentials from 'next-auth/providers/credentials';
-import { getUserById, getUserByHandle, upsertUser } from './db/queries/users';
-// NOTE: `./password` (which pulls in node:crypto) is intentionally NOT imported
-// at module scope. `middleware.ts` imports `auth` from this file and runs in the
-// Edge runtime, so anything in this module's static graph ships to Edge. The
-// password verifier is dynamically imported inside `authorize` (Node-only route)
-// so node:crypto never reaches the middleware bundle.
+import { getEmailUserByEmail, getUserById, getUserByHandle, upsertUser } from './db/queries/users';
+import { rateLimit } from './rate-limit';
+// NOTE: `./password` and `./hash` (both pull in node:crypto) are intentionally
+// NOT imported at module scope. `middleware.ts` imports `auth` from this file
+// and runs in the Edge runtime, so anything in this module's static graph ships
+// to Edge. Those two are dynamically imported inside `authorize` (a Node-only
+// route) so node:crypto never reaches the middleware bundle. `./rate-limit` is
+// pure JS (no node:crypto) and is safe to import statically.
 
 declare module 'next-auth' {
   interface Session {
@@ -166,16 +168,27 @@ function buildProviders(): Provider[] {
         email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' }
       },
-      async authorize(raw) {
+      async authorize(raw, request) {
         const email = typeof raw?.email === 'string' ? raw.email.trim().toLowerCase() : '';
         const password = typeof raw?.password === 'string' ? raw.password : '';
         if (!email || !password) return null;
-        const existing = await getUserById(`email:${email}`);
-        // Only 'email' provider rows have a passwordHash; OAuth rows that
-        // happen to share an address must not be logged into with a password.
-        if (!existing || existing.provider !== 'email') return null;
-        // Dynamic import keeps node:crypto out of the Edge middleware bundle
-        // (see the note at the top of this file).
+
+        // Throttle BEFORE the DB read + scrypt verify to blunt credential
+        // stuffing and the per-attempt CPU cost. Sliding windows keyed per
+        // account and per client IP (same in-memory helper as the public write
+        // endpoints). `./hash` (node:crypto) and `./password` are dynamically
+        // imported so neither reaches the Edge middleware bundle (see the note
+        // at the top of this file). A throttled attempt returns null -- the user
+        // sees the same "invalid credentials" as a wrong password.
+        const { getRequestIp, hashIp } = await import('./hash');
+        const ip = request instanceof Request ? getRequestIp(request) : 'unknown';
+        const withinLimit =
+          rateLimit(`login:email:${email}`, 10, 10 * 60_000) &&
+          rateLimit(`login:ip:${hashIp(ip)}`, 30, 10 * 60_000);
+        if (!withinLimit) return null;
+
+        const existing = await getEmailUserByEmail(email);
+        if (!existing) return null;
         const { verifyPassword } = await import('./password');
         if (!verifyPassword(password, existing.passwordHash)) return null;
         return {

@@ -1,14 +1,21 @@
+import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getUserById, getUserByHandle, createEmailUser } from '@/lib/db/queries/users';
+import {
+  getEmailUserByEmail,
+  getUserByHandle,
+  createEmailUser
+} from '@/lib/db/queries/users';
 import { hashPassword } from '@/lib/password';
 
 export const runtime = 'nodejs';
 
-// Email/password sign-up. Creates an 'email' provider user keyed on
-// `email:<lowercased-email>`; the actual session is minted by a follow-up
-// signIn('credentials', ...) from the client. Kept off the NextAuth catch-all
-// path so there is no route ambiguity.
+// Email/password sign-up. Creates an 'email' provider user with an OPAQUE id
+// (`email:<uuid>`) -- never the raw address, which would leak via images.ownerId
+// in the public image API. The address lives only in the `email` column and is
+// kept unique by the users_email_provider_uniq partial index. The session is
+// minted by a follow-up signIn('credentials', ...) from the client. Kept off the
+// NextAuth catch-all path so there is no route ambiguity.
 
 const RegisterSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(320),
@@ -16,8 +23,7 @@ const RegisterSchema = z.object({
   name: z.string().trim().max(80).optional()
 });
 
-// Postgres surfaces a unique-constraint violation as SQLSTATE 23505. Used to
-// distinguish a `users.handle` race (retryable) from a real failure.
+// Postgres surfaces a unique-constraint violation as SQLSTATE 23505.
 function isUniqueViolation(err: unknown): boolean {
   return (
     !!err &&
@@ -25,6 +31,17 @@ function isUniqueViolation(err: unknown): boolean {
     'code' in err &&
     (err as { code?: unknown }).code === '23505'
   );
+}
+
+// The constraint name lets us tell an email-uniqueness violation (a duplicate
+// registration -> 409) apart from a handle-uniqueness violation (a concurrent
+// handle race -> retry). Returns null if the driver didn't populate it.
+function pgConstraint(err: unknown): string | null {
+  if (err && typeof err === 'object' && 'constraint' in err) {
+    const c = (err as { constraint?: unknown }).constraint;
+    return typeof c === 'string' ? c : null;
+  }
+  return null;
 }
 
 // Mirror the handle slugify used in auth.ts, resolving collisions here so the
@@ -65,25 +82,28 @@ export async function POST(req: Request) {
   }
 
   const { email, password, name } = parsed.data;
-  const id = `email:${email}`;
+  // Opaque id -- see the file header. The address is matched via the email
+  // column, not the id.
+  const id = `email:${randomUUID()}`;
 
-  // Fast pre-check for a clean "already registered" response. This only matches
-  // a prior email/password row: OAuth identities are keyed google:<sub> /
-  // apple:<sub> / <github-numeric-id>, so an OAuth user who happens to share
-  // this address has a different id and is deliberately not matched here. The
-  // insert's onConflictDoNothing on the id is the authoritative duplicate guard.
-  const existing = await getUserById(id);
+  // Fast pre-check for a clean "already registered" response. Case-insensitive
+  // and scoped to provider='email', so an OAuth user who happens to share this
+  // address (different provider, different id) is deliberately not matched. The
+  // users_email_provider_uniq index is the authoritative guard against a
+  // concurrent duplicate that slips past this read.
+  const existing = await getEmailUserByEmail(email);
   if (existing) {
     return NextResponse.json({ error: 'an account with that email already exists' }, { status: 409 });
   }
 
   const passwordHash = hashPassword(password);
 
-  // The `users.handle` unique constraint can still be violated by a concurrent
-  // sign-up that resolves the same handle between our resolveHandle() read and
-  // our insert. That surfaces as a Postgres unique_violation (23505) -- not an
-  // id conflict (those return null via onConflictDoNothing) -- so re-resolve
-  // the handle and retry a bounded number of times rather than 500-ing.
+  // Two unique constraints can trip on insert: users_email_provider_uniq (a
+  // concurrent duplicate registration -> 409) and users_handle_unique (a
+  // concurrent sign-up that resolved the same handle between our resolveHandle()
+  // read and our insert -> retry with a fresh handle). Both surface as SQLSTATE
+  // 23505; we branch on the constraint name, falling back to an email re-check
+  // when the driver omits it.
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const handle = await resolveHandle(email.split('@')[0] || 'user', id);
@@ -98,19 +118,27 @@ export async function POST(req: Request) {
         role: 'user',
         passwordHash
       });
+      // The opaque UUID id makes an id conflict effectively impossible; treat a
+      // null row (onConflictDoNothing on id) as a retry rather than success.
       if (!row) {
-        // Lost a race with a concurrent registration for the same email.
+        lastErr = new Error('unexpected id conflict');
+        continue;
+      }
+      return NextResponse.json({ ok: true }, { status: 201 });
+    } catch (err) {
+      lastErr = err;
+      if (!isUniqueViolation(err)) {
+        console.error('register: createEmailUser failed', err);
+        return NextResponse.json({ error: 'could not create account' }, { status: 500 });
+      }
+      const constraint = pgConstraint(err);
+      if (constraint === 'users_email_provider_uniq' || (!constraint && (await getEmailUserByEmail(email)))) {
         return NextResponse.json(
           { error: 'an account with that email already exists' },
           { status: 409 }
         );
       }
-      return NextResponse.json({ ok: true }, { status: 201 });
-    } catch (err) {
-      lastErr = err;
-      if (isUniqueViolation(err)) continue; // handle race -- retry with a fresh handle
-      console.error('register: createEmailUser failed', err);
-      return NextResponse.json({ error: 'could not create account' }, { status: 500 });
+      // Otherwise it's the handle constraint -- loop and re-resolve.
     }
   }
 
