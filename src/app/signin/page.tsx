@@ -18,9 +18,15 @@ export default async function SignInPage({
 }) {
   const session = await auth();
   const rawCallback = searchParams.callbackUrl;
-  // Only allow same-origin relative callbacks to avoid an open-redirect.
+  // Only allow same-origin relative callbacks to avoid an open-redirect. Must
+  // start with a single forward slash: reject `//host` and `/\host` (Next
+  // decodes `/%5Chost`), both of which browsers treat as protocol-relative and
+  // would navigate off-origin.
   const callbackUrl =
-    rawCallback && rawCallback.startsWith('/') && !rawCallback.startsWith('//')
+    rawCallback &&
+    rawCallback.startsWith('/') &&
+    !rawCallback.startsWith('//') &&
+    !rawCallback.startsWith('/\\')
       ? rawCallback
       : '/';
 

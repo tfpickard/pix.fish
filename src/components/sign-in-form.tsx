@@ -85,45 +85,43 @@ export function SignInForm({ callbackUrl, providers, initialError }: Props) {
     });
   }
 
-  const anyOAuth = providers.google || providers.apple || true; // GitHub always on
-
   return (
     <div className="space-y-5">
-      {anyOAuth && (
-        <div className="space-y-2">
+      {/* GitHub is always configured; Google/Apple render only when their
+          env vars are set (see the /signin server page). */}
+      <div className="space-y-2">
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          onClick={() => oauth('github')}
+          disabled={pending}
+        >
+          continue with GitHub
+        </Button>
+        {providers.google && (
           <Button
             type="button"
             variant="outline"
             className="w-full"
-            onClick={() => oauth('github')}
+            onClick={() => oauth('google')}
             disabled={pending}
           >
-            continue with GitHub
+            continue with Google
           </Button>
-          {providers.google && (
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              onClick={() => oauth('google')}
-              disabled={pending}
-            >
-              continue with Google
-            </Button>
-          )}
-          {providers.apple && (
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              onClick={() => oauth('apple')}
-              disabled={pending}
-            >
-              continue with Apple
-            </Button>
-          )}
-        </div>
-      )}
+        )}
+        {providers.apple && (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={() => oauth('apple')}
+            disabled={pending}
+          >
+            continue with Apple
+          </Button>
+        )}
+      </div>
 
       <div className="flex items-center gap-3">
         <span className="h-px flex-1 bg-ink-800" />

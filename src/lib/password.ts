@@ -21,9 +21,18 @@ export function verifyPassword(password: string, stored: string | null | undefin
   if (!stored) return false;
   const parts = stored.split('$');
   if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
+  const [, saltHex, hashHex] = parts;
+  if (!saltHex || !hashHex) return false;
   try {
-    const salt = Buffer.from(parts[1], 'hex');
-    const expected = Buffer.from(parts[2], 'hex');
+    const salt = Buffer.from(saltHex, 'hex');
+    const expected = Buffer.from(hashHex, 'hex');
+    // Buffer.from(..., 'hex') silently truncates on the first invalid/odd
+    // nibble, so re-derive the byte length from the source string and reject
+    // anything that didn't round-trip cleanly -- including an empty payload.
+    // Otherwise a malformed hash would decode to a zero-length buffer and
+    // timingSafeEqual(empty, empty) would treat it as matching every password.
+    if (salt.length === 0 || expected.length === 0) return false;
+    if (salt.length * 2 !== saltHex.length || expected.length * 2 !== hashHex.length) return false;
     const derived = scryptSync(password, salt, expected.length, { N: SCRYPT_COST });
     return derived.length === expected.length && timingSafeEqual(derived, expected);
   } catch {

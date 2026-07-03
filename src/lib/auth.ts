@@ -5,7 +5,11 @@ import Google from 'next-auth/providers/google';
 import Apple from 'next-auth/providers/apple';
 import Credentials from 'next-auth/providers/credentials';
 import { getUserById, getUserByHandle, upsertUser } from './db/queries/users';
-import { verifyPassword } from './password';
+// NOTE: `./password` (which pulls in node:crypto) is intentionally NOT imported
+// at module scope. `middleware.ts` imports `auth` from this file and runs in the
+// Edge runtime, so anything in this module's static graph ships to Edge. The
+// password verifier is dynamically imported inside `authorize` (Node-only route)
+// so node:crypto never reaches the middleware bundle.
 
 declare module 'next-auth' {
   interface Session {
@@ -90,7 +94,8 @@ function toIdentity(
     return {
       id: `google:${String(profile.sub)}`,
       provider: 'google',
-      handleSeed: emailLocalPart(email) || (profile.name as string) || 'user',
+      // emailLocalPart already falls back to 'user' when the email is absent.
+      handleSeed: emailLocalPart(email),
       displayName: (profile.name as string) ?? null,
       email,
       avatarUrl: (profile.picture as string) ?? null
@@ -169,6 +174,9 @@ function buildProviders(): Provider[] {
         // Only 'email' provider rows have a passwordHash; OAuth rows that
         // happen to share an address must not be logged into with a password.
         if (!existing || existing.provider !== 'email') return null;
+        // Dynamic import keeps node:crypto out of the Edge middleware bundle
+        // (see the note at the top of this file).
+        const { verifyPassword } = await import('./password');
         if (!verifyPassword(password, existing.passwordHash)) return null;
         return {
           id: existing.id,
@@ -220,9 +228,12 @@ const config: NextAuthConfig = {
         await upsertUser({
           id: identity.id,
           handle,
-          displayName: identity.displayName,
-          email: identity.email,
-          avatarUrl: identity.avatarUrl,
+          // Apple (and any provider) may omit name/email/avatar on sign-ins
+          // after the first, sending null. Fall back to the stored values so a
+          // later login doesn't wipe the profile captured on first sign-in.
+          displayName: identity.displayName ?? existing?.displayName ?? null,
+          email: identity.email ?? existing?.email ?? null,
+          avatarUrl: identity.avatarUrl ?? existing?.avatarUrl ?? null,
           provider: identity.provider,
           role
         });
