@@ -14,10 +14,14 @@ export const metadata = {
 export default async function SignInPage({
   searchParams
 }: {
-  searchParams: { callbackUrl?: string; error?: string };
+  // A query param can arrive as string[] when repeated (?callbackUrl=/a&callbackUrl=/b),
+  // so accept both shapes and normalize to the first value before touching it.
+  searchParams: { callbackUrl?: string | string[]; error?: string | string[] };
 }) {
   const session = await auth();
-  const rawCallback = searchParams.callbackUrl;
+  const firstParam = (v: string | string[] | undefined): string | undefined =>
+    Array.isArray(v) ? v[0] : v;
+  const rawCallback = firstParam(searchParams.callbackUrl);
   // Only allow same-origin relative callbacks to avoid an open-redirect. Must
   // start with a single forward slash: reject `//host` and `/\host` (Next
   // decodes `/%5Chost`), both of which browsers treat as protocol-relative and
@@ -44,7 +48,7 @@ export default async function SignInPage({
       <SignInForm
         callbackUrl={callbackUrl}
         providers={{ google, apple }}
-        initialError={searchParams.error ?? null}
+        initialError={firstParam(searchParams.error) ?? null}
       />
     </div>
   );

@@ -7,6 +7,8 @@ import {
   createEmailUser
 } from '@/lib/db/queries/users';
 import { hashPassword } from '@/lib/password';
+import { rateLimit } from '@/lib/rate-limit';
+import { getRequestIp, hashIp } from '@/lib/hash';
 
 export const runtime = 'nodejs';
 
@@ -65,6 +67,13 @@ async function resolveHandle(seed: string, ownId: string): Promise<string> {
 }
 
 export async function POST(req: Request) {
+  // Public endpoint: throttle per-IP before the synchronous scrypt hash and the
+  // insert, so an attacker can't force CPU-heavy hashing (or row creation) by
+  // spamming unique emails. Same in-memory helper as the credentials flow.
+  if (!rateLimit(`register:ip:${hashIp(getRequestIp(req))}`, 5, 10 * 60_000)) {
+    return NextResponse.json({ error: 'too many attempts -- try again later' }, { status: 429 });
+  }
+
   let body: unknown;
   try {
     body = await req.json();
