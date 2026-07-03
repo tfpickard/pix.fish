@@ -63,7 +63,11 @@ async function resolveHandle(seed: string, ownId: string): Promise<string> {
     n += 1;
     candidate = `${base}-${n}`;
   }
-  return `${base}-${ownId.slice(0, 8).replace(/[^a-z0-9-]/g, '')}`;
+  // Guaranteed-unique fallback after 99 numbered collisions: the id is globally
+  // unique, so append its full sanitized form. A fixed-length slice would be
+  // mostly the shared prefix for opaque `email:<uuid>` / `provider:<sub>` ids
+  // and could collide across users.
+  return `${base}-${ownId.replace(/[^a-z0-9]/g, '')}`;
 }
 
 // Local-part of an email, used as a handle seed for providers that don't
@@ -255,7 +259,8 @@ const config: NextAuthConfig = {
         // we never mint a session with no user row -- which would fail the
         // images.ownerId FK on the next upload.
         let handle = existing?.handle ?? null;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
+        let inserted = false;
+        for (let attempt = 0; attempt < 3 && !inserted; attempt += 1) {
           if (!handle) handle = await resolveHandle(identity.handleSeed, identity.id);
           try {
             await upsertUser({
@@ -272,12 +277,17 @@ const config: NextAuthConfig = {
             });
             t.handle = handle;
             t.role = role;
-            break;
+            inserted = true;
           } catch (err) {
             if (!isUniqueViolation(err)) throw err; // real failure -> outer catch
             handle = null; // handle race -- re-resolve on the next iteration
           }
         }
+        // Now that the resolveHandle fallback is per-user unique this is
+        // effectively unreachable, but if every attempt still lost the handle
+        // race, throw rather than returning a token that claims an id/handle for
+        // a row we never wrote (which would fail the images.ownerId FK on upload).
+        if (!inserted) throw new Error('auth: exhausted handle-resolution retries');
       } catch (err) {
         // Sign-in proceeds with the deterministic role + no handle. The
         // next successful sign-in repairs the JWT once the DB recovers.

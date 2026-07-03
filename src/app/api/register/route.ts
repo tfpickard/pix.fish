@@ -63,7 +63,11 @@ async function resolveHandle(seed: string, ownId: string): Promise<string> {
     n += 1;
     candidate = `${base}-${n}`;
   }
-  return `${base}-${ownId.slice(0, 8).replace(/[^a-z0-9-]/g, '')}`;
+  // Guaranteed-unique fallback after 99 numbered collisions: the id is globally
+  // unique, so append its full sanitized form. A fixed-length slice would be
+  // mostly the shared prefix for opaque `email:<uuid>` / `provider:<sub>` ids
+  // and could collide across users.
+  return `${base}-${ownId.replace(/[^a-z0-9]/g, '')}`;
 }
 
 export async function POST(req: Request) {
