@@ -29,6 +29,8 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'universe.tick': 20_000, // score + enqueue only; no generation
   'universe.amend': 55_000, // one vision-less text call + one embed; fills the tick
   'universe.ripple': 10_000, // fan-out enqueue only
+  'characters.detect': 55_000, // one vision call + N crops/embeds for one image
+  'characters.cluster': 55_000, // cluster all crops + synthesize dossiers; fills the tick
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;

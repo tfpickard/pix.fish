@@ -1,10 +1,11 @@
+import { deleteAllAppearances, deleteAllCharacters } from '@/lib/db/queries/characters';
 import { deleteAllClerks } from '@/lib/db/queries/clerks';
 import { deleteAllCrossReferences } from '@/lib/db/queries/cross-references';
 import { deleteAllDistricts } from '@/lib/db/queries/districts';
-import { listAllEvents } from '@/lib/db/queries/events';
+import { listAllEvents, listSpecimenEvents } from '@/lib/db/queries/events';
 import { deleteAllLoreFragments } from '@/lib/db/queries/lore-fragments';
 import { deleteAllSpecimens } from '@/lib/db/queries/specimens';
-import { listSpecimenEvents } from '@/lib/db/queries/events';
+import type { UniverseEvent } from '@/lib/db/schema';
 import { buildCoordsMap } from './coords';
 import { applyEvent } from './reduce';
 
@@ -23,6 +24,14 @@ export async function materializeSpecimen(imageId: number): Promise<void> {
   }
 }
 
+// Apply a single freshly-appended event to the projections. Used by the
+// character census (the reducer clears + replaces the character projection
+// from the event payload, so a one-event apply is exactly right).
+export async function materializeEvent(ev: UniverseEvent): Promise<void> {
+  const coords = await buildCoordsMap();
+  await applyEvent(ev, { coords });
+}
+
 // Rebuild every projection from the event log alone. This is the documented
 // reconciliation routine: it clears the projection tables (never the events)
 // and replays the log in id order through the reducers. No AI calls -- the
@@ -39,6 +48,10 @@ export async function rebuildProjections(): Promise<{ events: number }> {
   await deleteAllCrossReferences();
   await deleteAllDistricts();
   await deleteAllClerks();
+  // Character projections (no census event -> stay empty). Crops are evidence,
+  // not a projection, so they are left intact.
+  await deleteAllAppearances();
+  await deleteAllCharacters();
 
   const coords = await buildCoordsMap();
   const events = await listAllEvents();

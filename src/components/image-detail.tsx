@@ -22,6 +22,7 @@ import { AmendmentHistory } from '@/components/amendment-history';
 import { getSpecimen } from '@/lib/db/queries/specimens';
 import { listLoreFragments } from '@/lib/db/queries/lore-fragments';
 import { listCrossReferences } from '@/lib/db/queries/cross-references';
+import { charactersForImage } from '@/lib/db/queries/characters';
 import { listClerks } from '@/lib/db/queries/clerks';
 import { getDistrict } from '@/lib/db/queries/districts';
 import { ReportButton } from '@/components/report-button';
@@ -171,11 +172,12 @@ export async function ImageDetail({
   // Universe: the specimen's current case file + its amendment history, read
   // from projections (never by replaying the event log at request time). All
   // best-effort: an image with no dossier yet simply renders without these.
-  const [specimen, loreFragments, crossRefs, allClerks] = await Promise.all([
+  const [specimen, loreFragments, crossRefs, allClerks, subjects] = await Promise.all([
     getSpecimen(img.id).catch(() => null),
     listLoreFragments(img.id).catch(() => []),
     listCrossReferences(img.id).catch(() => []),
-    listClerks().catch(() => [])
+    listClerks().catch(() => []),
+    charactersForImage(img.id).catch(() => [])
   ]);
   const clerksBySlug = new Map(allClerks.map((c) => [c.slug, c]));
   const dossierClerk = specimen ? clerksBySlug.get(specimen.clerkSlug) ?? null : null;
@@ -328,6 +330,43 @@ export async function ImageDetail({
 
       {loreFragments.length > 0 ? (
         <AmendmentHistory fragments={loreFragments} clerksBySlug={clerksBySlug} />
+      ) : null}
+
+      {subjects.length > 0 ? (
+        <section
+          aria-label="recurring subjects"
+          className="mx-auto max-w-2xl space-y-3 border-t border-ink-800 pt-6"
+        >
+          <h2 className="font-mono text-xs uppercase tracking-wide text-ink-500">recurring subjects</h2>
+          <ul className="flex flex-wrap gap-3">
+            {subjects.map((s) => (
+              <li key={s.key}>
+                <Link
+                  href={`/characters/${s.key}`}
+                  prefetch={false}
+                  className="group flex items-center gap-2 rounded border border-ink-800/60 py-1 pl-1 pr-2.5 hover:border-ink-700"
+                >
+                  {s.cropUrl ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={s.cropUrl}
+                      alt={s.name}
+                      width={32}
+                      height={32}
+                      // Crop is from THIS specimen; blur it the same way the main
+                      // image is blurred for NSFW (hover to reveal) so the headshot
+                      // doesn't bypass the specimen's own NSFW gate.
+                      className={`h-8 w-8 rounded-sm object-cover transition-[filter] duration-200${img.isNsfw ? ' [filter:blur(3px)] group-hover:[filter:blur(0px)]' : ''}`}
+                    />
+                  ) : null}
+                  <span className="prose-caption text-sm text-ink-200 group-hover:text-ink-100">
+                    {s.name}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
 
       <ProvenancePanel entries={provenance} />

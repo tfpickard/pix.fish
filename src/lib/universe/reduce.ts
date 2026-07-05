@@ -8,10 +8,19 @@ import {
   latestLoreFragment,
   upsertLoreFragment
 } from '@/lib/db/queries/lore-fragments';
+import { latestEventIdOfType } from '@/lib/db/queries/events';
+import { existingImageIds } from '@/lib/db/queries/images';
 import { getSpecimen, upsertSpecimen } from '@/lib/db/queries/specimens';
 import { coordsFor, type CoordsMap } from './coords';
 import {
+  insertAppearance,
+  pruneAppearancesForCharacter,
+  pruneCharactersNotIn,
+  upsertCharacter
+} from '@/lib/db/queries/characters';
+import {
   EVENT_TYPE,
+  type CharacterCensusPayload,
   type ClerkCommissionedPayload,
   type CrossReferenceFiledPayload,
   type DistrictIntakePayload,
@@ -161,8 +170,61 @@ export async function applyEvent(ev: UniverseEvent, ctx: ReduceContext): Promise
       break;
     }
 
+    case EVENT_TYPE.CharacterCensus: {
+      // A census defines the entire recurring-character roster; the newest one
+      // wins. Guard against applying a STALE census: if a later census event is
+      // already on file (overlapping cluster jobs, or replaying older censuses
+      // during a rebuild), skip this one so live pages don't regress to an older
+      // roster. The check reads the append-only log, so it holds even when the
+      // newest census left an empty roster.
+      const latestCensusId = await latestEventIdOfType(EVENT_TYPE.CharacterCensus);
+      if (latestCensusId !== null && latestCensusId > ev.id) break;
+
+      // Apply write-then-prune rather than clear-then-repopulate: upsert the
+      // whole roster first, then drop anything not in it. The HTTP DB driver has
+      // no multi-statement transaction, so a clear-first apply could blank the
+      // canon if the process died mid-apply; this way the projection is never
+      // empty and a re-apply of the same census is idempotent.
+      const p = ev.payload as unknown as CharacterCensusPayload;
+      // Drop appearances whose source image was hard-deleted after this census
+      // was filed: the census payload is immutable, but the image FK is not, so
+      // a blind replay would trip the FK and abort the rebuild. Filter once.
+      const live = await existingImageIds(p.characters.flatMap((c) => c.appearances.map((a) => a.imageId)));
+      for (const c of p.characters) {
+        const appearances = c.appearances.filter((a) => live.has(a.imageId));
+        await upsertCharacter({
+          key: c.key,
+          name: c.name,
+          dossier: c.dossier,
+          clerkSlug: c.clerkSlug,
+          canonicalCropUrl: c.canonicalCropUrl ?? null,
+          appearanceCount: appearances.length,
+          censusEventId: ev.id,
+          generation: 0,
+          createdAt: ev.createdAt
+        });
+        for (const a of appearances) {
+          await insertAppearance({
+            characterKey: c.key,
+            imageId: a.imageId,
+            cropUrl: a.cropUrl ?? null,
+            box: a.box ?? null,
+            createdAt: ev.createdAt
+          });
+        }
+        // Drop stale appearances this character shed since the prior census.
+        await pruneAppearancesForCharacter(
+          c.key,
+          appearances.map((a) => a.imageId)
+        );
+      }
+      // Drop characters dropped from the roster entirely (and their appearances).
+      await pruneCharactersNotIn(p.characters.map((c) => c.key));
+      break;
+    }
+
     default:
-      // Unknown/reserved types are ignored by the Phase 1 reducer.
+      // Unknown/reserved types are ignored by the reducer.
       break;
   }
 }

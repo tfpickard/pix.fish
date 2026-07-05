@@ -6,6 +6,9 @@ import { db } from '@/lib/db/client';
 import {
   aiConfig,
   captions,
+  characterAppearances,
+  characterCrops,
+  characters,
   comments,
   descriptions,
   images,
@@ -48,7 +51,10 @@ export async function backupExportHandler(job: Job): Promise<void> {
     reportRows,
     aiConfigRows,
     webhookRows,
-    savedPromptRows
+    savedPromptRows,
+    characterCropRows,
+    characterRows,
+    characterAppearanceRows
   ] = await Promise.all([
     db.select().from(images),
     db.select().from(captions),
@@ -61,7 +67,12 @@ export async function backupExportHandler(job: Job): Promise<void> {
     db.select().from(reports),
     db.select().from(aiConfig),
     db.select({ id: webhooks.id, url: webhooks.url, events: webhooks.events, active: webhooks.active, createdAt: webhooks.createdAt }).from(webhooks),
-    db.select().from(savedPrompts)
+    db.select().from(savedPrompts),
+    // Character canon: crops are evidence (with the embedding vector, so a
+    // restore need not re-run paid vision/embed), plus the census projections.
+    db.select().from(characterCrops),
+    db.select().from(characters),
+    db.select().from(characterAppearances)
   ]);
 
   const manifest = {
@@ -81,7 +92,10 @@ export async function backupExportHandler(job: Job): Promise<void> {
       reports: reportRows.length,
       aiConfig: aiConfigRows.length,
       webhooks: webhookRows.length,
-      savedPrompts: savedPromptRows.length
+      savedPrompts: savedPromptRows.length,
+      characterCrops: characterCropRows.length,
+      characters: characterRows.length,
+      characterAppearances: characterAppearanceRows.length
     }
   };
 
@@ -97,7 +111,10 @@ export async function backupExportHandler(job: Job): Promise<void> {
     reports: reportRows,
     aiConfig: aiConfigRows,
     webhooks: webhookRows,
-    savedPrompts: savedPromptRows
+    savedPrompts: savedPromptRows,
+    characterCrops: characterCropRows,
+    characters: characterRows,
+    characterAppearances: characterAppearanceRows
   };
 
   const archive = archiver('zip', { zlib: { level: 6 } });
@@ -116,6 +133,21 @@ export async function backupExportHandler(job: Job): Promise<void> {
       archive.append(Readable.fromWeb(res.body as unknown as import('stream/web').ReadableStream), { name });
     } catch (err) {
       console.error('backup: failed to append blob for', img.slug, err);
+    }
+  }
+
+  // Character crop headshots: their durable pointer is character_crops.blob_key,
+  // and they're new public Blob objects the image loop above never touches.
+  // Named by crop id (blobUrl/blobKey are in db.json for remapping on restore).
+  for (const crop of characterCropRows) {
+    try {
+      const res = await fetch(crop.blobUrl);
+      if (!res.ok || !res.body) continue;
+      archive.append(Readable.fromWeb(res.body as unknown as import('stream/web').ReadableStream), {
+        name: `blobs/characters/${crop.id}.webp`
+      });
+    } catch (err) {
+      console.error('backup: failed to append character crop blob', crop.id, err);
     }
   }
 

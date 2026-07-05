@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
 import {
@@ -686,6 +686,32 @@ export async function isImageArchived(imageId: number): Promise<boolean> {
     .where(eq(images.id, imageId))
     .limit(1);
   return Boolean(row?.archivedAt);
+}
+
+// Image ids eligible for character detection: everything still in circulation,
+// INCLUDING NSFW. A character's NSFW appearances are part of their identity, so
+// the canon includes them; the public character pages gate NSFW crops at display
+// time. Only archived (removed-from-circulation) images are excluded.
+export async function listDetectableImageIds(): Promise<number[]> {
+  const rows = await db
+    .select({ id: images.id })
+    .from(images)
+    .where(isNull(images.archivedAt))
+    .orderBy(asc(images.id));
+  return rows.map((r) => r.id);
+}
+
+// Which of the given image ids still exist. The character.census reducer uses
+// this to skip appearances whose source image was hard-deleted after the census
+// was filed -- otherwise replaying the (append-only, immutable) census during a
+// rebuild would trip the image FK and abort the whole rebuild.
+export async function existingImageIds(ids: number[]): Promise<Set<number>> {
+  const out = new Set<number>();
+  const unique = [...new Set(ids.filter((n) => Number.isInteger(n)))];
+  if (unique.length === 0) return out;
+  const rows = await db.select({ id: images.id }).from(images).where(inArray(images.id, unique));
+  for (const r of rows) out.add(r.id);
+  return out;
 }
 
 export type ImageRef = { slug: string; handle: string; isNsfw: boolean; archived: boolean };

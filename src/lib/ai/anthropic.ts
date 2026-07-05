@@ -86,6 +86,10 @@ export function createAnthropicProvider(
       return parseTagsJson(text);
     },
 
+    async vision(image, mime, prompt, imageUrl) {
+      return callVision(apiKey, model, image, mime, prompt, imageUrl);
+    },
+
     async text(prompt: string): Promise<string> {
       const res = await getClient(apiKey).messages.create({
         model,

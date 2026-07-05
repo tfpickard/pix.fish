@@ -20,6 +20,21 @@ export async function enqueueJob(row: {
   return inserted;
 }
 
+// Image ids that already have an in-flight (pending or processing) job of a
+// given type, read from the jsonb payload. Used to dedupe characters.detect
+// enqueues so repeated detect-all clicks / overlapping runs don't pile up
+// redundant vision+embed work on the same image.
+export async function inFlightImageIds(type: string): Promise<Set<number>> {
+  const res = await db.execute<{ image_id: number | null }>(sql`
+    SELECT (payload->>'imageId')::int AS image_id
+    FROM jobs
+    WHERE type = ${type} AND status IN ('pending', 'processing')
+  `);
+  const out = new Set<number>();
+  for (const r of res.rows) if (r.image_id != null) out.add(Number(r.image_id));
+  return out;
+}
+
 // Reclaim rows whose visibility-timeout lease expired. Runs at the top of the
 // cron tick so a handler that died mid-flight can retry on the next pass.
 export async function reclaimStuckJobs(olderThan: Date): Promise<number> {

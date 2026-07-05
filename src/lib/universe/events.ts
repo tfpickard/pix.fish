@@ -9,9 +9,12 @@ export const EVENT_TYPE = {
   DistrictIntake: 'district.intake',
   SpecimenIntake: 'specimen.intake',
   CrossReferenceFiled: 'cross_reference.filed',
-  // Reserved (Phase 2):
+  // Phase 2:
   DossierAmendment: 'dossier.amendment',
-  AuditFlagged: 'audit.flagged'
+  AuditFlagged: 'audit.flagged',
+  // Phase 3: a clustering run that identifies the recurring characters. One
+  // event carries the whole roster; the newest census wins in the projection.
+  CharacterCensus: 'character.census'
 } as const;
 
 export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
@@ -20,7 +23,8 @@ export const SUBJECT_TYPE = {
   Clerk: 'clerk',
   District: 'district',
   Specimen: 'specimen',
-  CrossReference: 'cross_reference'
+  CrossReference: 'cross_reference',
+  Census: 'census'
 } as const;
 
 // ---- payload shapes (the jsonb body of each event) ------------------------
@@ -79,6 +83,25 @@ export type AuditFlaggedPayload = {
   contradicts: string | null; // clerk slug being contradicted, if known
 };
 
+// The full recurring-character roster from one clustering run (Phase 3). The
+// newest census defines the current characters; the reducer clears + replaces
+// the projection from it. Self-contained (crop urls embedded) so a rebuild
+// needs no crops table.
+export type CharacterCensusPayload = {
+  characters: {
+    key: string;
+    name: string;
+    dossier: string;
+    clerkSlug: string;
+    canonicalCropUrl: string | null;
+    appearances: {
+      imageId: number;
+      cropUrl: string | null;
+      box: { left: number; top: number; width: number; height: number } | null;
+    }[];
+  }[];
+};
+
 // A cited source: where a clerk says a claim came from. Kept loose (a free
 // label plus an optional ref) so clerks can cite captions, neighbors,
 // districts, or other dossiers without a rigid schema.
@@ -107,5 +130,8 @@ export const dedupeKey = {
   // amend job collapse to a single canon event, while distinct ticks (distinct
   // seeds) still produce distinct amendments.
   amendment: (imageId: number, nonce: number) => `dossier.amendment:${imageId}:${nonce}`,
-  audit: (imageId: number, nonce: number) => `audit.flagged:${imageId}:${nonce}`
+  audit: (imageId: number, nonce: number) => `audit.flagged:${imageId}:${nonce}`,
+  // Each census run gets a unique stamp so re-clustering files a NEW census
+  // (the newest wins) rather than colliding with a prior one.
+  census: (stamp: number) => `character.census:${stamp}`
 };
