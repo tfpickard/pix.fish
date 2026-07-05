@@ -23,7 +23,7 @@ export default auth((req) => {
     (method === 'PATCH' || method === 'DELETE');
 
   if (isAdminRoute && !req.auth) {
-    const url = new URL('/api/auth/signin', req.url);
+    const url = new URL('/signin', req.url);
     url.searchParams.set('callbackUrl', pathname);
     return NextResponse.redirect(url);
   }

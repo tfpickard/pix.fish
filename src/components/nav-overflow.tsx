@@ -64,7 +64,7 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
     ...(handle ? [{ href: `/u/${handle}`, label: `/u/${handle}` }] : []),
     ...(admin ? [{ href: '/admin/ai', label: 'admin' }] : []),
     {
-      href: authed ? '/api/auth/signout' : '/api/auth/signin',
+      href: authed ? '/api/auth/signout' : '/signin',
       label: authed ? 'sign out' : 'sign in'
     }
   ];

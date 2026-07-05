@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "users_email_provider_uniq" ON "users" USING btree (lower("email")) WHERE "users"."provider" = 'email';
