@@ -172,6 +172,28 @@ export async function requeueFailedJobs(filter?: {
   return Number(res.rows[0]?.count ?? 0);
 }
 
+// Delete failed rows outright so a category's failed count drops to zero and
+// the failures are forgotten (no history kept -- this is the "clear" action,
+// distinct from requeue which retries them). Same optional id/type filters as
+// requeueFailedJobs; with neither, every failed row is deleted. Counts via a
+// CTE rather than materializing the deleted rows. Returns the number cleared.
+export async function clearFailedJobs(filter?: {
+  id?: number;
+  type?: string;
+}): Promise<number> {
+  const conds = [sql`status = 'failed'`];
+  if (filter?.id !== undefined) conds.push(sql`id = ${filter.id}`);
+  if (filter?.type !== undefined) conds.push(sql`type = ${filter.type}`);
+  const where = sql.join(conds, sql` AND `);
+  const res = await db.execute<{ count: number }>(sql`
+    WITH deleted AS (
+      DELETE FROM jobs WHERE ${where} RETURNING id
+    )
+    SELECT count(*)::int AS count FROM deleted
+  `);
+  return Number(res.rows[0]?.count ?? 0);
+}
+
 export async function jobsOverview(limit = 50): Promise<{
   counts: { type: string; status: string; count: number }[];
   recent: Job[];
