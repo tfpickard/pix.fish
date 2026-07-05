@@ -37,8 +37,11 @@ async function markDetected(imageId: number): Promise<void> {
 }
 
 // Detect the figures in one image, crop a headshot of each, embed its
-// description, and store as character_crops evidence. Skips NSFW/archived
-// images (their characters would leak through the public character pages).
+// description, and store as character_crops evidence. NSFW images ARE detected:
+// a character's appearances in NSFW specimens are part of their identity, so the
+// canon must not censor them. Only archived images (pulled from circulation) are
+// skipped. Public leakage is prevented at the DISPLAY layer, not here -- the
+// character pages/queries gate NSFW crops behind the visitor's opt-in.
 // Idempotent: skips an image that already has crops unless force=true.
 export async function charactersDetectHandler(job: Job): Promise<void> {
   const { imageId, force = false } = job.payload as Payload;
@@ -49,7 +52,6 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
       blobUrl: images.blobUrl,
       blobKey: images.blobKey,
       mime: images.mime,
-      isNsfw: images.isNsfw,
       archivedAt: images.archivedAt,
       charactersDetectedAt: images.charactersDetectedAt
     })
@@ -57,7 +59,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
     .where(eq(images.id, imageId))
     .limit(1);
   if (!img) return;
-  if (img.archivedAt || img.isNsfw) return; // out of public circulation / hidden
+  if (img.archivedAt) return; // pulled from circulation; NSFW is still detected
 
   // Already examined? Skip unless forced. The timestamp marker (set even when no
   // figures were found) means a figureless image isn't re-billed a vision call

@@ -29,10 +29,12 @@ export type CropVector = {
 
 // Every crop with its vector, for clustering. pgvector returns the vector as a
 // bracketed string; parse it once here. Ordered by id for deterministic runs.
-// Crops of images that have since been archived or marked NSFW are excluded:
-// the detect handler skips hidden images so they never seed a character, and
-// this keeps a crop made while an image was public from leaking back into the
-// census (and onto the public /characters pages) after the image is hidden.
+// NSFW crops are INCLUDED: a character's NSFW appearances are part of their
+// identity, so they must inform clustering and the synthesized dossier. Only
+// archived (removed-from-circulation) images are excluded. Public leakage is
+// prevented at the display layer -- listVisibleCharacters / the detail page
+// derive the shown crops + canonical headshot from visible appearances per
+// viewer, so an NSFW crop never reaches an opted-out visitor.
 export async function allCropVectors(): Promise<CropVector[]> {
   const res = await db.execute<{
     id: number;
@@ -46,7 +48,7 @@ export async function allCropVectors(): Promise<CropVector[]> {
     SELECT cc.id, cc.image_id, cc.label, cc.description, cc.blob_url, cc.box, cc.vec::text AS vec
     FROM character_crops cc
     JOIN images i ON i.id = cc.image_id
-    WHERE i.archived_at IS NULL AND i.is_nsfw = false
+    WHERE i.archived_at IS NULL
     ORDER BY cc.id
   `);
   return res.rows.map((r) => {

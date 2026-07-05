@@ -688,13 +688,15 @@ export async function isImageArchived(imageId: number): Promise<boolean> {
   return Boolean(row?.archivedAt);
 }
 
-// Image ids eligible for character detection: publicly visible (not NSFW, not
-// archived). The detect admin route enqueues one job per id.
+// Image ids eligible for character detection: everything still in circulation,
+// INCLUDING NSFW. A character's NSFW appearances are part of their identity, so
+// the canon includes them; the public character pages gate NSFW crops at display
+// time. Only archived (removed-from-circulation) images are excluded.
 export async function listDetectableImageIds(): Promise<number[]> {
   const rows = await db
     .select({ id: images.id })
     .from(images)
-    .where(and(eq(images.isNsfw, false), isNull(images.archivedAt)))
+    .where(isNull(images.archivedAt))
     .orderBy(asc(images.id));
   return rows.map((r) => r.id);
 }
