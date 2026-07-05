@@ -56,6 +56,16 @@ export async function POST(req: NextRequest) {
     filter.type = body.type;
   }
 
+  // A non-empty object that yielded no recognized filter (e.g. a typo like
+  // { jobId: 123 }) must not silently fall through to a global requeue.
+  // Retry-all is only the explicit `{}` / empty-body path handled above.
+  if (Object.keys(body).length > 0 && filter.id === undefined && filter.type === undefined) {
+    return NextResponse.json(
+      { error: 'no recognized filter; send an empty body or {} to retry all failed jobs' },
+      { status: 400 }
+    );
+  }
+
   const requeued = await requeueFailedJobs(filter);
   return NextResponse.json({ requeued });
 }
