@@ -37,6 +37,7 @@ const ADMIN_NAV = [
   { href: '/admin/map', label: 'map (2d)' },
   { href: '/admin/manifold', label: 'manifold (3d)' },
   { href: '/admin/knn', label: 'knn graph' },
+  { href: '/admin/characters', label: 'characters' },
   // --- alive ---
   { href: '/admin/alive', label: 'alive' },
   // --- ops ---
