@@ -135,6 +135,65 @@ export async function rescheduleJob(id: number, runAt: Date, err: string): Promi
   return row?.attempts ?? 0;
 }
 
+// Flip failed rows back to 'pending' so the next cron tick reclaims them.
+// Resetting `attempts` to 0 is load-bearing: the worker computes the backoff
+// from the pre-increment attempt count and promotes back to 'failed' the moment
+// it hits maxAttempts, so a row left at its exhausted count would fail again on
+// the first try. Clearing the lease/error/timestamps gives the job a clean slate
+// -- the use case is a credit top-up after enrich jobs died on "balance too low".
+// Optional filters narrow to a single id or job type; with neither, every
+// 'failed' row is requeued. Returns the number of rows requeued.
+export async function requeueFailedJobs(filter?: {
+  id?: number;
+  type?: string;
+}): Promise<number> {
+  // Count in the DB via a CTE rather than `.returning()` -- the "retry all"
+  // path can touch every failed row, and we only need the tally, not the rows.
+  const conds = [sql`status = 'failed'`];
+  if (filter?.id !== undefined) conds.push(sql`id = ${filter.id}`);
+  if (filter?.type !== undefined) conds.push(sql`type = ${filter.type}`);
+  const where = sql.join(conds, sql` AND `);
+  const res = await db.execute<{ count: number }>(sql`
+    WITH updated AS (
+      UPDATE jobs
+      SET status = 'pending',
+          attempts = 0,
+          run_at = NOW(),
+          locked_by = NULL,
+          locked_at = NULL,
+          started_at = NULL,
+          finished_at = NULL,
+          last_error = NULL
+      WHERE ${where}
+      RETURNING id
+    )
+    SELECT count(*)::int AS count FROM updated
+  `);
+  return Number(res.rows[0]?.count ?? 0);
+}
+
+// Delete failed rows outright so a category's failed count drops to zero and
+// the failures are forgotten (no history kept -- this is the "clear" action,
+// distinct from requeue which retries them). Same optional id/type filters as
+// requeueFailedJobs; with neither, every failed row is deleted. Counts via a
+// CTE rather than materializing the deleted rows. Returns the number cleared.
+export async function clearFailedJobs(filter?: {
+  id?: number;
+  type?: string;
+}): Promise<number> {
+  const conds = [sql`status = 'failed'`];
+  if (filter?.id !== undefined) conds.push(sql`id = ${filter.id}`);
+  if (filter?.type !== undefined) conds.push(sql`type = ${filter.type}`);
+  const where = sql.join(conds, sql` AND `);
+  const res = await db.execute<{ count: number }>(sql`
+    WITH deleted AS (
+      DELETE FROM jobs WHERE ${where} RETURNING id
+    )
+    SELECT count(*)::int AS count FROM deleted
+  `);
+  return Number(res.rows[0]?.count ?? 0);
+}
+
 export async function jobsOverview(limit = 50): Promise<{
   counts: { type: string; status: string; count: number }[];
   recent: Job[];
