@@ -28,19 +28,22 @@ export async function POST(req: Request) {
   }
   const { force = false, imageIds } = parsed.data;
   const ids = imageIds && imageIds.length > 0 ? imageIds : await listDetectableImageIds();
-  // Skip images that already have an in-flight detect job so repeated clicks /
-  // overlapping detect-all runs don't pile up redundant vision+embed work on the
-  // same image (the in-handler crops/detectedAt guard catches the rest).
-  const inFlight = await inFlightImageIds('characters.detect');
+  // For non-force runs, skip images that already have an in-flight detect job so
+  // repeated clicks / overlapping detect-all runs don't pile up redundant
+  // vision+embed work (the in-handler crops/detectedAt guard catches the rest).
+  // A force re-detect must NOT be deduped against a pending non-force job: that
+  // older job would hit the idempotency guard and no-op, so the admin's force
+  // request would silently do nothing. Force always enqueues.
+  const inFlight = force ? new Set<number>() : await inFlightImageIds('characters.detect');
   let enqueued = 0;
   let skipped = 0;
   for (const imageId of ids) {
-    if (inFlight.has(imageId)) {
+    if (!force && inFlight.has(imageId)) {
       skipped++;
       continue;
     }
     await enqueueJob({ type: 'characters.detect', payload: { imageId, force }, maxAttempts: 2 });
-    inFlight.add(imageId); // guard against dupes within this same request's id list
+    if (!force) inFlight.add(imageId); // guard against dupes within this same request's id list
     enqueued++;
   }
   return NextResponse.json({ enqueued, skipped });

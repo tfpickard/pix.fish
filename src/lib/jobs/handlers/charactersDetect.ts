@@ -21,12 +21,13 @@ const HEADSHOT_MAX = 384; // px, longest edge of the saved crop
 
 // Clear an image's crops on a forced re-detect, deleting the Blob objects BEFORE
 // the rows -- the rows hold the only copy of each crop's blob key, so dropping
-// them first would orphan the public headshots beyond reach of any cleanup.
+// them first would orphan the public headshots beyond reach of any cleanup. If
+// reading the keys or deleting the blobs fails, we DON'T delete the rows: we let
+// the error propagate so the keys survive for the queue's retry, rather than
+// silently orphaning the headshots.
 async function clearCrops(imageId: number): Promise<void> {
-  const keys = await cropBlobKeysForImage(imageId).catch(() => [] as string[]);
-  if (keys.length > 0) {
-    await del(keys).catch((err) => console.error(`characters.detect: blob cleanup for image ${imageId} failed`, err));
-  }
+  const keys = await cropBlobKeysForImage(imageId);
+  if (keys.length > 0) await del(keys);
   await deleteCropsForImage(imageId);
 }
 

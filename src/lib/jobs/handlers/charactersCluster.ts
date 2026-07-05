@@ -97,6 +97,15 @@ export async function charactersClusterHandler(job: Job): Promise<void> {
   const provider = cfg && keys ? getProvider('captions', cfg, keys) : null;
   const clerks = kept.length > 0 ? await listClerks() : [];
 
+  // Dossier synthesis is one serial LLM call per character; the worker caps this
+  // job's wall time. Stop STARTING new text calls past this budget so a large
+  // roster always reaches appendEvent -- characters past the cutoff get a
+  // fallback identity and can be re-synthesized by a later re-cluster. Leaves
+  // headroom under the ~55s worker timeout for an in-flight call + the append.
+  const DOSSIER_BUDGET_MS = 35_000;
+  const startedAt = Date.now();
+  let fellBack = 0;
+
   const rosterChars: CharacterCensusPayload['characters'] = [];
   for (let i = 0; i < kept.length; i++) {
     const memberCropIds = kept[i]!;
@@ -117,7 +126,7 @@ export async function charactersClusterHandler(job: Job): Promise<void> {
     const clerk = clerks.length > 0 ? clerks[i % clerks.length]! : FALLBACK_CLERK;
 
     let identity = parseCharacterIdentity('', `character-${i}`);
-    if (provider?.text) {
+    if (provider?.text && Date.now() - startedAt < DOSSIER_BUDGET_MS) {
       try {
         const prompt = await buildCharacterDossierPrompt({
           clerk: { name: clerk.name, department: clerk.department, voice: clerk.voice, agenda: clerk.agenda },
@@ -128,6 +137,8 @@ export async function charactersClusterHandler(job: Job): Promise<void> {
       } catch (err) {
         console.error(`characters.cluster: dossier synthesis for character-${i} failed`, err);
       }
+    } else if (provider?.text) {
+      fellBack++; // over budget -- fallback identity, re-cluster to fill in later
     }
 
     rosterChars.push({
@@ -155,6 +166,7 @@ export async function charactersClusterHandler(job: Job): Promise<void> {
   await materializeEvent(event);
 
   console.log(
-    `characters.cluster: ${rosterChars.length} recurring character(s) from ${crops.length} crops`
+    `characters.cluster: ${rosterChars.length} recurring character(s) from ${crops.length} crops` +
+      (fellBack > 0 ? ` (${fellBack} over dossier budget -- re-cluster to synthesize)` : '')
   );
 }
