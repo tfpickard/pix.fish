@@ -25,8 +25,11 @@ export async function POST(req: NextRequest) {
   }
   // Distinguish a truly empty body (retry-all, allowed) from a malformed one.
   // Collapsing a JSON parse failure to {} would turn a botched single id/type
-  // retry into an accidental global requeue, so invalid JSON is a 400.
-  const raw = (await req.text()).trim();
+  // retry into an accidental global requeue, so invalid JSON is a 400. Only a
+  // genuinely zero-length body is retry-all -- a whitespace-only body is left
+  // for JSON.parse to reject (it tolerates surrounding whitespace but throws on
+  // whitespace-only), so "   " is a 400 rather than a silent global requeue.
+  const raw = await req.text();
   let body: { id?: unknown; type?: unknown } = {};
   if (raw.length > 0) {
     let parsed: unknown;
