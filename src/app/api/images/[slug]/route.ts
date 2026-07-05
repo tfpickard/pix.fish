@@ -221,7 +221,10 @@ export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   // Capture character-crop blob keys BEFORE the delete: character_crops rows
   // cascade away with the image (FK onDelete cascade), taking their blob_key
   // with them, so we must read them first to clean up the public crop headshots.
-  const cropKeys = await cropBlobKeysForImage(img.id).catch(() => []);
+  // Not swallowed: if this read fails we must NOT proceed to delete the image
+  // (which would cascade the rows and lose the keys forever) -- let it throw so
+  // the delete fails and the client can retry once the keys are readable.
+  const cropKeys = await cropBlobKeysForImage(img.id);
 
   // Delete the DB row first. Captions/descriptions/tags/embeddings/crops cascade
   // via FKs; slug_history is an array column on the same row. If blob cleanup

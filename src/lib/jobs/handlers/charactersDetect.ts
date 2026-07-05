@@ -24,11 +24,14 @@ const HEADSHOT_MAX = 384; // px, longest edge of the saved crop
 // them first would orphan the public headshots beyond reach of any cleanup. If
 // reading the keys or deleting the blobs fails, we DON'T delete the rows: we let
 // the error propagate so the keys survive for the queue's retry, rather than
-// silently orphaning the headshots.
+// silently orphaning the headshots. Also resets characters_detected_at: the
+// image now has zero crops, so if the re-crop later throws, a non-force run must
+// still see it as un-examined and retry rather than skip an empty image.
 async function clearCrops(imageId: number): Promise<void> {
   const keys = await cropBlobKeysForImage(imageId);
   if (keys.length > 0) await del(keys);
   await deleteCropsForImage(imageId);
+  await db.update(images).set({ charactersDetectedAt: null }).where(eq(images.id, imageId));
 }
 
 // Mark this image as examined (even when no figures were found) so non-force

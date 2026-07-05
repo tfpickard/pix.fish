@@ -353,7 +353,10 @@ export async function ImageDetail({
                       alt={s.name}
                       width={32}
                       height={32}
-                      className="h-8 w-8 rounded-sm object-cover"
+                      // Crop is from THIS specimen; blur it the same way the main
+                      // image is blurred for NSFW (hover to reveal) so the headshot
+                      // doesn't bypass the specimen's own NSFW gate.
+                      className={`h-8 w-8 rounded-sm object-cover transition-[filter] duration-200${img.isNsfw ? ' [filter:blur(3px)] group-hover:[filter:blur(0px)]' : ''}`}
                     />
                   ) : null}
                   <span className="prose-caption text-sm text-ink-200 group-hover:text-ink-100">
