@@ -22,22 +22,45 @@ import type { ImageDerivatives } from '@/lib/images/derivatives';
 // Phase 1 tables
 // ----------------------------------------------------------------------------
 
-// Users. One row per signed-in identity. PK is provider-scoped:
-// for GitHub it's the numeric `profile.id` as text. `handle` is the
-// public, URL-safe identifier used in /u/<handle>/<slug>; collisions get a
-// numeric suffix at first sign-in. `role` gates site-admin features:
-// the bootstrap user (`OWNER_GITHUB_ID`) is upserted as 'admin' on first run.
-export const users = pgTable('users', {
-  id: text('id').primaryKey(),
-  handle: text('handle').notNull().unique(),
-  displayName: text('display_name'),
-  avatarUrl: text('avatar_url'),
-  email: text('email'),
-  provider: text('provider').notNull().default('github'),
-  role: text('role').notNull().default('user'), // 'user' | 'admin'
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
-});
+// Users. One row per signed-in identity. PK is provider-scoped so identities
+// from different providers can never collide: GitHub keeps its bare numeric
+// `profile.id` as text (preserving existing rows + the OWNER_GITHUB_ID match),
+// while newer providers are namespaced -- `google:<sub>`, `apple:<sub>`, and
+// email/password users get an OPAQUE `email:<uuid>` id. The id is intentionally
+// NOT the raw email: it flows into `images.ownerId`, which is serialized in the
+// public image API, so a raw-email id would leak the address. The address lives
+// only in the `email` column (uniqueness enforced by users_email_provider_uniq
+// below). `handle` is the public, URL-safe identifier used in /u/<handle>/<slug>;
+// collisions get a numeric suffix at first sign-in. `role` gates site-admin
+// features: the bootstrap user (`OWNER_GITHUB_ID`) is upserted 'admin' on first run.
+export const users = pgTable(
+  'users',
+  {
+    id: text('id').primaryKey(),
+    handle: text('handle').notNull().unique(),
+    displayName: text('display_name'),
+    avatarUrl: text('avatar_url'),
+    email: text('email'),
+    provider: text('provider').notNull().default('github'),
+    role: text('role').notNull().default('user'), // 'user' | 'admin'
+    // Only set for email/password ('email' provider) users: scrypt digest in the
+    // `scrypt$<salt-hex>$<hash-hex>` format written by src/lib/password.ts. Null
+    // for OAuth identities (GitHub/Google/Apple), which have no local password.
+    passwordHash: text('password_hash'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    // One email/password account per address, enforced at the DB. Partial +
+    // lower() so it applies ONLY to 'email' provider rows (OAuth rows may
+    // legitimately share or omit an email) and is case-insensitive. The email
+    // user id is opaque (`email:<uuid>`), so this index -- not the PK -- is what
+    // guarantees no two registrations claim the same address.
+    emailProviderUniq: uniqueIndex('users_email_provider_uniq')
+      .on(sql`lower(${t.email})`)
+      .where(sql`${t.provider} = 'email'`)
+  })
+);
 
 export const images = pgTable(
   'images',

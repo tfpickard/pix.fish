@@ -85,6 +85,20 @@
       "when": 1782611130616,
       "tag": "0011_quick_banshee",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783057795393,
+      "tag": "0012_chief_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783077647713,
+      "tag": "0013_naive_skaar",
+      "breakpoints": true
     }
   ]
 }
