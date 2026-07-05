@@ -147,24 +147,29 @@ export async function requeueFailedJobs(filter?: {
   id?: number;
   type?: string;
 }): Promise<number> {
-  const conds = [eq(jobs.status, 'failed')];
-  if (filter?.id !== undefined) conds.push(eq(jobs.id, filter.id));
-  if (filter?.type !== undefined) conds.push(eq(jobs.type, filter.type));
-  const res = await db
-    .update(jobs)
-    .set({
-      status: 'pending',
-      attempts: 0,
-      runAt: new Date(),
-      lockedBy: null,
-      lockedAt: null,
-      startedAt: null,
-      finishedAt: null,
-      lastError: null
-    })
-    .where(and(...conds))
-    .returning({ id: jobs.id });
-  return res.length;
+  // Count in the DB via a CTE rather than `.returning()` -- the "retry all"
+  // path can touch every failed row, and we only need the tally, not the rows.
+  const conds = [sql`status = 'failed'`];
+  if (filter?.id !== undefined) conds.push(sql`id = ${filter.id}`);
+  if (filter?.type !== undefined) conds.push(sql`type = ${filter.type}`);
+  const where = sql.join(conds, sql` AND `);
+  const res = await db.execute<{ count: number }>(sql`
+    WITH updated AS (
+      UPDATE jobs
+      SET status = 'pending',
+          attempts = 0,
+          run_at = NOW(),
+          locked_by = NULL,
+          locked_at = NULL,
+          started_at = NULL,
+          finished_at = NULL,
+          last_error = NULL
+      WHERE ${where}
+      RETURNING id
+    )
+    SELECT count(*)::int AS count FROM updated
+  `);
+  return Number(res.rows[0]?.count ?? 0);
 }
 
 export async function jobsOverview(limit = 50): Promise<{

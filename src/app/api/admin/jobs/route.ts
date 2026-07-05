@@ -23,7 +23,23 @@ export async function POST(req: NextRequest) {
   if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
-  const body = (await req.json().catch(() => ({}))) as { id?: unknown; type?: unknown };
+  // Distinguish a truly empty body (retry-all, allowed) from a malformed one.
+  // Collapsing a JSON parse failure to {} would turn a botched single id/type
+  // retry into an accidental global requeue, so invalid JSON is a 400.
+  const raw = (await req.text()).trim();
+  let body: { id?: unknown; type?: unknown } = {};
+  if (raw.length > 0) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
+    }
+    body = parsed as { id?: unknown; type?: unknown };
+  }
 
   const filter: { id?: number; type?: string } = {};
   if (body.id !== undefined) {

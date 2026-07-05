@@ -53,8 +53,10 @@ export default function AdminJobsPage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'requeue failed');
+      // A 500 can return an HTML error page; don't let JSON parsing throw an
+      // opaque error before we surface the status.
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `requeue failed (${res.status})`);
       const n = data.requeued ?? 0;
       setNotice(n === 0 ? 'no failed jobs to requeue' : `requeued ${n} job${n === 1 ? '' : 's'}`);
       load();
