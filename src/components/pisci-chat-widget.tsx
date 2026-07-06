@@ -405,14 +405,17 @@ export function PisciChatWidget() {
     );
   }
 
-  // Open: a slim fixed banner pinned directly beneath the nav (top-14 == the
-  // h-14 nav). Full-bleed background with nav-matched centered content so it
-  // reads as a secondary bar, not a popup -- the gallery scrolls under it
-  // instead of being covered by a corner panel. Two stacked rows: Pisci's
-  // current line, then the reply box.
+  // Open: a slim banner that sits in normal flow directly beneath the nav, so
+  // it reserves real space and the page body always renders below it instead
+  // of being covered. `sticky top-14` (top-14 == the h-14 nav) then pins it
+  // under the nav as the gallery scrolls past. It is mounted between the nav
+  // and <main> in the root layout so this flow slot lands at the top of the
+  // page. Full-bleed background with nav-matched centered content so it reads
+  // as a secondary bar. Two stacked rows: Pisci's current line, then the reply
+  // box.
   return (
     <div
-      className="fixed inset-x-0 top-14 z-40 border-b border-ink-800/70 bg-ink-950/90 backdrop-blur"
+      className="sticky top-14 z-40 border-b border-ink-800/70 bg-ink-950/90 backdrop-blur"
       role="dialog"
       aria-label="Pisci support chat"
     >
