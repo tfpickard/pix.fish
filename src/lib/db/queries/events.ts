@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { events, type UniverseEvent } from '../schema';
 
@@ -77,6 +77,18 @@ export async function latestEventIdOfType(type: string): Promise<number | null> 
     .orderBy(desc(events.id))
     .limit(1);
   return row ? Number(row.id) : null;
+}
+
+// Largest character.census run stamp already on the log (the census subjectId is
+// its run stamp). The census finalizer uses this to refuse publishing a stale run
+// after a newer clustering pass has already filed -- the reducer is newest-EVENT-
+// id wins, so an older run appending late would otherwise clobber newer results.
+export async function maxCensusRunStamp(): Promise<number | null> {
+  const res = await db.execute<{ m: string | null }>(sql`
+    SELECT max((subject_id)::bigint) AS m FROM events WHERE type = 'character.census'
+  `);
+  const m = res.rows?.[0]?.m;
+  return m == null ? null : Number(m);
 }
 
 // All events in canonical (insert) order. The rebuild replays this slice

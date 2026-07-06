@@ -3,7 +3,7 @@ import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { cropsByIds, type CropMeta } from '@/lib/db/queries/character-crops';
 import { deleteCandidatesForRun, listCandidates } from '@/lib/db/queries/character-candidates';
 import { listClerks } from '@/lib/db/queries/clerks';
-import { appendEvent } from '@/lib/db/queries/events';
+import { appendEvent, maxCensusRunStamp } from '@/lib/db/queries/events';
 import { enqueueJob, inFlightRunJobCount } from '@/lib/db/queries/jobs';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import type { Job } from '@/lib/db/schema';
@@ -35,6 +35,18 @@ const DOSSIER_BUDGET_MS = 35_000;
 // to the raw candidate for any group a verify job never confirmed. Shared by the
 // finalizer handler and the offline pipeline.
 export async function assembleCensus(runStamp: number, minAppearances: number): Promise<void> {
+  // Refuse to publish a stale run: if a newer clustering pass (larger run stamp)
+  // has already filed its census, appending now would clobber it, because the
+  // reducer is newest-EVENT-id wins and this late append gets a higher id. Drop
+  // this run's staging and bail instead. (Same run stamp = our own idempotent
+  // re-run, which is fine.)
+  const latest = await maxCensusRunStamp();
+  if (latest !== null && latest > runStamp) {
+    await deleteCandidatesForRun(runStamp);
+    console.log(`characters.census: skipping stale run ${runStamp} (newer census ${latest} already filed)`);
+    return;
+  }
+
   const candidates = await listCandidates(runStamp);
   // Flatten confirmed subgroups; fall back to the raw candidate when a verify
   // job never confirmed it (null verifiedGroups).

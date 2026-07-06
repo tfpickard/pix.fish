@@ -36,6 +36,10 @@ export default function CharacterLabeler({
   }, []);
 
   useEffect(() => {
+    // Reset the field to the new page's default too: on a client-side nav React
+    // may preserve this component instance, so the useState initializer won't
+    // re-run -- without this, saves for character B would land under A's label.
+    setSubject(subjectDefault);
     load(subjectDefault);
   }, [subjectDefault, load]);
 
