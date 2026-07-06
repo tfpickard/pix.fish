@@ -49,6 +49,11 @@ export async function assembleCensus(runStamp: number, minAppearances: number): 
   const provider = cfg && keys ? getProvider('captions', cfg, keys) : null;
   const clerks = groups.length > 0 ? await listClerks() : [];
 
+  // Fetch every crop the run references in ONE query (avoids an N+1 per group,
+  // which could exhaust the worker budget before dossier synthesis).
+  const allCropIds = [...new Set(groups.flat())];
+  const cropById = new Map((await cropsByIds(allCropIds)).map((c) => [c.cropId, c] as const));
+
   const startedAt = Date.now();
   const rosterChars: CharacterCensusPayload['characters'] = [];
 
@@ -59,7 +64,7 @@ export async function assembleCensus(runStamp: number, minAppearances: number): 
 
   for (let i = 0; i < sorted.length; i++) {
     const cropIds = sorted[i]!;
-    const crops = await cropsByIds(cropIds);
+    const crops = cropIds.map((id) => cropById.get(id)).filter(Boolean) as CropMeta[];
     if (crops.length === 0) continue;
 
     // One appearance per distinct image (smallest crop id wins as representative).

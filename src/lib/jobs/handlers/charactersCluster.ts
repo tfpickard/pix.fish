@@ -25,15 +25,23 @@ export type ResolvedKnobs = {
   verifyEnabled: boolean;
 };
 
+// Use a payload number only when it's finite; otherwise fall back to the saved
+// tuning. Guards against NaN sneaking in from CLI parsing (e.g. --maxDist=abc),
+// which would otherwise poison the knobs and silently filter out all candidates.
+function num(v: number | undefined, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+}
+
 // Resolve the effective knobs from a payload, falling back to the saved tuning.
 export async function resolveKnobs(payload: Payload): Promise<ResolvedKnobs> {
   const tuning = await getTuning();
+  const runStamp = num(payload.runStamp ?? payload.stamp, Math.floor(Date.now() % 2_147_483_647));
   return {
-    runStamp: payload.runStamp ?? payload.stamp ?? Math.floor(Date.now() % 2_147_483_647),
-    minAppearances: Math.max(2, Math.trunc(payload.minAppearances ?? tuning.minAppearances)),
-    maxDist: payload.maxDist ?? tuning.maxDist,
-    k: Math.max(1, Math.trunc(payload.k ?? tuning.k)),
-    pruneK: Math.max(1, Math.trunc(payload.pruneK ?? tuning.pruneK)),
+    runStamp,
+    minAppearances: Math.max(2, Math.trunc(num(payload.minAppearances, tuning.minAppearances))),
+    maxDist: num(payload.maxDist, tuning.maxDist),
+    k: Math.max(1, Math.trunc(num(payload.k, tuning.k))),
+    pruneK: Math.max(1, Math.trunc(num(payload.pruneK, tuning.pruneK))),
     verifyEnabled: payload.verifyEnabled ?? tuning.verifyEnabled
   };
 }

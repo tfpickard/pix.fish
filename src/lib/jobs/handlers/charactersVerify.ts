@@ -4,7 +4,7 @@ import { cropsByIds } from '@/lib/db/queries/character-crops';
 import { getCandidate, setVerifiedGroups } from '@/lib/db/queries/character-candidates';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import type { Job } from '@/lib/db/schema';
-import { buildMosaic, MOSAIC_MAX_CELLS } from '@/lib/images/mosaic';
+import { buildMosaic } from '@/lib/images/mosaic';
 import { buildVerifyPrompt, parseVerifyGroups } from '@/lib/universe/characters';
 
 type Payload = { runStamp: number; candidateIndex: number };
@@ -28,8 +28,9 @@ export async function verifyCandidate(runStamp: number, candidateIndex: number):
   }
 
   const crops = await cropsByIds(cropIds);
+  const byId = new Map(crops.map((c) => [c.cropId, c] as const));
   // Preserve the candidate's crop-id order so mosaic cells map back correctly.
-  const ordered = cropIds.map((id) => crops.find((c) => c.cropId === id)).filter(Boolean) as typeof crops;
+  const ordered = cropIds.map((id) => byId.get(id)).filter(Boolean) as typeof crops;
   if (ordered.length <= 1) {
     await setVerifiedGroups(runStamp, candidateIndex, [ordered.map((c) => c.cropId)]);
     return;
@@ -53,10 +54,15 @@ export async function verifyCandidate(runStamp: number, candidateIndex: number):
   // ordered[cells[j]].
   const groups = cellGroups.map((g) => g.map((cell) => ordered[cells[cell]!]!.cropId));
 
-  // Crops beyond the mosaic cap were not shown to the verifier; keep them as one
-  // trailing group rather than dropping them silently.
-  if (ordered.length > MOSAIC_MAX_CELLS) {
-    groups.push(ordered.slice(MOSAIC_MAX_CELLS).map((c) => c.cropId));
+  // Any crop the verifier never saw -- a cell whose blob failed to fetch (dropped
+  // from `cells`), or a crop beyond the mosaic cap -- must not vanish. Append each
+  // as its own singleton so verifiedGroups covers EVERY candidate crop: the census
+  // then applies minAppearances (a stray singleton is dropped, not merged into a
+  // character it wasn't verified against). Without this, an omitted crop would be
+  // silently lost since the census treats a non-null verifiedGroups as complete.
+  const covered = new Set(groups.flat());
+  for (const c of ordered) {
+    if (!covered.has(c.cropId)) groups.push([c.cropId]);
   }
 
   await setVerifiedGroups(runStamp, candidateIndex, groups);
