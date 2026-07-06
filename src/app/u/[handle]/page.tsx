@@ -4,6 +4,7 @@ import { listImagesByHandle, countImagesByOwner } from '@/lib/db/queries/images'
 import { tagCloudByOwner } from '@/lib/db/queries/tags';
 import { InfiniteImageGrid } from '@/components/infinite-image-grid';
 import { TagCloud } from '@/components/tag-cloud';
+import { TagCloudPanel } from '@/components/tag-cloud-panel';
 import { SITE_NAME } from '@/lib/site';
 import { readNsfwMode } from '@/lib/nsfw';
 
@@ -60,7 +61,9 @@ export default async function HandleGalleryPage({
         />
         {cloud.length > 0 ? (
           <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
-            <TagCloud tags={cloud} activeTags={[]} />
+            <TagCloudPanel count={cloud.length}>
+              <TagCloud tags={cloud} activeTags={[]} />
+            </TagCloudPanel>
           </aside>
         ) : null}
       </div>

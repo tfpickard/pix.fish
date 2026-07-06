@@ -8,6 +8,7 @@ import { HAIKUS } from '@/lib/haikus';
 import { pickOne } from '@/lib/random';
 import { InfiniteImageGrid } from '@/components/infinite-image-grid';
 import { TagCloud } from '@/components/tag-cloud';
+import { TagCloudPanel } from '@/components/tag-cloud-panel';
 import { SortBar } from '@/components/sort-bar';
 import { isSortMode } from '@/lib/sort/types';
 import { JsonLd } from '@/components/json-ld';
@@ -124,9 +125,13 @@ export default async function HomePage({ searchParams }: PageProps) {
             tag: activeTags
           }}
         />
-        <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
-          <TagCloud tags={cloud} activeTags={activeTags} />
-        </aside>
+        {cloud.length > 0 ? (
+          <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
+            <TagCloudPanel count={cloud.length}>
+              <TagCloud tags={cloud} activeTags={activeTags} />
+            </TagCloudPanel>
+          </aside>
+        ) : null}
       </div>
 
       <div className="grid-floor" aria-hidden="true" />
