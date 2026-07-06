@@ -14,6 +14,8 @@ import { universeAmendHandler } from './universeAmend';
 import { universeRippleHandler } from './universeRipple';
 import { charactersDetectHandler } from './charactersDetect';
 import { charactersClusterHandler } from './charactersCluster';
+import { charactersVerifyHandler } from './charactersVerify';
+import { charactersCensusHandler } from './charactersCensus';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -54,7 +56,11 @@ export const handlers: Record<string, JobHandler> = {
   'universe.amend': universeAmendHandler,
   'universe.ripple': universeRippleHandler,
   // Universe (Phase U3): detect + crop figures per image; cluster crops into
-  // recurring characters and file the census.
+  // recurring characters and file the census. Clustering is a 3-stage pipeline:
+  // cluster (candidates) -> verify (per-candidate mosaic split) -> census
+  // (barrier + assemble + dossiers).
   'characters.detect': charactersDetectHandler,
-  'characters.cluster': charactersClusterHandler
+  'characters.cluster': charactersClusterHandler,
+  'characters.verify': charactersVerifyHandler,
+  'characters.census': charactersCensusHandler
 };

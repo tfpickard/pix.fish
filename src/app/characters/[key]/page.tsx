@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { auth, isSiteAdmin } from '@/lib/auth';
 import { getClerk } from '@/lib/db/queries/clerks';
 import {
   getCharacter,
@@ -9,6 +10,7 @@ import {
 } from '@/lib/db/queries/characters';
 import { imageRefsByIds } from '@/lib/db/queries/images';
 import { readNsfwMode } from '@/lib/nsfw';
+import CharacterLabeler from '@/components/character-labeler';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -56,10 +58,11 @@ export default async function CharacterPage({ params }: { params: { key: string 
   const nsfwMode = await readNsfwMode();
   const appearances = await listAppearances(params.key).catch(() => []);
   const ids = appearances.map((a) => a.imageId);
-  const [visibleIds, refs, clerk] = await Promise.all([
+  const [visibleIds, refs, clerk, admin] = await Promise.all([
     visibleAppearanceImageIds(ids, { nsfwMode }).catch(() => new Set<number>()),
     imageRefsByIds(ids).catch(() => new Map()),
-    getClerk(character.clerkSlug).catch(() => null)
+    getClerk(character.clerkSlug).catch(() => null),
+    auth().then((s) => isSiteAdmin(s)).catch(() => false)
   ]);
   const visible = appearances.filter((a) => visibleIds.has(a.imageId));
   // A character whose every appearance is now NSFW/archived for this viewer has
@@ -137,6 +140,13 @@ export default async function CharacterPage({ params }: { params: { key: string 
             })}
           </ul>
         </section>
+      ) : null}
+
+      {admin ? (
+        <CharacterLabeler
+          subjectDefault={character.name}
+          appearances={visible.map((a) => ({ imageId: a.imageId, cropUrl: a.cropUrl }))}
+        />
       ) : null}
     </article>
   );

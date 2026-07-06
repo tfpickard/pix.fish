@@ -35,6 +35,19 @@ export async function inFlightImageIds(type: string): Promise<Set<number>> {
   return out;
 }
 
+// Count in-flight (pending or processing) jobs of a type for a given run stamp
+// (read from the jsonb payload). The characters.census finalizer uses this as a
+// barrier -- it waits until all characters.verify jobs for the run have settled.
+export async function inFlightRunJobCount(type: string, runStamp: number): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM jobs
+    WHERE type = ${type}
+      AND status IN ('pending', 'processing')
+      AND (payload->>'runStamp')::bigint = ${runStamp}
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
 // Reclaim rows whose visibility-timeout lease expired. Runs at the top of the
 // cron tick so a handler that died mid-flight can retry on the next pass.
 export async function reclaimStuckJobs(olderThan: Date): Promise<number> {

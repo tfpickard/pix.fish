@@ -16,7 +16,8 @@
     "universe:rebuild": "bun scripts/universe-rebuild.ts",
     "universe:verify": "bun scripts/verify-universe.ts",
     "characters:detect": "bun scripts/characters-detect.ts",
-    "characters:verify": "bun scripts/verify-characters.ts"
+    "characters:verify": "bun scripts/verify-characters.ts",
+    "characters:eval": "bun scripts/eval-characters.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.35.0",

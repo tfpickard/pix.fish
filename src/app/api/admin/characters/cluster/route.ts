@@ -1,21 +1,27 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth, isSiteAdmin } from '@/lib/auth';
+import { getTuning, saveTuning } from '@/lib/db/queries/character-tuning';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+// Enqueue the clustering pipeline (cluster -> verify -> census). Any knobs in the
+// body are persisted as the new defaults (so the sliders stick) AND passed in the
+// job payload for this run. Omitted knobs fall back to the saved tuning. The run
+// stamp is set here so a reclaimed/re-run cluster reuses it (collapses through the
+// census dedupe key) rather than filing a duplicate census.
 const bodySchema = z
   .object({
-    minAppearances: z.number().int().min(2).max(50).optional()
+    maxDist: z.number().min(0.05).max(1).optional(),
+    k: z.number().int().min(1).max(30).optional(),
+    pruneK: z.number().int().min(1).max(30).optional(),
+    minAppearances: z.number().int().min(2).max(50).optional(),
+    verifyEnabled: z.boolean().optional()
   })
   .default({});
 
-// Enqueue the clustering census: group all crops into recurring characters and
-// file one character.census event. The stamp is set here so a reclaimed/re-run
-// job reuses it (collapses through the census dedupe key) rather than filing a
-// duplicate census.
 export async function POST(req: Request) {
   if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
@@ -24,10 +30,19 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: 'invalid body', issues: parsed.error.issues }, { status: 400 });
   }
+
+  // Persist any provided knobs, then resolve the effective set from storage.
+  if (Object.keys(parsed.data).length > 0) await saveTuning(parsed.data);
+  const tuning = await getTuning();
+
   const payload = {
-    minAppearances: parsed.data.minAppearances ?? 2,
-    stamp: Date.now() % 2_147_483_647
+    runStamp: Date.now() % 2_147_483_647,
+    minAppearances: tuning.minAppearances,
+    maxDist: tuning.maxDist,
+    k: tuning.k,
+    pruneK: tuning.pruneK,
+    verifyEnabled: tuning.verifyEnabled
   };
   const job = await enqueueJob({ type: 'characters.cluster', payload, maxAttempts: 1 });
-  return NextResponse.json({ jobId: job.id });
+  return NextResponse.json({ jobId: job.id, tuning });
 }

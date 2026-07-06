@@ -30,7 +30,9 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'universe.amend': 55_000, // one vision-less text call + one embed; fills the tick
   'universe.ripple': 10_000, // fan-out enqueue only
   'characters.detect': 55_000, // one vision call + N crops/embeds for one image
-  'characters.cluster': 55_000, // cluster all crops + synthesize dossiers; fills the tick
+  'characters.cluster': 55_000, // vector-only clustering + fan-out; fast but corpus-sized
+  'characters.verify': 45_000, // build mosaic (N blob fetches + sharp) + one vision call
+  'characters.census': 55_000, // barrier poll or assemble + budgeted dossier synthesis
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;

@@ -14,17 +14,30 @@
  */
 import { listDetectableImageIds } from '../src/lib/db/queries/images';
 import type { Job } from '../src/lib/db/schema';
-import { charactersClusterHandler } from '../src/lib/jobs/handlers/charactersCluster';
+import {
+  produceCandidates,
+  resolveKnobs
+} from '../src/lib/jobs/handlers/charactersCluster';
+import { verifyCandidate } from '../src/lib/jobs/handlers/charactersVerify';
+import { assembleCensus } from '../src/lib/jobs/handlers/charactersCensus';
 import { charactersDetectHandler } from '../src/lib/jobs/handlers/charactersDetect';
 
 function asJob(payload: Record<string, unknown>): Job {
   return { payload } as unknown as Job;
 }
 
+// Parse "--flag=value" numeric knob overrides so a sweep can run e.g.
+//   bun run characters:detect --cluster-only --maxDist=0.32 --no-verify
+function numArg(name: string): number | undefined {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? Number(hit.split('=')[1]) : undefined;
+}
+
 async function main() {
   const force = process.argv.includes('--force');
   const clusterOnly = process.argv.includes('--cluster-only');
   const allowPartial = process.argv.includes('--allow-partial');
+  const noVerify = process.argv.includes('--no-verify');
 
   if (!clusterOnly) {
     const ids = await listDetectableImageIds();
@@ -54,10 +67,29 @@ async function main() {
     }
   }
 
+  // Run the full clustering pipeline INLINE (cluster -> verify -> census) rather
+  // than enqueuing jobs, so a local sweep completes in one shot. Knob overrides
+  // from the CLI fall back to the saved tuning.
+  const knobs = await resolveKnobs({
+    maxDist: numArg('maxDist'),
+    k: numArg('k'),
+    pruneK: numArg('pruneK'),
+    minAppearances: numArg('minAppearances'),
+    verifyEnabled: noVerify ? false : undefined
+  });
   console.log('clustering crops into recurring characters...');
-  // No stamp -- let the handler mint a unique per-run census stamp so repeated
-  // runs file distinct events instead of colliding on the same dedupe key.
-  await charactersClusterHandler(asJob({ minAppearances: 2 }));
+  const count = await produceCandidates(knobs);
+  if (knobs.verifyEnabled) {
+    console.log(`verifying ${count} candidate(s) via the mosaic pass...`);
+    for (let i = 0; i < count; i++) {
+      try {
+        await verifyCandidate(knobs.runStamp, i);
+      } catch (err) {
+        console.error(`  candidate ${i} verify failed (census will keep it whole):`, err);
+      }
+    }
+  }
+  await assembleCensus(knobs.runStamp, knobs.minAppearances);
   console.log('done.');
 }
 

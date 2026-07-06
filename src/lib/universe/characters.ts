@@ -134,4 +134,70 @@ export function buildCropEdges(
   return edges;
 }
 
-export { DEFAULT_CHARACTER_DETECT_TEMPLATE, DEFAULT_CHARACTER_DOSSIER_TEMPLATE };
+// ---- mosaic verification (precision pass) ---------------------------------
+
+// Prompt for the mosaic "captcha": the model sees a numbered grid of candidate
+// crops and partitions the cells into same-INDIVIDUAL groups. This is where the
+// weak text-embedding clustering gets corrected by real visual discrimination
+// (two different frogs, or two different anthropomorphic fish, split apart).
+const DEFAULT_CHARACTER_VERIFY_TEMPLATE = `You are an identity examiner for an image archive. The grid below contains {{n}} cropped figures, each labelled with a number ({{range}}). An automatic pass grouped them as POSSIBLY the same recurring character, but the grouping is noisy and mixes different individuals.
+
+Partition the numbered cells into groups so that every cell in a group is the SAME SPECIFIC INDIVIDUAL -- not merely the same species, type, or art style. Two figures that are clearly different individuals (even if both are frogs, or both are anthropomorphic fish) must go in DIFFERENT groups. A cell that matches no other belongs in its own singleton group.
+
+Rules:
+- Judge by distinguishing visual identity (features, markings, build, palette), not by category alone.
+- Every cell number from {{range}} must appear EXACTLY ONCE across all groups.
+- Prefer splitting when unsure: it is better to separate two lookalikes than to merge two different individuals.
+
+Return ONLY JSON: {"groups": [[1,3,5],[2,4],[6]]}.`;
+
+export async function buildVerifyPrompt(cellCount: number): Promise<string> {
+  const template = (await getPromptByKey('character_verify')) ?? DEFAULT_CHARACTER_VERIFY_TEMPLATE;
+  return template
+    .replaceAll('{{n}}', String(cellCount))
+    .replaceAll('{{range}}', cellCount > 0 ? `1..${cellCount}` : '1');
+}
+
+// Parse the verifier's {"groups": [[1,3],[2]]} into 0-based index groups,
+// clamped to 0..cellCount-1. Deduplicates within/across groups (each cell lands
+// in the first group that claims it) and appends any cell the model omitted as
+// its own singleton, so the partition is always total and disjoint.
+export function parseVerifyGroups(raw: string, cellCount: number): number[][] {
+  const stripped = raw
+    .trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/, '')
+    .trim();
+  const seen = new Set<number>();
+  const groups: number[][] = [];
+  try {
+    const obj = JSON.parse(stripped) as { groups?: unknown };
+    if (Array.isArray(obj.groups)) {
+      for (const g of obj.groups) {
+        if (!Array.isArray(g)) continue;
+        const group: number[] = [];
+        for (const cell of g) {
+          const idx = Math.trunc(Number(cell)) - 1; // 1-based -> 0-based
+          if (Number.isInteger(idx) && idx >= 0 && idx < cellCount && !seen.has(idx)) {
+            seen.add(idx);
+            group.push(idx);
+          }
+        }
+        if (group.length > 0) groups.push(group);
+      }
+    }
+  } catch {
+    // fall through -- unparseable means "no confident grouping"
+  }
+  // Any cell the model dropped becomes its own singleton (never silently lost).
+  for (let i = 0; i < cellCount; i++) {
+    if (!seen.has(i)) groups.push([i]);
+  }
+  return groups;
+}
+
+export {
+  DEFAULT_CHARACTER_DETECT_TEMPLATE,
+  DEFAULT_CHARACTER_DOSSIER_TEMPLATE,
+  DEFAULT_CHARACTER_VERIFY_TEMPLATE
+};
