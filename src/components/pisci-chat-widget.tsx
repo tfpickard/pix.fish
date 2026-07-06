@@ -89,6 +89,10 @@ export function PisciChatWidget() {
   // Mirrors `open` for the auto-open click/scroll listeners, which would
   // otherwise count clicks on the widget's own controls (e.g. the close button).
   const openRef = useRef(open);
+  // The open banner measures itself into --pisci-banner-h so other pinned
+  // top-strip UI (the pix-fish stats bar, the lg gallery sidebars) can offset
+  // below it instead of being covered.
+  const bannerRef = useRef<HTMLDivElement | null>(null);
   const [avatarOk, setAvatarOk] = useState(true);
 
   fsmRef.current = fsm;
@@ -285,6 +289,30 @@ export function PisciChatWidget() {
     [clearSilence, clearWounded]
   );
 
+  // Publish the open banner's height as a global CSS var so the fixed pix-fish
+  // stats bar and the lg sticky gallery sidebars can offset below it (they all
+  // anchor to the same top strip). Closed -> 0px, so they sit at their normal
+  // positions. A ResizeObserver keeps the var in sync as Pisci's line/status
+  // reflows the banner height.
+  useEffect(() => {
+    const root = document.documentElement;
+    const clear = () => root.style.setProperty('--pisci-banner-h', '0px');
+    if (!open) {
+      clear();
+      return;
+    }
+    const el = bannerRef.current;
+    if (!el) return;
+    const apply = () => root.style.setProperty('--pisci-banner-h', `${el.offsetHeight}px`);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      clear();
+    };
+  }, [open]);
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || sending || !seedRef.current) return;
@@ -398,14 +426,16 @@ export function PisciChatWidget() {
   }
 
   if (!open) {
-    // Closed: a small launcher tucked just under the sticky nav on the right.
-    // Unobtrusive, and nowhere near the gallery it used to float over.
+    // Closed: a small launcher in the bottom-right corner (raised above the
+    // bottom-4 TemperatureHud). Kept out of the top strip so it never overlaps
+    // the pix-fish stats controls that live there; the panel it opens is the
+    // top banner. z-50 so it stays tappable over ambient corner overlays.
     return (
       <button
         type="button"
         onClick={openPanel}
         aria-label="Open Pisci support chat"
-        className="fixed right-4 top-[4.5rem] z-40 flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-ink-800/70 bg-ink-950/90 shadow-lg backdrop-blur transition-transform hover:scale-105"
+        className="fixed bottom-20 right-4 z-50 flex h-14 w-14 items-center justify-center overflow-hidden rounded-full border border-ink-800/70 bg-ink-950/90 shadow-lg backdrop-blur transition-transform hover:scale-105"
       >
         <Avatar ok={avatarOk} onError={() => setAvatarOk(false)} />
       </button>
@@ -422,6 +452,7 @@ export function PisciChatWidget() {
   // box.
   return (
     <div
+      ref={bannerRef}
       className="sticky top-14 z-40 border-b border-ink-800/70 bg-ink-950/90 backdrop-blur"
       role="dialog"
       aria-label="Pisci support chat"

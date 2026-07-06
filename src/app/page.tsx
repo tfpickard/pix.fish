@@ -126,7 +126,7 @@ export default async function HomePage({ searchParams }: PageProps) {
           }}
         />
         {cloud.length > 0 ? (
-          <aside className="order-first lg:order-none lg:sticky lg:top-20 lg:self-start">
+          <aside className="order-first lg:order-none lg:sticky lg:top-[calc(5rem_+_var(--pisci-banner-h,0px))] lg:self-start">
             <TagCloudPanel count={cloud.length}>
               <TagCloud tags={cloud} activeTags={activeTags} />
             </TagCloudPanel>
