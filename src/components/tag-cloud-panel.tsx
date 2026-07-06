@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 
 type Props = {
   count: number;
@@ -21,6 +21,9 @@ type Props = {
 // that precede the images, and the first picture is visible on load.
 export function TagCloudPanel({ count, children }: Props) {
   const [open, setOpen] = useState(false);
+  // useId (not a constant) so two panels on one page can't collide on the id
+  // that wires the toggle to its collapsible region.
+  const contentId = useId();
 
   return (
     <div>
@@ -28,6 +31,7 @@ export function TagCloudPanel({ count, children }: Props) {
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        aria-controls={contentId}
         className="flex w-full items-center justify-between rounded-md border border-ink-800/80 bg-ink-950/40 px-4 py-2 font-mono text-xs uppercase tracking-wider text-ink-500 hover:text-ink-100 lg:hidden"
       >
         <span>{open ? 'hide tags' : `browse tags (${count})`}</span>
@@ -35,7 +39,7 @@ export function TagCloudPanel({ count, children }: Props) {
       </button>
       {/* Hidden on mobile until toggled; always shown at lg+. Rendered on the
           server either way so the desktop disc needs no JS to appear. */}
-      <div className={`${open ? 'mt-3 block' : 'hidden'} lg:mt-0 lg:block`}>
+      <div id={contentId} className={`${open ? 'mt-3 block' : 'hidden'} lg:mt-0 lg:block`}>
         {children}
       </div>
     </div>

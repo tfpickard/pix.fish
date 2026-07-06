@@ -387,8 +387,15 @@ export function PisciChatWidget() {
   // The banner is Pisci's mouth: show only its most recent line. A pending
   // reply renders as a typing indicator rather than echoing the visitor's own
   // text back at them in the bar. Earlier turns scroll off -- the escalating
-  // beat still lands one line at a time, which is the whole gag.
-  const lastAssistant = [...bubbles].reverse().find((b) => b.role === 'assistant');
+  // beat still lands one line at a time, which is the whole gag. Scan from the
+  // end for the newest assistant bubble (no copy/reverse allocation per render).
+  let lastAssistant: Bubble | undefined;
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    if (bubbles[i].role === 'assistant') {
+      lastAssistant = bubbles[i];
+      break;
+    }
+  }
 
   if (!open) {
     // Closed: a small launcher tucked just under the sticky nav on the right.
