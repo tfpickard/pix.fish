@@ -43,7 +43,10 @@ export const PROMPT_KEYS = [
   // Universe (Phase U3) -- character detection (figures + bounding boxes +
   // descriptions) and the clerk-voiced recurring-character dossier.
   'character_detect',
-  'character_dossier'
+  'character_dossier',
+  // Character-classification tuning -- the mosaic verify "captcha" that splits a
+  // noisy candidate cluster into same-individual groups.
+  'character_verify'
 ] as const;
 
 export type PromptKey = (typeof PROMPT_KEYS)[number];

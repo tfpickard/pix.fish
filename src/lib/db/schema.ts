@@ -1013,6 +1013,68 @@ export const characterAppearances = pgTable(
   })
 );
 
+// STAGING / working data for the clustering pipeline. characters.cluster writes
+// one row per candidate community (vector-clustered crop ids) under a runStamp;
+// characters.verify fills verifiedGroups with the mosaic-confirmed subgroups
+// (each an array of crop ids that are genuinely the SAME individual -- a single
+// candidate can split into several); characters.census reads them, files the
+// census, and clears the run. Not a projection -- regenerable, cleared per run.
+export const characterCandidates = pgTable(
+  'character_candidates',
+  {
+    id: serial('id').primaryKey(),
+    runStamp: bigint('run_stamp', { mode: 'number' }).notNull(),
+    candidateIndex: integer('candidate_index').notNull(),
+    cropIds: integer('crop_ids').array().notNull(),
+    // null until verified; then an array of crop-id groups, each a confirmed
+    // same-individual subject. A verify failure leaves it null (census falls
+    // back to treating the whole candidate as one group).
+    verifiedGroups: jsonb('verified_groups').$type<number[][] | null>(),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    runIdx: index('character_candidates_run_idx').on(t.runStamp),
+    runCandUniq: uniqueIndex('character_candidates_run_cand_uniq').on(t.runStamp, t.candidateIndex)
+  })
+);
+
+// Singleton config (id = 1) for the clustering knobs, so the admin sliders'
+// last-used values persist as defaults across runs. maxDist is the cosine-
+// distance cutoff (lower = tighter/more precise); verifyEnabled toggles the
+// mosaic LLM verification pass.
+export const characterTuning = pgTable('character_tuning', {
+  id: integer('id').primaryKey().default(1),
+  maxDist: real('max_dist').notNull().default(0.45),
+  k: integer('k').notNull().default(5),
+  pruneK: integer('prune_k').notNull().default(4),
+  minAppearances: integer('min_appearances').notNull().default(2),
+  verifyEnabled: boolean('verify_enabled').notNull().default(true),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+// Eval ground truth. An admin marks each materialized appearance correct/wrong;
+// keyed to a stable subjectLabel (not the volatile character-N key) so labels
+// survive re-clustering. verdict true = image genuinely depicts the subject.
+// scripts/eval-characters.ts scores a census against these.
+export const characterLabels = pgTable(
+  'character_labels',
+  {
+    id: serial('id').primaryKey(),
+    subjectLabel: text('subject_label').notNull(),
+    imageId: integer('image_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    verdict: boolean('verdict').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    subjectIdx: index('character_labels_subject_idx').on(t.subjectLabel),
+    subjectImageUniq: uniqueIndex('character_labels_subject_image_uniq').on(t.subjectLabel, t.imageId)
+  })
+);
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   images: many(images),
@@ -1147,6 +1209,12 @@ export type Character = typeof characters.$inferSelect;
 export type NewCharacter = typeof characters.$inferInsert;
 export type CharacterAppearance = typeof characterAppearances.$inferSelect;
 export type NewCharacterAppearance = typeof characterAppearances.$inferInsert;
+export type CharacterCandidate = typeof characterCandidates.$inferSelect;
+export type NewCharacterCandidate = typeof characterCandidates.$inferInsert;
+export type CharacterTuning = typeof characterTuning.$inferSelect;
+export type NewCharacterTuning = typeof characterTuning.$inferInsert;
+export type CharacterLabel = typeof characterLabels.$inferSelect;
+export type NewCharacterLabel = typeof characterLabels.$inferInsert;
 
 // Taste (cycle: taste-vector). Each round of the /taste this-or-that is a
 // pairwise vote -- the picked image beat the passed-over one. Aggregated, these

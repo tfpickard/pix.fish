@@ -8,6 +8,8 @@ import {
   captions,
   characterAppearances,
   characterCrops,
+  characterLabels,
+  characterTuning,
   characters,
   comments,
   descriptions,
@@ -54,7 +56,9 @@ export async function backupExportHandler(job: Job): Promise<void> {
     savedPromptRows,
     characterCropRows,
     characterRows,
-    characterAppearanceRows
+    characterAppearanceRows,
+    characterLabelRows,
+    characterTuningRows
   ] = await Promise.all([
     db.select().from(images),
     db.select().from(captions),
@@ -69,10 +73,15 @@ export async function backupExportHandler(job: Job): Promise<void> {
     db.select({ id: webhooks.id, url: webhooks.url, events: webhooks.events, active: webhooks.active, createdAt: webhooks.createdAt }).from(webhooks),
     db.select().from(savedPrompts),
     // Character canon: crops are evidence (with the embedding vector, so a
-    // restore need not re-run paid vision/embed), plus the census projections.
+    // restore need not re-run paid vision/embed), plus the census projections,
+    // the eval ground-truth labels, and the tuning knobs -- all needed to
+    // reproduce a classification experiment. (character_candidates is ephemeral
+    // per-run staging, so it is intentionally not backed up.)
     db.select().from(characterCrops),
     db.select().from(characters),
-    db.select().from(characterAppearances)
+    db.select().from(characterAppearances),
+    db.select().from(characterLabels),
+    db.select().from(characterTuning)
   ]);
 
   const manifest = {
@@ -95,7 +104,9 @@ export async function backupExportHandler(job: Job): Promise<void> {
       savedPrompts: savedPromptRows.length,
       characterCrops: characterCropRows.length,
       characters: characterRows.length,
-      characterAppearances: characterAppearanceRows.length
+      characterAppearances: characterAppearanceRows.length,
+      characterLabels: characterLabelRows.length,
+      characterTuning: characterTuningRows.length
     }
   };
 
@@ -114,7 +125,9 @@ export async function backupExportHandler(job: Job): Promise<void> {
     savedPrompts: savedPromptRows,
     characterCrops: characterCropRows,
     characters: characterRows,
-    characterAppearances: characterAppearanceRows
+    characterAppearances: characterAppearanceRows,
+    characterLabels: characterLabelRows,
+    characterTuning: characterTuningRows
   };
 
   const archive = archiver('zip', { zlib: { level: 6 } });

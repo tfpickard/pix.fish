@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { parseDetectionsJson } from '../src/lib/ai/types';
 import { detectCommunities } from '../src/lib/universe/cluster';
-import { buildCropEdges, parseCharacterIdentity } from '../src/lib/universe/characters';
+import { buildCropEdges, parseCharacterIdentity, parseVerifyGroups } from '../src/lib/universe/characters';
 
 // Pure, infra-free tests in the existing style. The DB-bound invariants
 // (crops/characters reconcile, rebuild round-trip) are asserted by
@@ -86,5 +86,35 @@ describe('parseCharacterIdentity', () => {
     const id = parseCharacterIdentity('???', 'character-7');
     expect(id.name).toContain('7');
     expect(id.dossier.length).toBeGreaterThan(0);
+  });
+});
+
+describe('parseVerifyGroups', () => {
+  test('parses split groups and converts 1-based cells to 0-based', () => {
+    const groups = parseVerifyGroups('{"groups":[[1,3],[2]]}', 3);
+    expect(groups).toEqual([
+      [0, 2],
+      [1]
+    ]);
+  });
+
+  test('appends omitted cells as their own singletons (total partition)', () => {
+    const groups = parseVerifyGroups('{"groups":[[1,2]]}', 4);
+    // cells 3 and 4 (0-based 2,3) were dropped by the model -> singletons
+    expect(groups).toEqual([[0, 1], [2], [3]]);
+  });
+
+  test('dedupes a cell claimed by two groups (first wins)', () => {
+    const groups = parseVerifyGroups('{"groups":[[1,2],[2,3]]}', 3);
+    expect(groups).toEqual([
+      [0, 1],
+      [2]
+    ]);
+  });
+
+  test('clamps out-of-range cells and survives garbage', () => {
+    expect(parseVerifyGroups('{"groups":[[1,9]]}', 2)).toEqual([[0], [1]]);
+    // unparseable -> every cell becomes its own singleton
+    expect(parseVerifyGroups('not json', 2)).toEqual([[0], [1]]);
   });
 });

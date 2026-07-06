@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { characterCrops, type NewCharacterCrop } from '../schema';
 
@@ -86,6 +86,40 @@ export async function cropBlobKeysForImage(imageId: number): Promise<string[]> {
     .from(characterCrops)
     .where(eq(characterCrops.imageId, imageId));
   return rows.map((r) => r.blobKey);
+}
+
+// Crops by id (no vector) -- for the mosaic verify pass + census assembly, which
+// need the blob URL, image id, description, and box, but not the embedding.
+export type CropMeta = {
+  cropId: number;
+  imageId: number;
+  label: string;
+  description: string;
+  blobUrl: string;
+  box: { left: number; top: number; width: number; height: number };
+};
+
+export async function cropsByIds(ids: number[]): Promise<CropMeta[]> {
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select({
+      cropId: characterCrops.id,
+      imageId: characterCrops.imageId,
+      label: characterCrops.label,
+      description: characterCrops.description,
+      blobUrl: characterCrops.blobUrl,
+      box: characterCrops.box
+    })
+    .from(characterCrops)
+    .where(inArray(characterCrops.id, ids));
+  return rows.map((r) => ({
+    cropId: r.cropId,
+    imageId: r.imageId,
+    label: r.label,
+    description: r.description,
+    blobUrl: r.blobUrl,
+    box: r.box
+  }));
 }
 
 export async function countCharacterCrops(): Promise<number> {
