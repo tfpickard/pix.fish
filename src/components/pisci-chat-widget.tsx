@@ -86,7 +86,6 @@ export function PisciChatWidget() {
   // The current in-flight turn's aborter, so close/unmount can cancel the fetch
   // (and the upstream Anthropic call) instead of letting it spend tokens.
   const inFlightAbort = useRef<AbortController | null>(null);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   // Mirrors `open` for the auto-open click/scroll listeners, which would
   // otherwise count clicks on the widget's own controls (e.g. the close button).
   const openRef = useRef(open);
@@ -277,11 +276,6 @@ export function PisciChatWidget() {
     // open would leave the auto-open timer/listeners live to reopen after a close.
   }, [mounted, openPanel, open]);
 
-  // Keep the transcript pinned to the newest message.
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [bubbles, open]);
-
   useEffect(
     () => () => {
       clearSilence();
@@ -390,89 +384,85 @@ export function PisciChatWidget() {
 
   if (!mounted || !seed) return null;
 
-  // Raised above the bottom-corner affordances (TemperatureHud bottom-right,
-  // PixFish bottom-left, both z-40). z-50 keeps the intrusive widget on top.
-  const anchor = 'fixed bottom-20 right-4 z-50';
+  // The banner is Pisci's mouth: show only its most recent line. A pending
+  // reply renders as a typing indicator rather than echoing the visitor's own
+  // text back at them in the bar. Earlier turns scroll off -- the escalating
+  // beat still lands one line at a time, which is the whole gag.
+  const lastAssistant = [...bubbles].reverse().find((b) => b.role === 'assistant');
 
   if (!open) {
+    // Closed: a small launcher tucked just under the sticky nav on the right.
+    // Unobtrusive, and nowhere near the gallery it used to float over.
     return (
       <button
         type="button"
         onClick={openPanel}
         aria-label="Open Pisci support chat"
-        className={`${anchor} flex h-14 w-14 items-center justify-center overflow-hidden rounded-full border border-ink-800/70 bg-ink-950/90 shadow-lg backdrop-blur transition-transform hover:scale-105`}
+        className="fixed right-4 top-[4.5rem] z-40 flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-ink-800/70 bg-ink-950/90 shadow-lg backdrop-blur transition-transform hover:scale-105"
       >
         <Avatar ok={avatarOk} onError={() => setAvatarOk(false)} />
       </button>
     );
   }
 
+  // Open: a slim fixed banner pinned directly beneath the nav (top-14 == the
+  // h-14 nav). Full-bleed background with nav-matched centered content so it
+  // reads as a secondary bar, not a popup -- the gallery scrolls under it
+  // instead of being covered by a corner panel. Two stacked rows: Pisci's
+  // current line, then the reply box.
   return (
     <div
-      className={`${anchor} flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-ink-800/70 bg-ink-950/90 shadow-lg backdrop-blur`}
+      className="fixed inset-x-0 top-14 z-40 border-b border-ink-800/70 bg-ink-950/90 backdrop-blur"
       role="dialog"
       aria-label="Pisci support chat"
     >
-      <header className="flex items-center gap-2 border-b border-ink-800/70 px-3 py-2">
-        <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full border border-ink-800/70">
-          <Avatar ok={avatarOk} onError={() => setAvatarOk(false)} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="font-display text-sm text-fg">Pisci</div>
-          <div className="truncate font-mono text-[10px] text-fg-muted">{statusFor(fsm)}</div>
-        </div>
-        <button
-          type="button"
-          onClick={handleClose}
-          aria-label="Close chat"
-          className="h-7 w-7 shrink-0 rounded-full border border-ink-800/70 bg-ink-950/60 font-mono text-xs text-ink-500 transition-colors hover:text-ink-200"
-        >
-          x
-        </button>
-      </header>
-
-      <div ref={scrollRef} className="flex max-h-80 min-h-40 flex-col gap-2 overflow-y-auto px-3 py-3">
-        {bubbles.map((b) => (
-          <div
-            key={b.id}
-            className={
-              b.role === 'user'
-                ? 'self-end rounded-lg rounded-br-sm bg-primary/20 px-3 py-2 text-sm text-fg'
-                : 'self-start whitespace-pre-wrap rounded-lg rounded-bl-sm bg-ink-900/80 px-3 py-2 text-sm text-fg'
-            }
+      <div className="mx-auto max-w-6xl px-4 py-2">
+        <div className="flex items-start gap-3">
+          <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full border border-ink-800/70">
+            <Avatar ok={avatarOk} onError={() => setAvatarOk(false)} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-2">
+              <span className="font-display text-sm leading-none text-fg">Pisci</span>
+              <span className="truncate font-mono text-[10px] text-fg-muted">{statusFor(fsm)}</span>
+            </div>
+            <p className="line-clamp-2 text-sm leading-snug text-fg">
+              {sending ? '...' : lastAssistant?.content ?? GREETING}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleClose}
+            aria-label="Close chat"
+            className="h-7 w-7 shrink-0 rounded-full border border-ink-800/70 bg-ink-950/60 font-mono text-xs text-ink-500 transition-colors hover:text-ink-200"
           >
-            {b.content}
-          </div>
-        ))}
-        {sending && (
-          <div className="self-start rounded-lg rounded-bl-sm bg-ink-900/80 px-3 py-2 text-sm text-fg-muted">
-            ...
-          </div>
-        )}
-      </div>
+            x
+          </button>
+        </div>
 
-      <form
-        className="flex items-center gap-2 border-t border-ink-800/70 p-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void handleSend();
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type a message..."
-          aria-label="Message Pisci"
-          className="min-w-0 flex-1 rounded-md border border-ink-800/70 bg-ink-950/60 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-primary"
-        />
-        <button
-          type="submit"
-          disabled={sending || input.trim().length === 0}
-          className="shrink-0 rounded-md border border-ink-800/70 bg-primary/20 px-3 py-2 text-sm text-fg transition-colors hover:bg-primary/30 disabled:opacity-40"
+        <form
+          className="mt-2 flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleSend();
+          }}
         >
-          Send
-        </button>
-      </form>
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Type a message..."
+            aria-label="Message Pisci"
+            className="min-w-0 flex-1 rounded-md border border-ink-800/70 bg-ink-950/60 px-3 py-1.5 text-sm text-fg placeholder:text-fg-muted focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <button
+            type="submit"
+            disabled={sending || input.trim().length === 0}
+            className="shrink-0 rounded-md border border-ink-800/70 bg-primary/20 px-3 py-1.5 text-sm text-fg transition-colors hover:bg-primary/30 disabled:opacity-40"
+          >
+            Send
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
