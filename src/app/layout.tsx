@@ -94,6 +94,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen font-sans antialiased">
         <Providers>
           <NavBar />
+          {/* feat: Pisci anti-service chat widget. Client-only and code-split
+              (ssr:false) so it never touches SSR or initial paint. Mounted
+              between the nav and <main> on purpose: its open state is an
+              in-flow sticky banner, so sitting here reserves real space and
+              pushes the page body below it (the fixed corner popup used to
+              cover the header). Its closed launcher is fixed, so it costs no
+              flow space when hidden. */}
+          <PisciChatMount />
           <main className="mx-auto w-full max-w-6xl px-4 pb-12">{children}</main>
           <SiteFooter />
         </Providers>
@@ -105,11 +113,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             and <Providers> so it never participates in document flow and
             survives every route change (root layout doesn't remount). */}
         <PixFish />
-        {/* feat: Pisci anti-service chat widget. Standalone parody overlay,
-            client-only and code-split (ssr:false) so it never touches SSR or
-            initial paint. Mounted here, outside <main>/<Providers>, like the
-            other ambient overlays. */}
-        <PisciChatMount />
         <JsonLd data={buildWebSiteLd()} />
         <Analytics />
       </body>

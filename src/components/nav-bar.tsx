@@ -11,8 +11,12 @@ export async function NavBar() {
   const signedIn = !!session?.user?.id || !!session?.user?.githubId;
   const admin = isSiteAdmin(session);
   const handle = session?.user?.handle ?? null;
+  // Header is z-50 -- above the z-40 Pisci chat banner. The overflow menu drops
+  // down into the banner's zone, so the nav's stacking context must sit above
+  // it, or the banner would paint over the first dropdown items and eat their
+  // clicks while chat is open.
   return (
-    <header className="sticky top-0 z-40 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
+    <header className="sticky top-0 z-50 border-b border-ink-800/60 bg-ink-950/80 backdrop-blur">
       <div className="relative mx-auto flex h-14 w-full max-w-6xl items-center gap-3 px-4">
         {/* prefetch disabled: every nav target is `force-dynamic` (page.tsx,
             map, connect, manifold, search, about, feed), so a speculative
