@@ -33,6 +33,7 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'characters.cluster': 55_000, // vector-only clustering + fan-out; fast but corpus-sized
   'characters.verify': 45_000, // build mosaic (N blob fetches + sharp) + one vision call
   'characters.census': 55_000, // barrier poll or assemble + budgeted dossier synthesis
+  'characters.backfill-visuals': 45_000, // a batch of Voyage image-embed calls, re-enqueues
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;

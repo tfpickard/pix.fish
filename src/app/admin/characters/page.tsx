@@ -147,6 +147,15 @@ export default function AdminCharactersPage() {
         >
           re-detect (force)
         </button>
+        <button
+          type="button"
+          onClick={() => run('/api/admin/characters/backfill', 'backfill-visuals')}
+          disabled={isPending}
+          className="rounded border border-ink-700 px-3 py-1.5 font-mono text-xs text-ink-300 hover:text-ink-100 disabled:opacity-50"
+          title="Compute Voyage visual vectors for crops that lack one (needs VOYAGE_API_KEY)"
+        >
+          backfill visual vectors
+        </button>
       </div>
 
       <section className="space-y-4 rounded border border-ink-800 p-4">
