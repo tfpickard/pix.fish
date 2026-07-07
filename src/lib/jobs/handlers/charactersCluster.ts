@@ -78,6 +78,18 @@ export async function produceCandidates(knobs: ResolvedKnobs): Promise<number> {
     );
   }
 
+  // Guard against a destructive misconfiguration: crops exist but NONE have a
+  // vector for the chosen space (e.g. switched to visual/blend before backfilling
+  // vec_image). Proceeding would file an empty census and WIPE the existing
+  // roster. Abort loudly instead -- no census is enqueued, so the canon survives.
+  if (crops.length > 0 && nodes.length === 0) {
+    throw new Error(
+      `characters.cluster: none of the ${crops.length} crop(s) have a '${knobs.space}' vector. ` +
+        `Run 'characters:backfill-visuals' (needs VOYAGE_API_KEY) or switch the identity space back ` +
+        `to 'text'. Aborting -- NOT filing an empty census, so the existing roster is preserved.`
+    );
+  }
+
   const communities =
     nodes.length >= 2
       ? detectCommunities(
