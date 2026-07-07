@@ -8,15 +8,26 @@ import { useEffect, useState, useTransition } from 'react';
 // the clustering knobs. The knobs persist server-side so they become defaults;
 // re-clustering is vector-only, so sweeping a slider + re-running is seconds-fast.
 
+type Space = 'text' | 'visual' | 'blend';
 type Tuning = {
   maxDist: number;
   k: number;
   pruneK: number;
   minAppearances: number;
   verifyEnabled: boolean;
+  space: Space;
+  blendWeight: number;
 };
 
-const DEFAULTS: Tuning = { maxDist: 0.45, k: 5, pruneK: 4, minAppearances: 2, verifyEnabled: true };
+const DEFAULTS: Tuning = {
+  maxDist: 0.45,
+  k: 5,
+  pruneK: 4,
+  minAppearances: 2,
+  verifyEnabled: true,
+  space: 'text',
+  blendWeight: 0.5
+};
 
 function Slider({
   label,
@@ -143,6 +154,42 @@ export default function AdminCharactersPage() {
           <h2 className="font-mono text-xs uppercase tracking-wide text-ink-400">clustering knobs</h2>
           <span className="font-mono text-[10px] text-ink-600">{loaded ? '' : 'loading...'}</span>
         </div>
+
+        <div className="space-y-1">
+          <div className="font-mono text-xs text-ink-200">identity space</div>
+          <div className="flex gap-2">
+            {(['text', 'visual', 'blend'] as Space[]).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => set('space', s)}
+                className={`flex-1 rounded border px-2 py-1 font-mono text-xs ${
+                  tuning.space === s
+                    ? 'border-primary/60 bg-primary/10 text-primary'
+                    : 'border-ink-700 text-ink-500 hover:text-ink-200'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+          <p className="font-mono text-[10px] leading-tight text-ink-600">
+            text = description embedding (original); visual = Voyage pixel embedding of the crop;
+            blend = both. visual/blend need crops backfilled (`characters:backfill-visuals`).
+          </p>
+        </div>
+
+        {tuning.space === 'blend' ? (
+          <Slider
+            label="blendWeight (visual share)"
+            hint="0 = all text, 1 = all visual. distance = (1-w)*text + w*visual."
+            value={tuning.blendWeight}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(v) => set('blendWeight', v)}
+          />
+        ) : null}
 
         <Slider
           label="maxDist (precision)"

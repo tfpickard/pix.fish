@@ -1,9 +1,9 @@
 import { allCropVectors, type CropVector } from '@/lib/db/queries/character-crops';
 import { writeCandidates, deleteCandidatesForRun } from '@/lib/db/queries/character-candidates';
-import { getTuning } from '@/lib/db/queries/character-tuning';
+import { getTuning, type ClusterSpace } from '@/lib/db/queries/character-tuning';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import type { Job } from '@/lib/db/schema';
-import { buildCropEdges } from '@/lib/universe/characters';
+import { buildCropEdges, cropClusterVector } from '@/lib/universe/characters';
 import { detectCommunities } from '@/lib/universe/cluster';
 
 type Payload = {
@@ -13,6 +13,8 @@ type Payload = {
   k?: number;
   pruneK?: number;
   verifyEnabled?: boolean;
+  space?: ClusterSpace;
+  blendWeight?: number;
   stamp?: number; // legacy alias for runStamp
 };
 
@@ -23,6 +25,8 @@ export type ResolvedKnobs = {
   k: number;
   pruneK: number;
   verifyEnabled: boolean;
+  space: ClusterSpace;
+  blendWeight: number;
 };
 
 // Use a payload number only when it's finite; otherwise fall back to the saved
@@ -42,7 +46,9 @@ export async function resolveKnobs(payload: Payload): Promise<ResolvedKnobs> {
     maxDist: num(payload.maxDist, tuning.maxDist),
     k: Math.max(1, Math.trunc(num(payload.k, tuning.k))),
     pruneK: Math.max(1, Math.trunc(num(payload.pruneK, tuning.pruneK))),
-    verifyEnabled: payload.verifyEnabled ?? tuning.verifyEnabled
+    verifyEnabled: payload.verifyEnabled ?? tuning.verifyEnabled,
+    space: payload.space ?? tuning.space,
+    blendWeight: num(payload.blendWeight, tuning.blendWeight)
   };
 }
 
@@ -56,15 +62,27 @@ export async function produceCandidates(knobs: ResolvedKnobs): Promise<number> {
   const crops = await allCropVectors();
   const byCrop = new Map<number, CropVector>(crops.map((c) => [c.cropId, c]));
 
+  // Build the cluster vector for the chosen space; drop crops missing the needed
+  // vector (e.g. visual/blend before the crops are backfilled).
+  const nodes: { cropId: number; vec: number[] }[] = [];
+  let skipped = 0;
+  for (const c of crops) {
+    const v = cropClusterVector(c, knobs.space, knobs.blendWeight);
+    if (v) nodes.push({ cropId: c.cropId, vec: v });
+    else skipped++;
+  }
+  if (skipped > 0) {
+    console.log(
+      `characters.cluster: ${skipped}/${crops.length} crop(s) lack a ${knobs.space} vector` +
+        (knobs.space !== 'text' ? ' -- run characters:backfill-visuals' : '')
+    );
+  }
+
   const communities =
-    crops.length >= 2
+    nodes.length >= 2
       ? detectCommunities(
-          crops.map((c) => c.cropId),
-          buildCropEdges(
-            crops.map((c) => ({ cropId: c.cropId, vec: c.vec })),
-            knobs.k,
-            knobs.maxDist
-          ),
+          nodes.map((n) => n.cropId),
+          buildCropEdges(nodes, knobs.k, knobs.maxDist),
           { pruneK: knobs.pruneK }
         )
       : [];

@@ -18,7 +18,9 @@ const bodySchema = z
     k: z.number().int().min(1).max(30).optional(),
     pruneK: z.number().int().min(1).max(30).optional(),
     minAppearances: z.number().int().min(2).max(50).optional(),
-    verifyEnabled: z.boolean().optional()
+    verifyEnabled: z.boolean().optional(),
+    space: z.enum(['text', 'visual', 'blend']).optional(),
+    blendWeight: z.number().min(0).max(1).optional()
   })
   .default({});
 
@@ -41,7 +43,9 @@ export async function POST(req: Request) {
     maxDist: tuning.maxDist,
     k: tuning.k,
     pruneK: tuning.pruneK,
-    verifyEnabled: tuning.verifyEnabled
+    verifyEnabled: tuning.verifyEnabled,
+    space: tuning.space,
+    blendWeight: tuning.blendWeight
   };
   const job = await enqueueJob({ type: 'characters.cluster', payload, maxAttempts: 1 });
   return NextResponse.json({ jobId: job.id, tuning });

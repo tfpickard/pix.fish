@@ -106,6 +106,36 @@ function cosineDist(a: number[], b: number[]): number {
 // corpora under-cluster (miss a character) rather than invent one.
 export const DEFAULT_CROP_EDGE_MAX_DIST = 0.45;
 
+// ---- cluster vector selection (text / visual / blend) ---------------------
+
+function l2normalize(v: number[]): number[] {
+  let s = 0;
+  for (const x of v) s += x * x;
+  const n = Math.sqrt(s);
+  return n === 0 ? v : v.map((x) => x / n);
+}
+
+// Pick the vector clustering should run on for one crop, per the chosen space.
+// 'text' = description embedding; 'visual' = pixel embedding; 'blend' = both,
+// concatenated after L2-normalizing and scaling by sqrt of their weight, so the
+// cosine distance of two blended vectors equals (1-w)*textDist + w*visualDist
+// (w = blendWeight, the visual share). Returns null when a needed vector is
+// missing (e.g. visual/blend before backfill) so the caller can skip that crop.
+export function cropClusterVector(
+  crop: { vec: number[]; vecImage: number[] | null },
+  space: 'text' | 'visual' | 'blend',
+  blendWeight: number
+): number[] | null {
+  if (space === 'text') return crop.vec.length > 0 ? crop.vec : null;
+  if (space === 'visual') return crop.vecImage && crop.vecImage.length > 0 ? crop.vecImage : null;
+  // blend -- needs both
+  if (crop.vec.length === 0 || !crop.vecImage || crop.vecImage.length === 0) return null;
+  const w = Math.min(1, Math.max(0, blendWeight));
+  const t = l2normalize(crop.vec).map((x) => x * Math.sqrt(1 - w));
+  const i = l2normalize(crop.vecImage).map((x) => x * Math.sqrt(w));
+  return [...t, ...i];
+}
+
 // Build a cosine kNN graph over crop description-embeddings: each crop gets
 // edges to its `k` nearest other crops, dropping any neighbour farther than
 // maxDist. The result feeds detectCommunities() (each community = one recurring

@@ -2,6 +2,7 @@ import { del, put } from '@vercel/blob';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { getEmbedder, getProvider, loadUserProviderKeys } from '@/lib/ai';
+import { getImageEmbedder } from '@/lib/ai/imageEmbed';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { parseDetectionsJson } from '@/lib/ai/types';
 import { db } from '@/lib/db/client';
@@ -81,6 +82,9 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   if (!provider || !provider.vision) throw new Error('characters.detect: no vision-capable provider');
   const embedder = getEmbedder(cfg, keys);
   if (!embedder) throw new Error('characters.detect: no embedder available');
+  // Visual identity embedder (Voyage multimodal). Best-effort: null when no
+  // VOYAGE_API_KEY -- crops just carry the text vec and can be backfilled later.
+  const imageEmbedder = getImageEmbedder();
 
   const res = await fetch(img.blobUrl);
   if (!res.ok) throw new Error(`characters.detect: fetch original ${res.status}`);
@@ -134,6 +138,15 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         addRandomSuffix: true
       });
       uploadedUrl = blob.url;
+      // Visual embedding from the just-uploaded public crop URL (best-effort).
+      let vecImage: number[] | undefined;
+      if (imageEmbedder) {
+        try {
+          vecImage = await imageEmbedder.embed(blob.url);
+        } catch (err) {
+          console.error(`characters.detect: visual embed for crop ${idx} image ${imageId} failed`, err);
+        }
+      }
       await insertCharacterCrop({
         imageId,
         label: d.label,
@@ -143,7 +156,10 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         blobKey: blob.pathname,
         vec,
         provider: embedder.name,
-        model: embedder.model
+        model: embedder.model,
+        vecImage,
+        imageProvider: vecImage ? imageEmbedder!.name : undefined,
+        imageModel: vecImage ? imageEmbedder!.model : undefined
       });
       idx++;
     } catch (err) {

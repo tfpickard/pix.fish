@@ -26,11 +26,15 @@ function asJob(payload: Record<string, unknown>): Job {
   return { payload } as unknown as Job;
 }
 
-// Parse "--flag=value" numeric knob overrides so a sweep can run e.g.
-//   bun run characters:detect --cluster-only --maxDist=0.32 --no-verify
+// Parse "--flag=value" knob overrides so a sweep can run e.g.
+//   bun run characters:detect --cluster-only --maxDist=0.32 --space=visual --no-verify
 function numArg(name: string): number | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? Number(hit.split('=')[1]) : undefined;
+}
+function strArg(name: string): string | undefined {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.split('=')[1] : undefined;
 }
 
 async function main() {
@@ -70,12 +74,15 @@ async function main() {
   // Run the full clustering pipeline INLINE (cluster -> verify -> census) rather
   // than enqueuing jobs, so a local sweep completes in one shot. Knob overrides
   // from the CLI fall back to the saved tuning.
+  const spaceArg = strArg('space');
   const knobs = await resolveKnobs({
     maxDist: numArg('maxDist'),
     k: numArg('k'),
     pruneK: numArg('pruneK'),
     minAppearances: numArg('minAppearances'),
-    verifyEnabled: noVerify ? false : undefined
+    verifyEnabled: noVerify ? false : undefined,
+    space: spaceArg === 'visual' || spaceArg === 'blend' || spaceArg === 'text' ? spaceArg : undefined,
+    blendWeight: numArg('blendWeight')
   });
   console.log('clustering crops into recurring characters...');
   const count = await produceCandidates(knobs);

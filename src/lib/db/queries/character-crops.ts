@@ -24,12 +24,20 @@ export type CropVector = {
   description: string;
   blobUrl: string;
   box: { left: number; top: number; width: number; height: number };
-  vec: number[];
+  vec: number[]; // text-description embedding (1536-d)
+  vecImage: number[] | null; // visual embedding (1024-d), null if not yet computed
 };
 
-// Every crop with its vector, for clustering. pgvector returns the vector as a
-// bracketed string; parse it once here. Ordered by id for deterministic runs.
-// NSFW crops are INCLUDED: a character's NSFW appearances are part of their
+// pgvector returns a bracketed string like "[0.1,0.2,...]"; parse to number[].
+function parseVec(raw: string | null): number[] | null {
+  if (!raw) return null;
+  const inner = raw.startsWith('[') ? raw.slice(1, -1) : raw;
+  if (inner.length === 0) return null;
+  return inner.split(',').map(Number);
+}
+
+// Every crop with both vectors, for clustering. Ordered by id for deterministic
+// runs. NSFW crops are INCLUDED: a character's NSFW appearances are part of their
 // identity, so they must inform clustering and the synthesized dossier. Only
 // archived (removed-from-circulation) images are excluded. Public leakage is
 // prevented at the display layer -- listVisibleCharacters / the detail page
@@ -44,25 +52,51 @@ export async function allCropVectors(): Promise<CropVector[]> {
     blob_url: string;
     box: { left: number; top: number; width: number; height: number };
     vec: string;
+    vec_image: string | null;
   }>(sql`
-    SELECT cc.id, cc.image_id, cc.label, cc.description, cc.blob_url, cc.box, cc.vec::text AS vec
+    SELECT cc.id, cc.image_id, cc.label, cc.description, cc.blob_url, cc.box,
+           cc.vec::text AS vec, cc.vec_image::text AS vec_image
     FROM character_crops cc
     JOIN images i ON i.id = cc.image_id
     WHERE i.archived_at IS NULL
     ORDER BY cc.id
   `);
-  return res.rows.map((r) => {
-    const inner = r.vec.startsWith('[') ? r.vec.slice(1, -1) : r.vec;
-    return {
-      cropId: Number(r.id),
-      imageId: Number(r.image_id),
-      label: r.label,
-      description: r.description,
-      blobUrl: r.blob_url,
-      box: r.box,
-      vec: inner.split(',').map(Number)
-    };
-  });
+  return res.rows.map((r) => ({
+    cropId: Number(r.id),
+    imageId: Number(r.image_id),
+    label: r.label,
+    description: r.description,
+    blobUrl: r.blob_url,
+    box: r.box,
+    vec: parseVec(r.vec) ?? [],
+    vecImage: parseVec(r.vec_image)
+  }));
+}
+
+// Backfill support: set an existing crop's visual vector.
+export async function setCropImageVec(
+  cropId: number,
+  vecImage: number[],
+  imageProvider: string,
+  imageModel: string
+): Promise<void> {
+  await db
+    .update(characterCrops)
+    .set({ vecImage, imageProvider, imageModel })
+    .where(eq(characterCrops.id, cropId));
+}
+
+// Crops still missing a visual vector (for the backfill script), newest-in-
+// circulation first. Returns id + blobUrl only.
+export async function cropsMissingImageVec(limit = 10_000): Promise<{ cropId: number; blobUrl: string }[]> {
+  const res = await db.execute<{ id: number; blob_url: string }>(sql`
+    SELECT cc.id, cc.blob_url FROM character_crops cc
+    JOIN images i ON i.id = cc.image_id
+    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+    ORDER BY cc.id
+    LIMIT ${Math.trunc(limit)}
+  `);
+  return res.rows.map((r) => ({ cropId: Number(r.id), blobUrl: r.blob_url }));
 }
 
 export async function countCropsForImage(imageId: number): Promise<number> {
