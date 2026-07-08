@@ -10,6 +10,7 @@ import { findPath } from '@/lib/knn';
 import { readNsfwMode } from '@/lib/nsfw';
 import { PathFilmstrip } from '@/components/path-filmstrip';
 import { JourneyPlayer } from '@/components/journey-player';
+import { TrafficBeacon } from '@/components/traffic-beacon';
 import type { PathNode } from '@/lib/knn-path-types';
 
 export const dynamic = 'force-dynamic';
@@ -312,6 +313,9 @@ export default async function ConnectPage({ searchParams }: PageProps) {
             </p>
           ) : outcome.status === 'found' ? (
             <div className="space-y-5">
+              {/* Substrate 1: record this completed walk as edge traffic
+                  (consent-gated, de-duped per tab). Renders nothing. */}
+              <TrafficBeacon nodeIds={outcome.nodes.map((n) => n.imageId)} />
               <JourneyPlayer path={outcome.nodes} totalDist={outcome.totalDist} />
               <PathFilmstrip path={outcome.nodes} totalDist={outcome.totalDist} />
             </div>

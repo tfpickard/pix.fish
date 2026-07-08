@@ -799,15 +799,54 @@ export const knnEdges = pgTable(
 
 // feat/stigmergy: per-image decayed attention. One row per image; read-time
 // exponential decay is applied in code from (value, lastUpdatedAt). No cron.
+//
+// Substrate 1 (traffic ledger): `lifetime` is a monotonic sum of the same dwell
+// weight that feeds `value`, but it NEVER decays. `value` answers "what is hot
+// right now" (drift bias); `lifetime` answers "how much has this specimen been
+// handled, ever" -- the signal erosion needs, because wear does not heal.
 export const imageAttention = pgTable('image_attention', {
   imageId: integer('image_id')
     .primaryKey()
     .references(() => images.id, { onDelete: 'cascade' }),
   value: real('value').notNull().default(0),
+  lifetime: real('lifetime').notNull().default(0),
   lastUpdatedAt: timestamp('last_updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
 // === end Gate-0 contract tables ============================================
+
+// ----------------------------------------------------------------------------
+// Substrate 1 (traffic ledger): per-edge traversal telemetry
+// ----------------------------------------------------------------------------
+//
+// The sibling of `image_attention` for EDGES rather than nodes. Records which
+// image->image edges visitors actually walk (via /connect, /drift, /daily),
+// which is thrown away today. `value` decays on the same 3-day half-life as
+// attention (what routes are walked lately); `lifetime` is a monotonic
+// traversal count (what routes have ever been worn). Directed: a->b is distinct
+// from b->a. Read by the desire-paths feature; this table only accumulates.
+//
+// Privacy: identical posture to image_attention -- no PII, only image-id pairs
+// and aggregate weights. Ingest is consent-gated + rate-limited at /api/traffic.
+export const pathTraffic = pgTable(
+  'path_traffic',
+  {
+    id: serial('id').primaryKey(),
+    srcId: integer('src_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    dstId: integer('dst_id')
+      .notNull()
+      .references(() => images.id, { onDelete: 'cascade' }),
+    value: real('value').notNull().default(0),
+    lifetime: real('lifetime').notNull().default(0),
+    lastUpdatedAt: timestamp('last_updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => ({
+    srcIdx: index('path_traffic_src_idx').on(t.srcId),
+    srcDstUniq: uniqueIndex('path_traffic_src_dst_uniq').on(t.srcId, t.dstId)
+  })
+);
 
 // ----------------------------------------------------------------------------
 // Universe (Phase U1): event-sourced canon + projections
@@ -1164,6 +1203,8 @@ export type CollectionTemperature = typeof collectionTemperature.$inferSelect;
 export type ManifoldProjection = typeof manifoldProjections.$inferSelect;
 export type KnnEdge = typeof knnEdges.$inferSelect;
 export type ImageAttention = typeof imageAttention.$inferSelect;
+export type PathTraffic = typeof pathTraffic.$inferSelect;
+export type NewPathTraffic = typeof pathTraffic.$inferInsert;
 export type NewJob = typeof jobs.$inferInsert;
 export type UmapProjection = typeof umapProjections.$inferSelect;
 export type NewUmapProjection = typeof umapProjections.$inferInsert;
