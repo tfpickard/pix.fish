@@ -24,8 +24,9 @@ export type ApiEndpoint = {
 
 // Query params shared by every /api/random route.
 const RANDOM_PARAMS: ApiParam[] = [
-  { name: 'id', in: 'query', type: 'integer', description: 'Pin a specific image by numeric id instead of picking at random.' },
-  { name: 'slug', in: 'query', type: 'string', description: 'Pin a specific image by slug instead of picking at random.' },
+  { name: 'id', in: 'query', type: 'integer', description: 'Pin a specific image by globally-unique numeric id (the reliable way to pin) instead of picking at random.' },
+  { name: 'slug', in: 'query', type: 'string', description: 'Pin by slug. Slugs are unique only per owner, so pair with `handle` to pin unambiguously; a bare slug resolves to the oldest match across users.' },
+  { name: 'handle', in: 'query', type: 'string', description: 'Owner handle, combined with `slug` for an unambiguous owner-scoped pin.' },
   {
     name: 'include_nsfw',
     in: 'query',
