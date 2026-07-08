@@ -96,22 +96,49 @@ export async function fetchImageStream(blobUrl: string): Promise<Response | null
   }
 }
 
-// Reads the image fully and base64-encodes it as a data: URI for inline embed.
-// Null on upstream failure.
-export async function fetchImageDataUri(
-  row: Image
-): Promise<{ dataUri: string; mime: string; sizeBytes: number } | null> {
+// Cap on the ORIGINAL byte size we will base64-encode for /api/random/uri. The
+// data: URI inflates ~1.37x and is wrapped in JSON, and the nodejs serverless
+// response limit is ~4.5 MB, so we bail well before that. Since /uri is public
+// and unauthenticated, the cap also bounds the allocation/CPU a caller can
+// force. Larger originals should be fetched via /image or /raw (streamed,
+// uncapped) instead of inlined.
+export const MAX_DATA_URI_BYTES = 3 * 1024 * 1024;
+
+// Strips any header parameters (e.g. "; charset=...") so the value is a bare
+// "type/subtype" suitable for a data: URI -- and never a header-injection vector.
+function normalizeMime(raw: string | null | undefined): string {
+  const base = (raw ?? '').split(';')[0]?.trim().toLowerCase();
+  return base || 'application/octet-stream';
+}
+
+export type DataUriResult =
+  | { ok: true; dataUri: string; mime: string; sizeBytes: number }
+  | { ok: false; reason: 'too_large' | 'unavailable' };
+
+// Reads the image and base64-encodes it as a data: URI for inline embedding.
+// Enforces MAX_DATA_URI_BYTES: the Content-Length pre-check bails BEFORE
+// allocating (Vercel Blob always sends it), and a post-read guard covers the
+// rare no-Content-Length case.
+export async function fetchImageDataUri(row: Image): Promise<DataUriResult> {
   try {
     const res = await fetch(row.blobUrl);
-    if (!res.ok) return null;
+    if (!res.ok || !res.body) return { ok: false, reason: 'unavailable' };
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_DATA_URI_BYTES) {
+      return { ok: false, reason: 'too_large' };
+    }
     const buf = Buffer.from(await res.arrayBuffer());
-    const mime = row.mime || res.headers.get('content-type') || 'application/octet-stream';
+    if (buf.byteLength > MAX_DATA_URI_BYTES) {
+      return { ok: false, reason: 'too_large' };
+    }
+    const mime = normalizeMime(row.mime || res.headers.get('content-type'));
     return {
+      ok: true,
       dataUri: `data:${mime};base64,${buf.toString('base64')}`,
       mime,
       sizeBytes: buf.byteLength
     };
   } catch {
-    return null;
+    return { ok: false, reason: 'unavailable' };
   }
 }
