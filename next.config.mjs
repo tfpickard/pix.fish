@@ -18,12 +18,15 @@ const nextConfig = {
   },
   async rewrites() {
     // `/random` is a public-friendly alias for the canonical `/api/random`
-    // surface. beforeFiles runs before filesystem/dynamic routing, so `/random`
-    // wins over the top-level dynamic `[slug]` page instead of being swallowed
-    // by it.
+    // surface. The bare `/random` serves the random image bytes (the expected
+    // browser entry point -- hitting it renders a picture); the JSON record
+    // stays at `/api/random` and `/random/data`. Sub-paths map 1:1 to
+    // `/api/random/*`. beforeFiles runs before filesystem/dynamic routing, so
+    // `/random` wins over the top-level dynamic `[slug]` page instead of being
+    // swallowed by it.
     return {
       beforeFiles: [
-        { source: '/random', destination: '/api/random' },
+        { source: '/random', destination: '/api/random/image' },
         { source: '/random/:path*', destination: '/api/random/:path*' }
       ]
     };
