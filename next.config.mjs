@@ -16,6 +16,18 @@ const nextConfig = {
       { protocol: 'https', hostname: '*.blob.vercel-storage.com' }
     ]
   },
+  async rewrites() {
+    // `/random` is a public-friendly alias for the canonical `/api/random`
+    // surface. beforeFiles runs before filesystem/dynamic routing, so `/random`
+    // wins over the top-level dynamic `[slug]` page instead of being swallowed
+    // by it.
+    return {
+      beforeFiles: [
+        { source: '/random', destination: '/api/random' },
+        { source: '/random/:path*', destination: '/api/random/:path*' }
+      ]
+    };
+  },
   experimental: {
     serverActions: { bodySizeLimit: '20mb' },
     // Next 14.2 defaults `staleTimes.dynamic` to 0, which makes a prefetched
