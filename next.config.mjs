@@ -25,9 +25,13 @@ const nextConfig = {
     // `/random` wins over the top-level dynamic `[slug]` page instead of being
     // swallowed by it.
     return {
+      // The subpath rule uses `:path+` (one-OR-MORE segments) rather than
+      // `:path*` (zero-or-more) so it can never match the bare `/random` -- only
+      // the explicit rule above handles that, keeping the bare alias on the image
+      // bytes rather than the JSON record.
       beforeFiles: [
         { source: '/random', destination: '/api/random/image' },
-        { source: '/random/:path*', destination: '/api/random/:path*' }
+        { source: '/random/:path+', destination: '/api/random/:path+' }
       ]
     };
   },
