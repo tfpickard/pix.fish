@@ -76,10 +76,27 @@ async function main() {
     )
   `;
 
+  // Substrate 1 (traffic ledger): monotonic lifetime accumulator on image_attention.
+  await sql`ALTER TABLE "image_attention" ADD COLUMN IF NOT EXISTS "lifetime" real DEFAULT 0 NOT NULL`;
+
+  // Substrate 1 (traffic ledger): per-edge traversal telemetry.
+  await sql`
+    CREATE TABLE IF NOT EXISTS "path_traffic" (
+      "id" serial PRIMARY KEY NOT NULL,
+      "src_id" integer NOT NULL REFERENCES "images"("id") ON DELETE cascade,
+      "dst_id" integer NOT NULL REFERENCES "images"("id") ON DELETE cascade,
+      "value" real DEFAULT 0 NOT NULL,
+      "lifetime" real DEFAULT 0 NOT NULL,
+      "last_updated_at" timestamp with time zone DEFAULT now() NOT NULL
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS "path_traffic_src_idx" ON "path_traffic" USING btree ("src_id")`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS "path_traffic_src_dst_uniq" ON "path_traffic" USING btree ("src_id","dst_id")`;
+
   const res = await sql<{ table_name: string }>`
     SELECT table_name FROM information_schema.tables
     WHERE table_name IN (
-      'collection_temperature', 'manifold_projections', 'knn_edges', 'image_attention'
+      'collection_temperature', 'manifold_projections', 'knn_edges', 'image_attention', 'path_traffic'
     )
     ORDER BY table_name
   `;

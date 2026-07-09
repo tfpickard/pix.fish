@@ -28,6 +28,11 @@ const HALF_LIFE_SECONDS = ATTENTION_HALF_LIFE_MS / 1000;
 // the next decay is measured from this write. The insert branch seeds a
 // brand-new row at the raw increment (nothing to decay from). `excluded.value`
 // is this insert's increment; the image_attention.* refs are the prior row.
+//
+// Substrate 1: `lifetime` rides alongside in the same statement. Unlike `value`
+// it is NEVER decayed -- on conflict we add the raw increment, so it is a
+// monotonic sum of all dwell weight this image has ever received (the signal
+// erosion reads). The insert branch seeds it at the increment too.
 export async function bumpAttention(
   increments: { imageId: number; increment: number }[]
 ): Promise<void> {
@@ -36,11 +41,12 @@ export async function bumpAttention(
 
   await db
     .insert(imageAttention)
-    .values(rows.map((r) => ({ imageId: r.imageId, value: r.increment })))
+    .values(rows.map((r) => ({ imageId: r.imageId, value: r.increment, lifetime: r.increment })))
     .onConflictDoUpdate({
       target: imageAttention.imageId,
       set: {
         value: sql`${imageAttention.value} * power(0.5, extract(epoch from (now() - ${imageAttention.lastUpdatedAt})) / ${HALF_LIFE_SECONDS}) + excluded.value`,
+        lifetime: sql`${imageAttention.lifetime} + excluded.value`,
         lastUpdatedAt: sql`now()`
       }
     });
@@ -73,6 +79,28 @@ export async function getDecayedAttentionMap(
   for (const r of dbRows) {
     const d = decayed(r.value, r.lastUpdatedAt.getTime(), now);
     if (d > 0) out.set(r.imageId, d);
+  }
+  return out;
+}
+
+// getLifetimeAttentionMap(): read the raw, un-decayed lifetime handling total
+// for a set of image ids. This is the erosion signal -- how much a specimen has
+// ever been handled, independent of recency. Unlike getDecayedAttentionMap it
+// applies NO decay: the stored value is already monotonic. Ids with no row (or
+// a zero total) are absent from the map, treated downstream as "unhandled".
+export async function getLifetimeAttentionMap(
+  imageIds: number[]
+): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  if (imageIds.length === 0) return out;
+
+  const dbRows = await db
+    .select({ imageId: imageAttention.imageId, lifetime: imageAttention.lifetime })
+    .from(imageAttention)
+    .where(inArray(imageAttention.imageId, imageIds));
+
+  for (const r of dbRows) {
+    if (r.lifetime > 0) out.set(r.imageId, r.lifetime);
   }
   return out;
 }
