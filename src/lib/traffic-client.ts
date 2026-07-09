@@ -43,14 +43,22 @@ export function sendTrafficWalk(imageIds: number[], dedupeKey?: string): void {
 
   const key = dedupeKey ?? walk.join('-');
   if (alreadySent(key)) return;
-  markSent(key);
 
   const payload = JSON.stringify({ walk });
+
+  // Prefer sendBeacon (survives unload). It returns false when the user agent
+  // could not queue the payload -- treat that as "not sent" and fall through to
+  // fetch rather than dropping the walk. We mark the de-dupe key only once a
+  // send has actually been dispatched, so a failure to queue does not
+  // permanently suppress a retry within the tab session.
   try {
     if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
       const blob = new Blob([payload], { type: 'application/json' });
-      navigator.sendBeacon('/api/traffic', blob);
-      return;
+      if (navigator.sendBeacon('/api/traffic', blob)) {
+        markSent(key);
+        return;
+      }
+      // queued === false: fall through to the fetch fallback below.
     }
   } catch {
     // fall through to fetch
@@ -62,7 +70,9 @@ export function sendTrafficWalk(imageIds: number[], dedupeKey?: string): void {
       body: payload,
       keepalive: true
     });
+    markSent(key);
   } catch {
-    // Telemetry is best-effort; swallow.
+    // Not dispatched; leave the key unmarked so a later attempt this session
+    // can retry. Telemetry is best-effort otherwise.
   }
 }

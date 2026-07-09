@@ -18,7 +18,10 @@ export const dynamic = 'force-dynamic';
 //  - We store NO PII. The body is a walk (ordered image ids) and/or explicit
 //    edges. We derive a salted ip-hash purely for rate limiting and never
 //    persist it -- only aggregate per-edge weights land in path_traffic.
-//  - Best-effort: malformed input is dropped and any failure returns ok.
+//  - Best-effort on the DATA: unparseable/degenerate edges are dropped and any
+//    write failure returns { ok: true } (telemetry never fails the visitor's
+//    request). Request-level guards still apply: a rate-limited caller gets 429
+//    and an unparseable JSON body gets 400.
 
 // A single traversal contributes this fixed weight to each edge it crosses.
 // Traversal is the signal here; dwell is image_attention's job, so we do NOT
