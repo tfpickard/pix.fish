@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { PathNode } from '@/lib/knn-path-types';
+import { sendTrafficWalk } from '@/lib/traffic-client';
 
 type Props = {
   path: PathNode[];
@@ -97,6 +98,15 @@ export function JourneyPlayer({ path, totalDist }: Props) {
   useEffect(() => {
     if (open && atEnd) setPlaying(false);
   }, [open, atEnd]);
+
+  // Substrate 1: record this as edge traffic only once the visitor has actually
+  // TRAVERSED the journey to arrival at B -- not merely opened the result page.
+  // /connect URLs are shareable, so a shared link / refresh / preview must not
+  // count as a walk. sendTrafficWalk de-dupes per tab, so a replay to B again is
+  // a no-op. Consent-gated (DNT + opt-out) inside the client helper.
+  useEffect(() => {
+    if (open && atEnd) sendTrafficWalk(path.map((n) => n.imageId));
+  }, [open, atEnd, path]);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
