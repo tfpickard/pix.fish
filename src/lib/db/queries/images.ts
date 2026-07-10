@@ -71,7 +71,9 @@ export async function listImages(opts: ListImagesOpts): Promise<ImageWithRelatio
 
 // AND-composable NSFW predicate for the three filter modes.
 // Returns null for 'include' so callers skip adding a WHERE clause entirely.
-function nsfwPredicate(mode: NsfwMode) {
+// Exported so the /api/random query reuses the exact same NSFW clause rather
+// than duplicating it.
+export function nsfwPredicate(mode: NsfwMode) {
   if (mode === 'only') return eq(images.isNsfw, true);
   if (mode === 'hide') return eq(images.isNsfw, false);
   return null;

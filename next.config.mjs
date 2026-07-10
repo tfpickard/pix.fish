@@ -16,6 +16,25 @@ const nextConfig = {
       { protocol: 'https', hostname: '*.blob.vercel-storage.com' }
     ]
   },
+  async rewrites() {
+    // `/random` is a public-friendly alias for the canonical `/api/random`
+    // surface. The bare `/random` serves the random image bytes (the expected
+    // browser entry point -- hitting it renders a picture); the JSON record
+    // stays at `/api/random` and `/random/data`. Sub-paths map 1:1 to
+    // `/api/random/*`. beforeFiles runs before filesystem/dynamic routing, so
+    // `/random` wins over the top-level dynamic `[slug]` page instead of being
+    // swallowed by it.
+    return {
+      // The subpath rule uses `:path+` (one-OR-MORE segments) rather than
+      // `:path*` (zero-or-more) so it can never match the bare `/random` -- only
+      // the explicit rule above handles that, keeping the bare alias on the image
+      // bytes rather than the JSON record.
+      beforeFiles: [
+        { source: '/random', destination: '/api/random/image' },
+        { source: '/random/:path+', destination: '/api/random/:path+' }
+      ]
+    };
+  },
   experimental: {
     serverActions: { bodySizeLimit: '20mb' },
     // Next 14.2 defaults `staleTimes.dynamic` to 0, which makes a prefetched

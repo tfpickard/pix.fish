@@ -312,6 +312,9 @@ export default async function ConnectPage({ searchParams }: PageProps) {
             </p>
           ) : outcome.status === 'found' ? (
             <div className="space-y-5">
+              {/* Substrate 1: JourneyPlayer records edge traffic itself, but only
+                  after the visitor traverses the journey to B -- not on render,
+                  so shared links / refreshes don't count as walks. */}
               <JourneyPlayer path={outcome.nodes} totalDist={outcome.totalDist} />
               <PathFilmstrip path={outcome.nodes} totalDist={outcome.totalDist} />
             </div>
