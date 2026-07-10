@@ -12,6 +12,7 @@
  *   bun scripts/characters-detect.ts --cluster-only
  *   bun scripts/characters-detect.ts --allow-partial # cluster even if some detects failed
  */
+import { getImageEmbedder } from '../src/lib/ai/imageEmbed';
 import { listDetectableImageIds } from '../src/lib/db/queries/images';
 import type { Job } from '../src/lib/db/schema';
 import {
@@ -21,6 +22,7 @@ import {
 import { verifyCandidate } from '../src/lib/jobs/handlers/charactersVerify';
 import { assembleCensus } from '../src/lib/jobs/handlers/charactersCensus';
 import { charactersDetectHandler } from '../src/lib/jobs/handlers/charactersDetect';
+import { backfillVisualsInline } from '../src/lib/universe/backfill-visuals';
 
 function asJob(payload: Record<string, unknown>): Job {
   return { payload } as unknown as Job;
@@ -85,6 +87,29 @@ async function main() {
     blendWeight: numArg('blendWeight'),
     partialOk: process.argv.includes('--partial-ok') || undefined
   });
+  // Detection only writes each crop's text vec; the visual vec is filled
+  // out-of-band (the queue's backfill job online, or characters:backfill-visuals
+  // offline). This script enqueues nothing, so a visual/blend cluster would find
+  // every crop missing its vec_image and abort. Drain the backfill inline first.
+  if (knobs.space === 'visual' || knobs.space === 'blend') {
+    const embedder = getImageEmbedder();
+    if (!embedder) {
+      console.error(
+        `\naborting: --space=${knobs.space} needs visual vectors, but no VOYAGE_API_KEY is set.`
+      );
+      process.exit(1);
+    }
+    console.log(`ensuring visual vectors exist for --space=${knobs.space}...`);
+    const { ok, fail } = await backfillVisualsInline(embedder, (m) => console.log(m));
+    console.log(`  visual backfill: ${ok} embedded, ${fail} failed`);
+    if (fail > 0 && !knobs.partialOk) {
+      console.error(
+        `\naborting before clustering: ${fail} crop(s) still lack a visual vector. Re-run to retry, or pass --partial-ok to cluster on the embedded subset.`
+      );
+      process.exit(1);
+    }
+  }
+
   console.log('clustering crops into recurring characters...');
   const count = await produceCandidates(knobs);
   if (knobs.verifyEnabled) {

@@ -10,7 +10,7 @@
  * on /admin/characters (or --space via characters:detect) and re-cluster.
  */
 import { getImageEmbedder } from '../src/lib/ai/imageEmbed';
-import { cropsMissingImageVec, setCropImageVec } from '../src/lib/db/queries/character-crops';
+import { backfillVisualsInline } from '../src/lib/universe/backfill-visuals';
 
 async function main() {
   const embedder = getImageEmbedder();
@@ -19,21 +19,10 @@ async function main() {
     process.exit(1);
   }
 
-  const crops = await cropsMissingImageVec();
-  console.log(`backfilling visual vectors for ${crops.length} crop(s) via ${embedder.model}`);
-  let ok = 0;
-  let fail = 0;
-  for (const crop of crops) {
-    try {
-      const vec = await embedder.embed(crop.blobUrl);
-      await setCropImageVec(crop.cropId, vec, embedder.name, embedder.model);
-      ok++;
-      if (ok % 20 === 0) console.log(`  ${ok}/${crops.length}`);
-    } catch (err) {
-      fail++;
-      console.error(`  crop ${crop.cropId} failed:`, err instanceof Error ? err.message : err);
-    }
-  }
+  console.log(`backfilling visual vectors via ${embedder.model}...`);
+  // Loops until every crop missing a vec_image is embedded (one page-load caps
+  // at the query LIMIT, so a large backlog needs the loop).
+  const { ok, fail } = await backfillVisualsInline(embedder, (m) => console.log(m));
   console.log(`done: ${ok} embedded, ${fail} failed.`);
 }
 
