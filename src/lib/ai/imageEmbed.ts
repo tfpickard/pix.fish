@@ -38,7 +38,7 @@ export function getImageEmbedder(): ImageEmbedder | null {
           model: VOYAGE_MODEL,
           inputs: [{ content: [{ type: 'image_url', image_url: imageUrl }] }]
         }),
-        signal: AbortSignal.timeout(20_000)
+        signal: AbortSignal.timeout(15_000)
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '');

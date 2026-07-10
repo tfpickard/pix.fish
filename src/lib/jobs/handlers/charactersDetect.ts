@@ -10,9 +10,9 @@ import {
   countCropsForImage,
   cropBlobKeysForImage,
   deleteCropsForImage,
-  insertCharacterCrop,
-  setCropImageVec
+  insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
+import { enqueueJob } from '@/lib/db/queries/jobs';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
 
@@ -139,12 +139,13 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         addRandomSuffix: true
       });
       uploadedUrl = blob.url;
-      // Persist the crop row (text vec) BEFORE the remote Voyage call: if that
-      // call stalls until the invocation is killed, the row+blob_key already
-      // exist, so the crop isn't orphaned and a retry won't re-upload a
-      // duplicate (the countCropsForImage guard sees it). The visual vector is a
-      // best-effort follow-up update; a failure just leaves it for the backfill.
-      const cropId = await insertCharacterCrop({
+      // Persist the crop row (text vec only). Visual embedding is NOT done inline
+      // here: a Voyage call can take up to its abort timeout, and N of them across
+      // the figures would risk blowing detect's worker budget mid-image (leaving
+      // some crops inserted, markDetected never reached, and the retry then
+      // skipping the image via the crops-exist guard). Visuals are filled by the
+      // dedicated characters.backfill-visuals job, enqueued once after this image.
+      await insertCharacterCrop({
         imageId,
         label: d.label,
         description: d.description,
@@ -156,14 +157,6 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         model: embedder.model
       });
       idx++;
-      if (imageEmbedder) {
-        try {
-          const vecImage = await imageEmbedder.embed(blob.url);
-          await setCropImageVec(cropId, vecImage, imageEmbedder.name, imageEmbedder.model);
-        } catch (err) {
-          console.error(`characters.detect: visual embed for crop ${cropId} image ${imageId} failed`, err);
-        }
-      }
     } catch (err) {
       console.error(`characters.detect: crop ${idx} for image ${imageId} failed`, err);
       // If the upload landed but the row write didn't, the key was never
@@ -181,4 +174,16 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   }
 
   await markDetected(imageId); // at least one crop persisted; non-force runs skip it
+
+  // Fill visual vectors for the crops just created (and any other pending ones)
+  // out-of-band, so detect stays text-only and fast. The backfill job is
+  // idempotent + self-draining; skip enqueuing when no Voyage key is configured
+  // to avoid a guaranteed-failing job.
+  if (imageEmbedder) {
+    try {
+      await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
+    } catch (err) {
+      console.error('characters.detect: failed to enqueue characters.backfill-visuals', err);
+    }
+  }
 }
