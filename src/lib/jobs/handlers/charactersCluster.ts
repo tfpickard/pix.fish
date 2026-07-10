@@ -15,6 +15,7 @@ type Payload = {
   verifyEnabled?: boolean;
   space?: ClusterSpace;
   blendWeight?: number;
+  partialOk?: boolean; // cluster on a non-text space even if some crops lack the vec
   stamp?: number; // legacy alias for runStamp
 };
 
@@ -27,6 +28,7 @@ export type ResolvedKnobs = {
   verifyEnabled: boolean;
   space: ClusterSpace;
   blendWeight: number;
+  partialOk: boolean;
 };
 
 // Use a payload number only when it's finite; otherwise fall back to the saved
@@ -48,7 +50,8 @@ export async function resolveKnobs(payload: Payload): Promise<ResolvedKnobs> {
     pruneK: Math.max(1, Math.trunc(num(payload.pruneK, tuning.pruneK))),
     verifyEnabled: payload.verifyEnabled ?? tuning.verifyEnabled,
     space: payload.space ?? tuning.space,
-    blendWeight: num(payload.blendWeight, tuning.blendWeight)
+    blendWeight: num(payload.blendWeight, tuning.blendWeight),
+    partialOk: payload.partialOk ?? false
   };
 }
 
@@ -87,6 +90,19 @@ export async function produceCandidates(knobs: ResolvedKnobs): Promise<number> {
       `characters.cluster: none of the ${crops.length} crop(s) have a '${knobs.space}' vector. ` +
         `Run 'characters:backfill-visuals' (needs VOYAGE_API_KEY) or switch the identity space back ` +
         `to 'text'. Aborting -- NOT filing an empty census, so the existing roster is preserved.`
+    );
+  }
+
+  // Partial coverage on a non-text space is also destructive: clustering only the
+  // embedded subset builds a roster missing any character seen only in skipped
+  // crops, and the census reducer then prunes those characters from the live
+  // canon. Abort unless the caller explicitly opts into a partial census. (A
+  // blend at weight 0 is effectively text and skips nothing, so it won't trip.)
+  if (knobs.space !== 'text' && skipped > 0 && !knobs.partialOk) {
+    throw new Error(
+      `characters.cluster: ${skipped}/${crops.length} crop(s) lack a '${knobs.space}' vector. ` +
+        `Finish 'characters:backfill-visuals' first, or pass partialOk to cluster on the embedded ` +
+        `subset. Aborting so a partial roster doesn't prune characters from the canon.`
     );
   }
 

@@ -82,7 +82,8 @@ async function main() {
     minAppearances: numArg('minAppearances'),
     verifyEnabled: noVerify ? false : undefined,
     space: spaceArg === 'visual' || spaceArg === 'blend' || spaceArg === 'text' ? spaceArg : undefined,
-    blendWeight: numArg('blendWeight')
+    blendWeight: numArg('blendWeight'),
+    partialOk: process.argv.includes('--partial-ok') || undefined
   });
   console.log('clustering crops into recurring characters...');
   const count = await produceCandidates(knobs);

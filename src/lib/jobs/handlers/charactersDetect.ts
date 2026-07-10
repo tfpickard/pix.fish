@@ -10,7 +10,8 @@ import {
   countCropsForImage,
   cropBlobKeysForImage,
   deleteCropsForImage,
-  insertCharacterCrop
+  insertCharacterCrop,
+  setCropImageVec
 } from '@/lib/db/queries/character-crops';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
@@ -138,16 +139,12 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         addRandomSuffix: true
       });
       uploadedUrl = blob.url;
-      // Visual embedding from the just-uploaded public crop URL (best-effort).
-      let vecImage: number[] | undefined;
-      if (imageEmbedder) {
-        try {
-          vecImage = await imageEmbedder.embed(blob.url);
-        } catch (err) {
-          console.error(`characters.detect: visual embed for crop ${idx} image ${imageId} failed`, err);
-        }
-      }
-      await insertCharacterCrop({
+      // Persist the crop row (text vec) BEFORE the remote Voyage call: if that
+      // call stalls until the invocation is killed, the row+blob_key already
+      // exist, so the crop isn't orphaned and a retry won't re-upload a
+      // duplicate (the countCropsForImage guard sees it). The visual vector is a
+      // best-effort follow-up update; a failure just leaves it for the backfill.
+      const cropId = await insertCharacterCrop({
         imageId,
         label: d.label,
         description: d.description,
@@ -156,12 +153,17 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         blobKey: blob.pathname,
         vec,
         provider: embedder.name,
-        model: embedder.model,
-        vecImage,
-        imageProvider: vecImage ? imageEmbedder!.name : undefined,
-        imageModel: vecImage ? imageEmbedder!.model : undefined
+        model: embedder.model
       });
       idx++;
+      if (imageEmbedder) {
+        try {
+          const vecImage = await imageEmbedder.embed(blob.url);
+          await setCropImageVec(cropId, vecImage, imageEmbedder.name, imageEmbedder.model);
+        } catch (err) {
+          console.error(`characters.detect: visual embed for crop ${cropId} image ${imageId} failed`, err);
+        }
+      }
     } catch (err) {
       console.error(`characters.detect: crop ${idx} for image ${imageId} failed`, err);
       // If the upload landed but the row write didn't, the key was never

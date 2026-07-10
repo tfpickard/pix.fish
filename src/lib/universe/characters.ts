@@ -126,13 +126,19 @@ export function cropClusterVector(
   space: 'text' | 'visual' | 'blend',
   blendWeight: number
 ): number[] | null {
-  if (space === 'text') return crop.vec.length > 0 ? crop.vec : null;
-  if (space === 'visual') return crop.vecImage && crop.vecImage.length > 0 ? crop.vecImage : null;
-  // blend -- needs both
-  if (crop.vec.length === 0 || !crop.vecImage || crop.vecImage.length === 0) return null;
+  const hasText = crop.vec.length > 0;
+  const hasVisual = !!crop.vecImage && crop.vecImage.length > 0;
+  if (space === 'text') return hasText ? crop.vec : null;
+  if (space === 'visual') return hasVisual ? crop.vecImage : null;
+  // blend. Degenerate weights collapse to a single space so they don't demand a
+  // vector that contributes zero: w=0 is all-text (no visual needed), w=1 is
+  // all-visual. Only a genuine mix (0<w<1) needs both.
   const w = Math.min(1, Math.max(0, blendWeight));
+  if (w === 0) return hasText ? crop.vec : null;
+  if (w === 1) return hasVisual ? crop.vecImage! : null;
+  if (!hasText || !hasVisual) return null;
   const t = l2normalize(crop.vec).map((x) => x * Math.sqrt(1 - w));
-  const i = l2normalize(crop.vecImage).map((x) => x * Math.sqrt(w));
+  const i = l2normalize(crop.vecImage!).map((x) => x * Math.sqrt(w));
   return [...t, ...i];
 }
 

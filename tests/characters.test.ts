@@ -120,9 +120,16 @@ describe('cropClusterVector', () => {
     expect(mag).toBeCloseTo(1, 5);
   });
 
-  test('blend needs both vecs', () => {
+  test('blend needs both vecs at a genuine mix weight', () => {
     expect(cropClusterVector({ vec: [1], vecImage: null }, 'blend', 0.5)).toBeNull();
     expect(cropClusterVector({ vec: [], vecImage: [1] }, 'blend', 0.5)).toBeNull();
+  });
+
+  test('degenerate blend weights collapse to a single space (no unused vec required)', () => {
+    // w=0 = all text: works without a visual vec
+    expect(cropClusterVector({ vec: [3, 4], vecImage: null }, 'blend', 0)).toEqual([3, 4]);
+    // w=1 = all visual: works without a text vec
+    expect(cropClusterVector({ vec: [], vecImage: [0, 5] }, 'blend', 1)).toEqual([0, 5]);
   });
 });
 
