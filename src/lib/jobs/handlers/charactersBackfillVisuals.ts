@@ -29,8 +29,10 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
   }
   console.log(`characters.backfill-visuals: embedded ${ok}/${crops.length}`);
 
-  // More likely remain (full batch) and we made progress: continue next tick.
-  // If a full batch made zero progress (all failed), stop rather than loop.
+  // More likely remain (full batch) and we made progress: enqueue a follow-up
+  // to continue draining (the cron may claim and run it in the same invocation
+  // if its wall budget allows, or on a later one). If a full batch made zero
+  // progress (all failed), stop rather than loop.
   if (crops.length === BATCH && ok > 0) {
     await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
   }

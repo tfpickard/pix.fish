@@ -28,13 +28,17 @@ export function getImageEmbedder(): ImageEmbedder | null {
     model: VOYAGE_MODEL,
     dim: IMAGE_EMBED_DIM,
     async embed(imageUrl: string): Promise<number[]> {
+      // Abort a stalled request: the worker's per-job timeout doesn't cancel an
+      // in-flight fetch, so a hung Voyage call would otherwise keep burning the
+      // cron tick after the job is marked failed.
       const res = await fetch(VOYAGE_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
         body: JSON.stringify({
           model: VOYAGE_MODEL,
           inputs: [{ content: [{ type: 'image_url', image_url: imageUrl }] }]
-        })
+        }),
+        signal: AbortSignal.timeout(20_000)
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '');

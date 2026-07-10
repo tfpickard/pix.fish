@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { characterCrops, type NewCharacterCrop } from '../schema';
 
@@ -7,7 +7,8 @@ import { characterCrops, type NewCharacterCrop } from '../schema';
 // consumed by the clustering census. Not a projection -- regenerable by
 // re-running detection.
 
-const EMBED_DIMENSIONS = 1536;
+const EMBED_DIMENSIONS = 1536; // text vec
+const IMAGE_EMBED_DIMENSIONS = 1024; // visual vec (Voyage multimodal-3.5)
 
 export async function insertCharacterCrop(input: NewCharacterCrop): Promise<number> {
   if (!Array.isArray(input.vec) || input.vec.length !== EMBED_DIMENSIONS) {
@@ -73,21 +74,27 @@ export async function allCropVectors(): Promise<CropVector[]> {
   }));
 }
 
-// Backfill support: set an existing crop's visual vector.
+// Backfill support: set an existing crop's visual vector. Validates the 1024-d
+// length, and writes only while vec_image is still NULL -- so a duplicate/
+// concurrent backfill job can't re-embed or clobber an existing vector (the
+// update simply matches zero rows).
 export async function setCropImageVec(
   cropId: number,
   vecImage: number[],
   imageProvider: string,
   imageModel: string
 ): Promise<void> {
+  if (!Array.isArray(vecImage) || vecImage.length !== IMAGE_EMBED_DIMENSIONS) {
+    throw new Error(`character crop vec_image has wrong dims; expected ${IMAGE_EMBED_DIMENSIONS}.`);
+  }
   await db
     .update(characterCrops)
     .set({ vecImage, imageProvider, imageModel })
-    .where(eq(characterCrops.id, cropId));
+    .where(and(eq(characterCrops.id, cropId), isNull(characterCrops.vecImage)));
 }
 
-// Crops still missing a visual vector (for the backfill script), newest-in-
-// circulation first. Returns id + blobUrl only.
+// Crops still missing a visual vector (for the backfill job/script), oldest
+// first (by id) for a deterministic, stable drain order. Returns id + blobUrl.
 export async function cropsMissingImageVec(limit = 10_000): Promise<{ cropId: number; blobUrl: string }[]> {
   const res = await db.execute<{ id: number; blob_url: string }>(sql`
     SELECT cc.id, cc.blob_url FROM character_crops cc
