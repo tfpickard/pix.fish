@@ -13,6 +13,7 @@
  *   bun scripts/characters-detect.ts --allow-partial # cluster even if some detects failed
  */
 import { getImageEmbedder } from '../src/lib/ai/imageEmbed';
+import { countCropsMissingImageVec } from '../src/lib/db/queries/character-crops';
 import { listDetectableImageIds } from '../src/lib/db/queries/images';
 import type { Job } from '../src/lib/db/schema';
 import {
@@ -37,6 +38,15 @@ function numArg(name: string): number | undefined {
 function strArg(name: string): string | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.split('=')[1] : undefined;
+}
+
+// Whether the chosen clustering space actually reads the visual vec, matching
+// cropClusterVector's degenerate-weight handling: 'visual' always does; 'blend'
+// only when weight > 0 (weight 0 collapses to pure text); 'text' never does.
+function needsVisualVec(space: string, blendWeight: number): boolean {
+  if (space === 'visual') return true;
+  if (space === 'blend') return blendWeight > 0;
+  return false;
 }
 
 async function main() {
@@ -90,23 +100,34 @@ async function main() {
   // Detection only writes each crop's text vec; the visual vec is filled
   // out-of-band (the queue's backfill job online, or characters:backfill-visuals
   // offline). This script enqueues nothing, so a visual/blend cluster would find
-  // every crop missing its vec_image and abort. Drain the backfill inline first.
-  if (knobs.space === 'visual' || knobs.space === 'blend') {
-    const embedder = getImageEmbedder();
-    if (!embedder) {
-      console.error(
-        `\naborting: --space=${knobs.space} needs visual vectors, but no VOYAGE_API_KEY is set.`
-      );
-      process.exit(1);
-    }
-    console.log(`ensuring visual vectors exist for --space=${knobs.space}...`);
-    const { ok, fail } = await backfillVisualsInline(embedder, (m) => console.log(m));
-    console.log(`  visual backfill: ${ok} embedded, ${fail} failed`);
-    if (fail > 0 && !knobs.partialOk) {
-      console.error(
-        `\naborting before clustering: ${fail} crop(s) still lack a visual vector. Re-run to retry, or pass --partial-ok to cluster on the embedded subset.`
-      );
-      process.exit(1);
+  // crops missing their vec_image and abort. Backfill inline first -- but only
+  // when the chosen space actually reads the visual vec AND some crop is missing
+  // it. A cluster-only sweep over an already-populated corpus (or blend at
+  // weight 0, which cropClusterVector treats as pure text) needs no Voyage call,
+  // so don't require VOYAGE_API_KEY for those.
+  if (needsVisualVec(knobs.space, knobs.blendWeight)) {
+    const missing = await countCropsMissingImageVec();
+    if (missing > 0) {
+      const embedder = getImageEmbedder();
+      if (!embedder) {
+        console.error(
+          `\naborting: --space=${knobs.space} needs visual vectors for ${missing} crop(s), but no VOYAGE_API_KEY is set.`
+        );
+        process.exit(1);
+      }
+      console.log(`backfilling visual vectors for ${missing} crop(s)...`);
+      const { ok, fail } = await backfillVisualsInline(embedder, (m) => console.log(m));
+      console.log(`  visual backfill: ${ok} embedded, ${fail} failed`);
+      // Base the abort on a FRESH missing count, not the cumulative fail tally:
+      // a crop can fail one attempt and succeed on a later run, so `fail` may be
+      // positive while the corpus is fully backfilled.
+      const stillMissing = await countCropsMissingImageVec();
+      if (stillMissing > 0 && !knobs.partialOk) {
+        console.error(
+          `\naborting before clustering: ${stillMissing} crop(s) still lack a visual vector. Re-run to retry, or pass --partial-ok to cluster on the embedded subset.`
+        );
+        process.exit(1);
+      }
     }
   }
 

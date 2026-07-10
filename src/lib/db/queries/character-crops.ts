@@ -94,16 +94,36 @@ export async function setCropImageVec(
 }
 
 // Crops still missing a visual vector (for the backfill job/script), oldest
-// first (by id) for a deterministic, stable drain order. Returns id + blobUrl.
-export async function cropsMissingImageVec(limit = 10_000): Promise<{ cropId: number; blobUrl: string }[]> {
+// first (by id) for a deterministic, stable drain order. `afterId` is an
+// exclusive cursor (id > afterId) so callers can page PAST crops they already
+// attempted -- a poisoned prefix (blobs deleted, so every embed fails) would
+// otherwise be re-fetched from the front on each pass and wedge the whole drain,
+// never reaching the valid crops behind it. Returns id + blobUrl.
+export async function cropsMissingImageVec(
+  limit = 10_000,
+  afterId = 0
+): Promise<{ cropId: number; blobUrl: string }[]> {
   const res = await db.execute<{ id: number; blob_url: string }>(sql`
     SELECT cc.id, cc.blob_url FROM character_crops cc
     JOIN images i ON i.id = cc.image_id
-    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL AND cc.id > ${Math.trunc(afterId)}
     ORDER BY cc.id
     LIMIT ${Math.trunc(limit)}
   `);
   return res.rows.map((r) => ({ cropId: Number(r.id), blobUrl: r.blob_url }));
+}
+
+// Total count of crops still lacking a visual vector (eligible, non-archived).
+// Used to decide "is any backfill needed at all" and to surface a nonzero
+// remainder after a full drain sweep -- independent of the cursor, so it also
+// counts poisoned crops the sweep paged past.
+export async function countCropsMissingImageVec(): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM character_crops cc
+    JOIN images i ON i.id = cc.image_id
+    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
 }
 
 export async function countCropsForImage(imageId: number): Promise<number> {
