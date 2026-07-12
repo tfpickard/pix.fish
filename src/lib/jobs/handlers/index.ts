@@ -16,6 +16,7 @@ import { charactersDetectHandler } from './charactersDetect';
 import { charactersClusterHandler } from './charactersCluster';
 import { charactersVerifyHandler } from './charactersVerify';
 import { charactersCensusHandler } from './charactersCensus';
+import { charactersBackfillVisualsHandler } from './charactersBackfillVisuals';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -62,5 +63,8 @@ export const handlers: Record<string, JobHandler> = {
   'characters.detect': charactersDetectHandler,
   'characters.cluster': charactersClusterHandler,
   'characters.verify': charactersVerifyHandler,
-  'characters.census': charactersCensusHandler
+  'characters.census': charactersCensusHandler,
+  // Backfill visual (Voyage multimodal) vectors for crops that lack one; drains
+  // in batches over successive ticks.
+  'characters.backfill-visuals': charactersBackfillVisualsHandler
 };

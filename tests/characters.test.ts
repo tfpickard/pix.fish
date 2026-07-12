@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { parseDetectionsJson } from '../src/lib/ai/types';
 import { detectCommunities } from '../src/lib/universe/cluster';
-import { buildCropEdges, parseCharacterIdentity, parseVerifyGroups } from '../src/lib/universe/characters';
+import {
+  buildCropEdges,
+  cropClusterVector,
+  parseCharacterIdentity,
+  parseVerifyGroups
+} from '../src/lib/universe/characters';
 
 // Pure, infra-free tests in the existing style. The DB-bound invariants
 // (crops/characters reconcile, rebuild round-trip) are asserted by
@@ -86,6 +91,45 @@ describe('parseCharacterIdentity', () => {
     const id = parseCharacterIdentity('???', 'character-7');
     expect(id.name).toContain('7');
     expect(id.dossier.length).toBeGreaterThan(0);
+  });
+});
+
+describe('cropClusterVector', () => {
+  const crop = { vec: [3, 4], vecImage: [0, 5] }; // |vec|=5, |vecImage|=5
+
+  test('text returns the description vec', () => {
+    expect(cropClusterVector(crop, 'text', 0.5)).toEqual([3, 4]);
+  });
+
+  test('visual returns the pixel vec, null when missing', () => {
+    expect(cropClusterVector(crop, 'visual', 0.5)).toEqual([0, 5]);
+    expect(cropClusterVector({ vec: [1, 2], vecImage: null }, 'visual', 0.5)).toBeNull();
+  });
+
+  test('blend concatenates normalized+weighted parts; unit length', () => {
+    const w = 0.5;
+    const out = cropClusterVector(crop, 'blend', w)!;
+    expect(out.length).toBe(4);
+    // text part = normalize([3,4]) * sqrt(0.5) = [0.6,0.8]*0.7071
+    expect(out[0]!).toBeCloseTo(0.6 * Math.sqrt(0.5), 5);
+    expect(out[1]!).toBeCloseTo(0.8 * Math.sqrt(0.5), 5);
+    // visual part = normalize([0,5]) * sqrt(0.5) = [0,1]*0.7071
+    expect(out[3]!).toBeCloseTo(1 * Math.sqrt(0.5), 5);
+    // the blended vector is unit-length
+    const mag = Math.sqrt(out.reduce((s, x) => s + x * x, 0));
+    expect(mag).toBeCloseTo(1, 5);
+  });
+
+  test('blend needs both vecs at a genuine mix weight', () => {
+    expect(cropClusterVector({ vec: [1], vecImage: null }, 'blend', 0.5)).toBeNull();
+    expect(cropClusterVector({ vec: [], vecImage: [1] }, 'blend', 0.5)).toBeNull();
+  });
+
+  test('degenerate blend weights collapse to a single space (no unused vec required)', () => {
+    // w=0 = all text: works without a visual vec
+    expect(cropClusterVector({ vec: [3, 4], vecImage: null }, 'blend', 0)).toEqual([3, 4]);
+    // w=1 = all visual: works without a text vec
+    expect(cropClusterVector({ vec: [], vecImage: [0, 5] }, 'blend', 1)).toEqual([0, 5]);
   });
 });
 

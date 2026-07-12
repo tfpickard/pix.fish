@@ -1006,7 +1006,14 @@ export const characterCrops = pgTable(
     box: jsonb('box').$type<{ left: number; top: number; width: number; height: number }>().notNull(),
     blobUrl: text('blob_url').notNull(),
     blobKey: text('blob_key').notNull(),
-    vec: vector('vec', { dimensions: 1536 }).notNull(),
+    vec: vector('vec', { dimensions: 1536 }).notNull(), // text-description embedding
+    // Visual identity embedding of the cropped pixels (Voyage multimodal-3.5,
+    // 1024-d). Nullable: crops predate this column / no VOYAGE key at detect
+    // time -> backfill with scripts/backfill-crop-visuals.ts. Clustering can run
+    // on the text vec, this visual vec, or a blend (see character_tuning.space).
+    vecImage: vector('vec_image', { dimensions: 1024 }),
+    imageProvider: text('image_provider'),
+    imageModel: text('image_model'),
     provider: text('provider'),
     model: text('model'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
@@ -1089,6 +1096,12 @@ export const characterTuning = pgTable('character_tuning', {
   pruneK: integer('prune_k').notNull().default(4),
   minAppearances: integer('min_appearances').notNull().default(2),
   verifyEnabled: boolean('verify_enabled').notNull().default(true),
+  // Which embedding space clustering runs on: 'text' (description vec, the
+  // original), 'visual' (Voyage multimodal pixel vec), or 'blend' (both, mixed
+  // by blendWeight = the visual share, 0..1). Default stays 'text' so behaviour
+  // is unchanged until the crops carry visual vectors + an admin opts in.
+  space: text('space').notNull().default('text'),
+  blendWeight: real('blend_weight').notNull().default(0.5),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 

@@ -15,7 +15,9 @@ const putSchema = z
     k: z.number().int().min(1).max(30).optional(),
     pruneK: z.number().int().min(1).max(30).optional(),
     minAppearances: z.number().int().min(2).max(50).optional(),
-    verifyEnabled: z.boolean().optional()
+    verifyEnabled: z.boolean().optional(),
+    space: z.enum(['text', 'visual', 'blend']).optional(),
+    blendWeight: z.number().min(0).max(1).optional()
   })
   .default({});
 

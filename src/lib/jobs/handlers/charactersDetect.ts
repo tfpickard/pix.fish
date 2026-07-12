@@ -2,6 +2,7 @@ import { del, put } from '@vercel/blob';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { getEmbedder, getProvider, loadUserProviderKeys } from '@/lib/ai';
+import { getImageEmbedder } from '@/lib/ai/imageEmbed';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { parseDetectionsJson } from '@/lib/ai/types';
 import { db } from '@/lib/db/client';
@@ -11,6 +12,7 @@ import {
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
+import { enqueueJob } from '@/lib/db/queries/jobs';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
 
@@ -81,6 +83,9 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   if (!provider || !provider.vision) throw new Error('characters.detect: no vision-capable provider');
   const embedder = getEmbedder(cfg, keys);
   if (!embedder) throw new Error('characters.detect: no embedder available');
+  // Visual identity embedder (Voyage multimodal). Best-effort: null when no
+  // VOYAGE_API_KEY -- crops just carry the text vec and can be backfilled later.
+  const imageEmbedder = getImageEmbedder();
 
   const res = await fetch(img.blobUrl);
   if (!res.ok) throw new Error(`characters.detect: fetch original ${res.status}`);
@@ -134,6 +139,12 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
         addRandomSuffix: true
       });
       uploadedUrl = blob.url;
+      // Persist the crop row (text vec only). Visual embedding is NOT done inline
+      // here: a Voyage call can take up to its abort timeout, and N of them across
+      // the figures would risk blowing detect's worker budget mid-image (leaving
+      // some crops inserted, markDetected never reached, and the retry then
+      // skipping the image via the crops-exist guard). Visuals are filled by the
+      // dedicated characters.backfill-visuals job, enqueued once after this image.
       await insertCharacterCrop({
         imageId,
         label: d.label,
@@ -163,4 +174,16 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   }
 
   await markDetected(imageId); // at least one crop persisted; non-force runs skip it
+
+  // Fill visual vectors for the crops just created (and any other pending ones)
+  // out-of-band, so detect stays text-only and fast. The backfill job is
+  // idempotent + self-draining; skip enqueuing when no Voyage key is configured
+  // to avoid a guaranteed-failing job.
+  if (imageEmbedder) {
+    try {
+      await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
+    } catch (err) {
+      console.error('characters.detect: failed to enqueue characters.backfill-visuals', err);
+    }
+  }
 }

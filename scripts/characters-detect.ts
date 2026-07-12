@@ -12,6 +12,8 @@
  *   bun scripts/characters-detect.ts --cluster-only
  *   bun scripts/characters-detect.ts --allow-partial # cluster even if some detects failed
  */
+import { getImageEmbedder } from '../src/lib/ai/imageEmbed';
+import { countCropsMissingImageVec } from '../src/lib/db/queries/character-crops';
 import { listDetectableImageIds } from '../src/lib/db/queries/images';
 import type { Job } from '../src/lib/db/schema';
 import {
@@ -21,16 +23,30 @@ import {
 import { verifyCandidate } from '../src/lib/jobs/handlers/charactersVerify';
 import { assembleCensus } from '../src/lib/jobs/handlers/charactersCensus';
 import { charactersDetectHandler } from '../src/lib/jobs/handlers/charactersDetect';
+import { backfillVisualsInline } from '../src/lib/universe/backfill-visuals';
 
 function asJob(payload: Record<string, unknown>): Job {
   return { payload } as unknown as Job;
 }
 
-// Parse "--flag=value" numeric knob overrides so a sweep can run e.g.
-//   bun run characters:detect --cluster-only --maxDist=0.32 --no-verify
+// Parse "--flag=value" knob overrides so a sweep can run e.g.
+//   bun run characters:detect --cluster-only --maxDist=0.32 --space=visual --no-verify
 function numArg(name: string): number | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? Number(hit.split('=')[1]) : undefined;
+}
+function strArg(name: string): string | undefined {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.split('=')[1] : undefined;
+}
+
+// Whether the chosen clustering space actually reads the visual vec, matching
+// cropClusterVector's degenerate-weight handling: 'visual' always does; 'blend'
+// only when weight > 0 (weight 0 collapses to pure text); 'text' never does.
+function needsVisualVec(space: string, blendWeight: number): boolean {
+  if (space === 'visual') return true;
+  if (space === 'blend') return blendWeight > 0;
+  return false;
 }
 
 async function main() {
@@ -70,13 +86,51 @@ async function main() {
   // Run the full clustering pipeline INLINE (cluster -> verify -> census) rather
   // than enqueuing jobs, so a local sweep completes in one shot. Knob overrides
   // from the CLI fall back to the saved tuning.
+  const spaceArg = strArg('space');
   const knobs = await resolveKnobs({
     maxDist: numArg('maxDist'),
     k: numArg('k'),
     pruneK: numArg('pruneK'),
     minAppearances: numArg('minAppearances'),
-    verifyEnabled: noVerify ? false : undefined
+    verifyEnabled: noVerify ? false : undefined,
+    space: spaceArg === 'visual' || spaceArg === 'blend' || spaceArg === 'text' ? spaceArg : undefined,
+    blendWeight: numArg('blendWeight'),
+    partialOk: process.argv.includes('--partial-ok') || undefined
   });
+  // Detection only writes each crop's text vec; the visual vec is filled
+  // out-of-band (the queue's backfill job online, or characters:backfill-visuals
+  // offline). This script enqueues nothing, so a visual/blend cluster would find
+  // crops missing their vec_image and abort. Backfill inline first -- but only
+  // when the chosen space actually reads the visual vec AND some crop is missing
+  // it. A cluster-only sweep over an already-populated corpus (or blend at
+  // weight 0, which cropClusterVector treats as pure text) needs no Voyage call,
+  // so don't require VOYAGE_API_KEY for those.
+  if (needsVisualVec(knobs.space, knobs.blendWeight)) {
+    const missing = await countCropsMissingImageVec();
+    if (missing > 0) {
+      const embedder = getImageEmbedder();
+      if (!embedder) {
+        console.error(
+          `\naborting: --space=${knobs.space} needs visual vectors for ${missing} crop(s), but no VOYAGE_API_KEY is set.`
+        );
+        process.exit(1);
+      }
+      console.log(`backfilling visual vectors for ${missing} crop(s)...`);
+      const { ok, fail } = await backfillVisualsInline(embedder, (m) => console.log(m));
+      console.log(`  visual backfill: ${ok} embedded, ${fail} failed`);
+      // Base the abort on a FRESH missing count, not the cumulative fail tally:
+      // a crop can fail one attempt and succeed on a later run, so `fail` may be
+      // positive while the corpus is fully backfilled.
+      const stillMissing = await countCropsMissingImageVec();
+      if (stillMissing > 0 && !knobs.partialOk) {
+        console.error(
+          `\naborting before clustering: ${stillMissing} crop(s) still lack a visual vector. Re-run to retry, or pass --partial-ok to cluster on the embedded subset.`
+        );
+        process.exit(1);
+      }
+    }
+  }
+
   console.log('clustering crops into recurring characters...');
   const count = await produceCandidates(knobs);
   if (knobs.verifyEnabled) {
