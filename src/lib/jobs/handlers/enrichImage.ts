@@ -7,7 +7,7 @@ import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { enrichImage } from '@/lib/enrichment';
 import { persistEnrichment } from '@/lib/enrichment-persist';
-import { enqueueJob } from '@/lib/db/queries/jobs';
+import { enqueueJob, inFlightImageIds } from '@/lib/db/queries/jobs';
 
 // Providers prefer the blob URL; pass an empty buffer to avoid round-tripping
 // the original file through Postgres just to hand it back out to Anthropic.
@@ -88,7 +88,15 @@ export async function enrichImageHandler(job: Job): Promise<void> {
   // Best-effort: a failed enqueue must not fail the enrichment that already committed.
   try {
     if (getProvider('captions', cfg, userKeys)?.vision && getEmbedder(cfg, userKeys)) {
-      await enqueueJob({ type: 'characters.detect', payload: { imageId: img.id }, maxAttempts: 2 });
+      // Skip when a detect for this image is already in flight -- e.g. an
+      // overlapping admin detect-all filed one. Two detects for one image are NOT
+      // idempotent (they cut duplicate crops and double-bill vision + embed),
+      // unlike the corpus-wide backfill/cluster dedupes, so match the admin
+      // detect route's inFlightImageIds guard here too.
+      const detectInFlight = await inFlightImageIds('characters.detect');
+      if (!detectInFlight.has(img.id)) {
+        await enqueueJob({ type: 'characters.detect', payload: { imageId: img.id }, maxAttempts: 2 });
+      }
     }
   } catch (err) {
     console.error('enrichImage: failed to enqueue characters.detect for', img.id, err);
