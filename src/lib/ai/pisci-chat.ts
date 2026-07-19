@@ -17,7 +17,7 @@ import type { ChatMessage } from '@/lib/pisci/render';
 
 // Haiku-class: cheap and fast, which the bit is deliberately cost-sensitive
 // about. The widget only ever needs a couple of short sentences per turn.
-const PISCI_MODEL = 'claude-haiku-4-5-20251001';
+export const PISCI_MODEL = 'claude-haiku-4-5-20251001';
 
 // Cost guardrail (load-bearing): a hard ceiling on tokens per reply. The persona
 // already demands brevity; this enforces it even if the model ignores the prompt.
