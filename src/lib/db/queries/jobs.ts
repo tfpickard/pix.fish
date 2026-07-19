@@ -35,20 +35,23 @@ export async function inFlightImageIds(type: string): Promise<Set<number>> {
   return out;
 }
 
-// True when a job of this type is already pending or processing. Lets a fan-out
+// True when a job of this type is already in flight -- pending OR processing,
+// matching the "in-flight" vocabulary the helpers above use. Lets a fan-out
 // enqueuer skip filing a duplicate of a job that is corpus-wide rather than
 // per-item: characters.backfill-visuals scans EVERY crop missing a visual
 // vector, so one in-flight job already covers every image -- a detect-all that
 // files one backfill per detected image just piles up N identical jobs all
 // racing the same global set. Not a hard lock (two enqueuers racing in the same
 // drain can both pass), but it collapses that N to ~1; the job is idempotent, so
-// the rare duplicate is harmless.
-export async function hasPendingJobOfType(type: string): Promise<boolean> {
-  const res = await db.execute<{ n: number }>(sql`
-    SELECT count(*)::int AS n FROM jobs
-    WHERE type = ${type} AND status IN ('pending', 'processing')
+// the rare duplicate is harmless. EXISTS short-circuits on the first match
+// rather than counting every in-flight row.
+export async function hasInFlightJobOfType(type: string): Promise<boolean> {
+  const res = await db.execute<{ present: boolean }>(sql`
+    SELECT EXISTS(
+      SELECT 1 FROM jobs WHERE type = ${type} AND status IN ('pending', 'processing')
+    ) AS present
   `);
-  return Number(res.rows?.[0]?.n ?? 0) > 0;
+  return Boolean(res.rows?.[0]?.present);
 }
 
 // Count in-flight (pending or processing) jobs of a type for a given run stamp

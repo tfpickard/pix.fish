@@ -12,7 +12,7 @@ import {
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
-import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
 
@@ -189,7 +189,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   // still let a second through) but collapses that fan-out to ~1.
   if (imageEmbedder) {
     try {
-      if (!(await hasPendingJobOfType('characters.backfill-visuals'))) {
+      if (!(await hasInFlightJobOfType('characters.backfill-visuals'))) {
         await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
       }
     } catch (err) {
