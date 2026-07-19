@@ -26,11 +26,14 @@ export default async function DesirePathPage({ params }: PageProps) {
   const path = await getActiveDesirePathBySlug(slug);
   if (!path) notFound();
 
-  const { nodes } = await hydrateRouteNodes(path.nodeIds as number[], nsfwMode);
-  // A corridor needs at least two visible stops to be a walkable route. If the
-  // visitor's NSFW mode hides too many stops, treat it as not found rather than
-  // rendering a stub -- the same posture /connect takes with hidden endpoints.
-  if (nodes.length < 2) notFound();
+  const { nodes, allVisible } = await hydrateRouteNodes(path.nodeIds as number[], nsfwMode);
+  // Reject the corridor unless EVERY stored stop is visible to this visitor.
+  // Splicing past a hidden interior stop (NSFW-gated, archived, or basement)
+  // would imply a transition that was never in the route while strength/lifetime
+  // still describe the full sequence -- so a partial corridor is treated as not
+  // found, matching how /paths skips incomplete routes and never rendering a
+  // basement stop. (length < 2 stays as a defensive floor.)
+  if (!allVisible || nodes.length < 2) notFound();
 
   const first = nodes[0]!;
   const last = nodes[nodes.length - 1]!;
