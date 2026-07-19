@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import type { Job } from '@/lib/db/schema';
 import { db } from '@/lib/db/client';
 import { captions, images } from '@/lib/db/schema';
-import { getProvider } from '@/lib/ai';
+import { getEmbedder, getProvider } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { enrichImage } from '@/lib/enrichment';
@@ -79,13 +79,15 @@ export async function enrichImageHandler(job: Job): Promise<void> {
 
   // Scan the new image for recurring figures so it can join the characters
   // roster without a manual "detect all" pass. Detection bills to the owner's
-  // key exactly like this enrichment, so gate on a resolvable vision provider --
-  // no key means enrichment already produced nothing, and we skip rather than
-  // file a guaranteed-failing detect job. The detect handler debounces a roster
-  // recluster, so a match surfaces on the characters page on its own. Best-effort:
-  // a failed enqueue must not fail the enrichment that already committed.
+  // key exactly like this enrichment. The detect handler needs BOTH a vision
+  // provider (to find figures) and an embedder (to embed the crops) and throws
+  // if either is missing, so gate on both -- otherwise a key-less-for-embeddings
+  // owner (e.g. Anthropic key present, OpenAI key absent, no env fallback) files
+  // a detect job that only ever retries and fails. The detect handler debounces
+  // a roster recluster, so a match surfaces on the characters page on its own.
+  // Best-effort: a failed enqueue must not fail the enrichment that already committed.
   try {
-    if (getProvider('captions', cfg, userKeys)?.vision) {
+    if (getProvider('captions', cfg, userKeys)?.vision && getEmbedder(cfg, userKeys)) {
       await enqueueJob({ type: 'characters.detect', payload: { imageId: img.id }, maxAttempts: 2 });
     }
   } catch (err) {

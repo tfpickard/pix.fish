@@ -25,7 +25,15 @@ async function tick(req: Request) {
   if (await hasPendingJobOfType('characters.cluster')) {
     return NextResponse.json({ enqueued: false, reason: 'cluster already pending' });
   }
-  const job = await enqueueJob({ type: 'characters.cluster', payload: {}, maxAttempts: 2 });
+  // Stamp the run at enqueue (like /api/admin/characters/cluster) so a reclaimed
+  // cluster reuses the same runStamp and collapses through the census dedupe key
+  // rather than fanning out a duplicate. maxAttempts:1 matches that route; a
+  // failed run is re-armed by the next tick. Knobs resolve from the saved tuning.
+  const job = await enqueueJob({
+    type: 'characters.cluster',
+    payload: { runStamp: Date.now() % 2_147_483_647 },
+    maxAttempts: 1
+  });
   return NextResponse.json({ enqueued: 'characters.cluster', jobId: job.id });
 }
 

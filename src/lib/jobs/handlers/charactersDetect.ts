@@ -221,9 +221,16 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
     if (!(await hasPendingJobOfType('characters.cluster'))) {
       await enqueueJob({
         type: 'characters.cluster',
-        payload: {},
+        // Stamp the run at enqueue (like /api/admin/characters/cluster) so a
+        // reclaimed/retried cluster reuses the same runStamp and collapses through
+        // the census dedupe key, instead of generating a fresh stamp per attempt
+        // and fanning out a second set of candidates/verify jobs that strand the
+        // first. maxAttempts:1 matches that route -- a failed auto-cluster is
+        // re-armed by the next detection or the cron, not by an in-place retry.
+        // Knobs fall back to the saved tuning in resolveKnobs.
+        payload: { runStamp: Date.now() % 2_147_483_647 },
         runAt: new Date(Date.now() + RECLUSTER_DEBOUNCE_MS),
-        maxAttempts: 2
+        maxAttempts: 1
       });
     }
   } catch (err) {
