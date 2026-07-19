@@ -12,6 +12,9 @@ type Stats = {
   jobsByTypeStatus: { type: string; status: string; count: number }[];
   recentJobFailures: number;
   webhookSuccessRate: { status: string; count: number }[];
+  topDwellHot: { slug: string; score: number }[];
+  topDwellLifetime: { slug: string; score: number }[];
+  topPaths: { label: string; score: number }[];
 };
 
 function Bar({ value, max, label }: { value: number; max: number; label: string }) {
@@ -51,6 +54,9 @@ export default function AdminStatsPage() {
 
   const weekMax = Math.max(1, ...data.uploadsPerWeek.map((r) => r.count));
   const tagMax = Math.max(1, ...data.topTags.map((r) => r.count));
+  const hotMax = Math.max(1, ...data.topDwellHot.map((r) => r.score));
+  const lifetimeMax = Math.max(1, ...data.topDwellLifetime.map((r) => r.score));
+  const pathMax = Math.max(1, ...data.topPaths.map((r) => r.score));
 
   return (
     <div className="max-w-3xl space-y-8">
@@ -105,6 +111,49 @@ export default function AdminStatsPage() {
           {data.topTags.map((r) => (
             <Bar key={r.tag} value={r.count} max={tagMax} label={r.tag} />
           ))}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="font-mono text-xs text-ink-500 mb-2">
+          dwell -- hot now (decayed, ~seconds)
+        </h2>
+        <div className="space-y-1">
+          {data.topDwellHot.length === 0 ? (
+            <p className="font-mono text-xs text-ink-500">no attention recorded yet</p>
+          ) : (
+            data.topDwellHot.map((r) => (
+              <Bar key={r.slug} value={r.score} max={hotMax} label={r.slug} />
+            ))
+          )}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="font-mono text-xs text-ink-500 mb-2">
+          dwell -- all-time handling (lifetime, ~seconds)
+        </h2>
+        <div className="space-y-1">
+          {data.topDwellLifetime.length === 0 ? (
+            <p className="font-mono text-xs text-ink-500">no attention recorded yet</p>
+          ) : (
+            data.topDwellLifetime.map((r) => (
+              <Bar key={r.slug} value={r.score} max={lifetimeMax} label={r.slug} />
+            ))
+          )}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="font-mono text-xs text-ink-500 mb-2">worn paths (decayed traversals)</h2>
+        <div className="space-y-1">
+          {data.topPaths.length === 0 ? (
+            <p className="font-mono text-xs text-ink-500">no traversals recorded yet</p>
+          ) : (
+            data.topPaths.map((r) => (
+              <Bar key={r.label} value={r.score} max={pathMax} label={r.label} />
+            ))
+          )}
         </div>
       </section>
 

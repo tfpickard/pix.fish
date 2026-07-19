@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../client';
+import { getTopAttention } from './attention';
+import { getTopPathsVisible } from './path-traffic';
 
 export type Stats = {
   totals: { images: number; captions: number; tags: number };
@@ -11,6 +13,12 @@ export type Stats = {
   jobsByTypeStatus: { type: string; status: string; count: number }[];
   recentJobFailures: number;
   webhookSuccessRate: { status: string; count: number }[];
+  // Dwell telemetry: most-attended images (live-decayed and all-time) and the
+  // most-walked image-to-image paths. Admin sees everything, so these are read
+  // with nsfwMode 'include'.
+  topDwellHot: { slug: string; score: number }[];
+  topDwellLifetime: { slug: string; score: number }[];
+  topPaths: { label: string; score: number }[];
 };
 
 // Single round-trip helper; eight small queries run in parallel since
@@ -66,6 +74,15 @@ export async function loadStats(): Promise<Stats> {
     `)
   ]);
 
+  // Dwell rankings decay in JS (not SQL), so they run as their own helpers
+  // rather than raw db.execute; kept out of the SQL Promise.all above. Admin
+  // view includes NSFW rows.
+  const [topDwellHot, topDwellLifetime, topPaths] = await Promise.all([
+    getTopAttention({ mode: 'hot', limit: 15, nsfwMode: 'include' }),
+    getTopAttention({ mode: 'lifetime', limit: 15, nsfwMode: 'include' }),
+    getTopPathsVisible(15, 'include')
+  ]);
+
   const embedded = Number(embedCoverage.rows[0]?.embedded ?? 0);
   const total = Number(embedCoverage.rows[0]?.total ?? 0);
 
@@ -82,6 +99,11 @@ export async function loadStats(): Promise<Stats> {
     embeddingCoverage: { embedded, total, pct: total === 0 ? 0 : embedded / total },
     jobsByTypeStatus: jobsAgg.rows.map((r) => ({ type: r.type, status: r.status, count: Number(r.c) })),
     recentJobFailures: Number(failedRecent.rows[0]?.c ?? 0),
-    webhookSuccessRate: webhookRates.rows.map((r) => ({ status: r.status, count: Number(r.c) }))
+    webhookSuccessRate: webhookRates.rows.map((r) => ({ status: r.status, count: Number(r.c) })),
+    // Round the decayed/lifetime dwell weights to whole units for the bars
+    // (weight is ~1.0 per second, so this reads as seconds of attention).
+    topDwellHot: topDwellHot.map((r) => ({ slug: r.slug, score: Math.round(r.score) })),
+    topDwellLifetime: topDwellLifetime.map((r) => ({ slug: r.slug, score: Math.round(r.score) })),
+    topPaths: topPaths.map((p) => ({ label: `${p.srcSlug} → ${p.dstSlug}`, score: Math.round(p.value) }))
   };
 }

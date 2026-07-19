@@ -1,6 +1,8 @@
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
+import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
-import { pathTraffic } from '../schema';
+import { images, pathTraffic } from '../schema';
 import { decayed, ATTENTION_HALF_LIFE_MS } from '../../attention';
 
 // Query helpers for the path_traffic table (Substrate 1): anonymous, decaying
@@ -114,6 +116,76 @@ export async function getTopPaths(limit = 100): Promise<WornEdge[]> {
     .filter((r) => r.value > 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, Math.max(0, limit));
+}
+
+export type VisiblePath = {
+  srcId: number;
+  dstId: number;
+  srcSlug: string;
+  dstSlug: string;
+  value: number;
+  lifetime: number;
+};
+
+// getTopPathsVisible(): the most-walked edges by CURRENT (decayed) traffic,
+// like getTopPaths but joined to BOTH endpoint images so an edge only counts
+// when both ends are publicly visible under `nsfwMode` (and neither is archived
+// or basement-gated). This is the reader for the public "worn paths" surface;
+// getTopPaths stays the raw, ungated reader for the internal desire-paths job.
+// Endpoint slugs ride along so callers can render/label the edge without a
+// second lookup. Decay + rank happen in JS on the (small) joined set.
+export async function getTopPathsVisible(
+  limit: number,
+  nsfwMode: NsfwMode
+): Promise<VisiblePath[]> {
+  const cap = Math.max(0, Math.trunc(limit));
+  if (cap === 0) return [];
+
+  const src = alias(images, 'src_img');
+  const dst = alias(images, 'dst_img');
+  // Same visibility gate applied to each endpoint. Built inline per-alias
+  // because the two aliases carry distinct table-name types (a shared helper
+  // would pin the parameter to one alias's literal type).
+  const nsfwEq = (col: typeof src.isNsfw | typeof dst.isNsfw) =>
+    nsfwMode === 'only' ? eq(col, true) : nsfwMode === 'hide' ? eq(col, false) : undefined;
+
+  const dbRows = await db
+    .select({
+      srcId: pathTraffic.srcId,
+      dstId: pathTraffic.dstId,
+      srcSlug: src.slug,
+      dstSlug: dst.slug,
+      value: pathTraffic.value,
+      lifetime: pathTraffic.lifetime,
+      lastUpdatedAt: pathTraffic.lastUpdatedAt
+    })
+    .from(pathTraffic)
+    .innerJoin(src, eq(src.id, pathTraffic.srcId))
+    .innerJoin(dst, eq(dst.id, pathTraffic.dstId))
+    .where(
+      and(
+        isNull(src.archivedAt),
+        eq(src.basement, false),
+        nsfwEq(src.isNsfw),
+        isNull(dst.archivedAt),
+        eq(dst.basement, false),
+        nsfwEq(dst.isNsfw)
+      )
+    );
+
+  const now = Date.now();
+  return dbRows
+    .map((r) => ({
+      srcId: r.srcId,
+      dstId: r.dstId,
+      srcSlug: r.srcSlug,
+      dstSlug: r.dstSlug,
+      value: decayed(r.value, r.lastUpdatedAt.getTime(), now),
+      lifetime: r.lifetime
+    }))
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, cap);
 }
 
 // Re-export so callers that gate on graph size can avoid an extra import.

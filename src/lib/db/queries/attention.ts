@@ -1,6 +1,7 @@
-import { inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
-import { imageAttention } from '../schema';
+import { imageAttention, images } from '../schema';
 import { decayed, ATTENTION_HALF_LIFE_MS } from '../../attention';
 
 // Query helpers for the image_attention table (anonymous, decaying dwell
@@ -103,4 +104,102 @@ export async function getLifetimeAttentionMap(
     if (r.lifetime > 0) out.set(r.imageId, r.lifetime);
   }
   return out;
+}
+
+// AND-composable visibility clause for a leaderboard join on the images table.
+// Mirrors the public gallery's gate: NSFW is filtered per `nsfwMode`, and rows
+// pulled from circulation (archived) or hidden outside it (basement) never
+// surface on a "most looked-at" board. Kept local (rather than importing
+// nsfwPredicate from ./images) so this module has no dependency edge back to
+// the images query file, which already imports from here.
+function boardVisibility(nsfwMode: NsfwMode) {
+  const conds = [isNull(images.archivedAt), eq(images.basement, false)];
+  if (nsfwMode === 'hide') conds.push(eq(images.isNsfw, false));
+  else if (nsfwMode === 'only') conds.push(eq(images.isNsfw, true));
+  return and(...conds);
+}
+
+export type DwellMode = 'hot' | 'lifetime';
+export type RankedImage = { imageId: number; slug: string; score: number };
+
+// getTopAttention(): the most-dwelt images, ranked descending. `mode='hot'`
+// ranks by the live decayed value (what is drawing eyes lately); `lifetime`
+// ranks by the monotonic handling total (what has been looked at most, ever).
+// Visibility mirrors the public gallery via boardVisibility(). image_attention
+// is one row per attended image (bounded by the corpus), so -- exactly like
+// getTopPaths -- we scan it, apply the shared decay() in JS for 'hot' (no SQL
+// decay approximation, no cron), rank, and slice. slug rides along so callers
+// that only need a label (admin bars) skip a second round-trip; callers that
+// render cards hydrate the returned imageIds.
+export async function getTopAttention(opts: {
+  mode: DwellMode;
+  limit?: number;
+  nsfwMode?: NsfwMode;
+}): Promise<RankedImage[]> {
+  const limit = Math.max(0, Math.trunc(opts.limit ?? 24));
+  if (limit === 0) return [];
+
+  const rows = await db
+    .select({
+      imageId: imageAttention.imageId,
+      slug: images.slug,
+      value: imageAttention.value,
+      lifetime: imageAttention.lifetime,
+      lastUpdatedAt: imageAttention.lastUpdatedAt
+    })
+    .from(imageAttention)
+    .innerJoin(images, eq(images.id, imageAttention.imageId))
+    .where(boardVisibility(opts.nsfwMode ?? 'hide'));
+
+  const now = Date.now();
+  return rows
+    .map((r) => ({
+      imageId: r.imageId,
+      slug: r.slug,
+      score: opts.mode === 'hot' ? decayed(r.value, r.lastUpdatedAt.getTime(), now) : r.lifetime
+    }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+export type AttentionStanding = {
+  // Live decayed dwell ("hot") and the monotonic lifetime handling total.
+  hot: number;
+  lifetime: number;
+  // 1-based rank of this image by hot among all currently-attended images, or
+  // null if it has no live attention. `tracked` is the size of that ranked set.
+  rank: number | null;
+  tracked: number;
+};
+
+// getAttentionStanding(): the per-image detail readout. Returns this image's
+// live/lifetime dwell plus its rank by live attention across the whole board.
+// Ranking is visibility-agnostic (this is the record's own detail context, and
+// a rank is a position, not content) and scans the small image_attention table
+// once -- cheap relative to the other per-detail queries.
+export async function getAttentionStanding(imageId: number): Promise<AttentionStanding> {
+  const rows = await db
+    .select({
+      imageId: imageAttention.imageId,
+      value: imageAttention.value,
+      lifetime: imageAttention.lifetime,
+      lastUpdatedAt: imageAttention.lastUpdatedAt
+    })
+    .from(imageAttention);
+
+  const now = Date.now();
+  const mine = rows.find((r) => r.imageId === imageId);
+  const ranked = rows
+    .map((r) => ({ imageId: r.imageId, hot: decayed(r.value, r.lastUpdatedAt.getTime(), now) }))
+    .filter((r) => r.hot > 0)
+    .sort((a, b) => b.hot - a.hot);
+  const idx = ranked.findIndex((r) => r.imageId === imageId);
+
+  return {
+    hot: mine ? decayed(mine.value, mine.lastUpdatedAt.getTime(), now) : 0,
+    lifetime: mine?.lifetime ?? 0,
+    rank: idx >= 0 ? idx + 1 : null,
+    tracked: ranked.length
+  };
 }
