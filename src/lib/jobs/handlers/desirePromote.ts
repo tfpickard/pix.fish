@@ -1,7 +1,7 @@
 import type { Job } from '@/lib/db/schema';
 import { getProvider, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
-import { firstCaptionsByImageIds } from '@/lib/db/queries/captions';
+import { firstCaptionsByImageIds, type CaptionSnippet } from '@/lib/db/queries/captions';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { getTopPaths } from '@/lib/db/queries/path-traffic';
 import {
@@ -45,9 +45,15 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const maxRoutes = payload.maxRoutes ?? DEFAULT_MAX_ROUTES;
 
   const edges = await getTopPaths(TOP_EDGE_LIMIT);
-  const routes = assembleRoutes(edges, { minEdgeValue })
-    .filter((r) => r.strength >= promoteFloor)
-    .slice(0, maxRoutes);
+  const qualifying = assembleRoutes(edges, { minEdgeValue }).filter(
+    (r) => r.strength >= promoteFloor
+  );
+  // Every corridor still above the floor stays alive, including the ones the
+  // filing cap skips this run: maxRoutes bounds how many we insert/refresh per
+  // pass, it must NOT retire routes that still qualify. So keepSigs is built
+  // from all qualifying corridors, but only `toProcess` does insert/refresh work.
+  const keepSigs = qualifying.map((r) => routeSignature(r.nodeIds));
+  const toProcess = qualifying.slice(0, maxRoutes);
 
   // Resolve a text-capable provider once (best-effort; captions degrade to null
   // when no key is configured or the provider has no raw-text method).
@@ -56,14 +62,20 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const provider = getProvider('descriptions', cfg, keys);
   const canCaption = typeof provider?.text === 'function';
 
+  // Batch-hydrate lead captions for every processed corridor's stops in one
+  // query (the union of all node ids), then slice per-route below. Avoids an
+  // N+1 fetch of two queries per route across up to maxRoutes corridors. Only
+  // worth doing when we can actually name routes.
+  const capMap: Map<number, CaptionSnippet> = canCaption
+    ? await firstCaptionsByImageIds([...new Set(toProcess.flatMap((r) => r.nodeIds))])
+    : new Map();
+
   const now = new Date();
-  const keepSigs: string[] = [];
   let promoted = 0;
   let refreshed = 0;
 
-  for (const route of routes) {
+  for (const route of toProcess) {
     const sig = routeSignature(route.nodeIds);
-    keepSigs.push(sig);
 
     const existing = await getDesirePathBySig(sig);
     if (existing) {
@@ -84,7 +96,6 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
     let capModel: string | null = null;
     if (canCaption) {
       try {
-        const capMap = await firstCaptionsByImageIds(route.nodeIds);
         const stops: RouteStop[] = route.nodeIds.map((id) => {
           const c = capMap.get(id);
           return { slug: c?.slug ?? String(id), caption: c?.caption ?? '' };
@@ -129,6 +140,7 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const retired = await retireDesirePathsExcept(keepSigs, now);
   console.log(
     `desire.promote: ${promoted} promoted, ${refreshed} refreshed, ${retired} retired ` +
-      `(from ${edges.length} worn edges, ${routes.length} corridors above floor ${promoteFloor})`
+      `(from ${edges.length} worn edges, ${qualifying.length} corridors above floor ${promoteFloor}, ` +
+      `${toProcess.length} processed this run)`
   );
 }

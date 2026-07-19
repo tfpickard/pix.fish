@@ -28,7 +28,8 @@ export async function hydrateVisibleNodeMap(
         blobUrl: images.blobUrl,
         ownerId: images.ownerId,
         isNsfw: images.isNsfw,
-        archivedAt: images.archivedAt
+        archivedAt: images.archivedAt,
+        basement: images.basement
       })
       .from(images)
       .where(inArray(images.id, unique)),
@@ -61,7 +62,10 @@ export async function hydrateVisibleNodeMap(
     nsfwMode === 'include' ? true : nsfwMode === 'only' ? isNsfw : !isNsfw;
 
   for (const r of imageRows) {
-    if (r.archivedAt || !visibleUnderMode(r.isNsfw)) continue;
+    // Drop archived, basement (server-gated -- never served without an unlock
+    // flag, which these public path surfaces do not carry), and rows outside
+    // the visitor's NSFW mode, before any blobUrl is put in the map.
+    if (r.archivedAt || r.basement || !visibleUnderMode(r.isNsfw)) continue;
     out.set(r.id, {
       imageId: r.id,
       slug: r.slug,

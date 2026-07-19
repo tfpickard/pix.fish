@@ -56,7 +56,9 @@ export function assembleRoutes(
   const byPair = new Map<string, AssemblyEdge>();
   for (const e of edges) {
     if (e.srcId === e.dstId) continue;
-    if (!(e.value > minEdgeValue)) continue;
+    // "at least the floor": an edge exactly equal to minEdgeValue is eligible,
+    // so a corridor can form at the configured floor rather than just above it.
+    if (!(e.value >= minEdgeValue)) continue;
     const k = edgeKey(e.srcId, e.dstId);
     const prev = byPair.get(k);
     if (!prev || e.value > prev.value) byPair.set(k, e);

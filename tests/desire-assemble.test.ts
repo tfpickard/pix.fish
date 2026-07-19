@@ -42,6 +42,17 @@ test('respects minEdgeValue -- sub-threshold edges are not walkable', () => {
   expect(routes[0]!.nodeIds).toEqual([1, 2, 3]);
 });
 
+test('treats minEdgeValue as an inclusive floor (>=, not >)', () => {
+  // An edge whose value is exactly the floor is eligible, so a corridor can
+  // form at the configured floor rather than only strictly above it.
+  const routes = assembleRoutes([e(1, 2, 1), e(2, 3, 1)], {
+    minNodes: 3,
+    minEdgeValue: 1
+  });
+  expect(routes).toHaveLength(1);
+  expect(routes[0]!.nodeIds).toEqual([1, 2, 3]);
+});
+
 test('does not revisit a node (no cycles)', () => {
   const routes = assembleRoutes([e(1, 2, 5), e(2, 3, 4), e(3, 1, 3)], { minNodes: 3 });
   expect(routes).toHaveLength(1);
