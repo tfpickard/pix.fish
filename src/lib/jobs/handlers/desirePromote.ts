@@ -48,12 +48,10 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const qualifying = assembleRoutes(edges, { minEdgeValue }).filter(
     (r) => r.strength >= promoteFloor
   );
-  // Every corridor still above the floor stays alive, including the ones the
-  // filing cap skips this run: maxRoutes bounds how many we insert/refresh per
-  // pass, it must NOT retire routes that still qualify. So keepSigs is built
-  // from all qualifying corridors, but only `toProcess` does insert/refresh work.
+  // Every corridor still above the floor stays alive: retirement targets only
+  // actives absent from keepSigs, and the filing cap must not retire routes
+  // that still qualify. So keepSigs is built from all qualifying corridors.
   const keepSigs = qualifying.map((r) => routeSignature(r.nodeIds));
-  const toProcess = qualifying.slice(0, maxRoutes);
 
   // Resolve a text-capable provider once (best-effort; captions degrade to null
   // when no key is configured or the provider has no raw-text method).
@@ -62,21 +60,17 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const provider = getProvider('descriptions', cfg, keys);
   const canCaption = typeof provider?.text === 'function';
 
-  // Batch-hydrate lead captions for every processed corridor's stops in one
-  // query (the union of all node ids), then slice per-route below. Avoids an
-  // N+1 fetch of two queries per route across up to maxRoutes corridors. Only
-  // worth doing when we can actually name routes.
-  const capMap: Map<number, CaptionSnippet> = canCaption
-    ? await firstCaptionsByImageIds([...new Set(toProcess.flatMap((r) => r.nodeIds))])
-    : new Map();
-
   const now = new Date();
   let promoted = 0;
   let refreshed = 0;
 
-  for (const route of toProcess) {
+  // Pass 1: refresh every existing qualifying corridor. Refresh is a cheap
+  // UPDATE, so it is NOT subject to the filing cap -- capping it would freeze
+  // strength/lifetime for routes beyond the cap while /paths keeps ordering by
+  // the now-stale values. Collect the NEW corridors that still need filing.
+  const toFile: typeof qualifying = [];
+  for (const route of qualifying) {
     const sig = routeSignature(route.nodeIds);
-
     const existing = await getDesirePathBySig(sig);
     if (existing) {
       await refreshDesirePath(sig, {
@@ -85,8 +79,22 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
         lastWalkedAt: now
       });
       refreshed++;
-      continue;
+    } else if (toFile.length < maxRoutes) {
+      toFile.push(route);
     }
+  }
+
+  // Filing a new corridor is the expensive part (slug + best-effort clerk
+  // caption), so only that is bounded by maxRoutes. Batch-hydrate lead captions
+  // for exactly the routes we will file, in one query, then slice per-route --
+  // avoids an N+1 fetch across the filed set.
+  const capMap: Map<number, CaptionSnippet> =
+    canCaption && toFile.length > 0
+      ? await firstCaptionsByImageIds([...new Set(toFile.flatMap((r) => r.nodeIds))])
+      : new Map();
+
+  for (const route of toFile) {
+    const sig = routeSignature(route.nodeIds);
 
     // New corridor: name it (best-effort) and mint a slug, retrying on the rare
     // slug collision. An edge_sig collision here would mean a concurrent insert
@@ -141,6 +149,6 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   console.log(
     `desire.promote: ${promoted} promoted, ${refreshed} refreshed, ${retired} retired ` +
       `(from ${edges.length} worn edges, ${qualifying.length} corridors above floor ${promoteFloor}, ` +
-      `${toProcess.length} processed this run)`
+      `${toFile.length} newly filed this run)`
   );
 }
