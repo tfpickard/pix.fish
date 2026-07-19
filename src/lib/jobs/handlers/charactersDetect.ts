@@ -12,7 +12,7 @@ import {
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
-import { enqueueJob } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
 
@@ -179,9 +179,19 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   // out-of-band, so detect stays text-only and fast. The backfill job is
   // idempotent + self-draining; skip enqueuing when no Voyage key is configured
   // to avoid a guaranteed-failing job.
+  //
+  // Only enqueue when no backfill is already in flight. The job sweeps the WHOLE
+  // corpus of crops missing a visual vector, not just this image's, so one
+  // pending/processing job already covers every crop we just made. Without this
+  // guard a detect-all files one backfill per image -- dozens of identical
+  // corpus-wide jobs all racing the same crop set and, on a rate-limited Voyage
+  // key, all failing identically. The guard is best-effort (a benign race can
+  // still let a second through) but collapses that fan-out to ~1.
   if (imageEmbedder) {
     try {
-      await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
+      if (!(await hasPendingJobOfType('characters.backfill-visuals'))) {
+        await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
+      }
     } catch (err) {
       console.error('characters.detect: failed to enqueue characters.backfill-visuals', err);
     }

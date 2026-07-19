@@ -35,6 +35,22 @@ export async function inFlightImageIds(type: string): Promise<Set<number>> {
   return out;
 }
 
+// True when a job of this type is already pending or processing. Lets a fan-out
+// enqueuer skip filing a duplicate of a job that is corpus-wide rather than
+// per-item: characters.backfill-visuals scans EVERY crop missing a visual
+// vector, so one in-flight job already covers every image -- a detect-all that
+// files one backfill per detected image just piles up N identical jobs all
+// racing the same global set. Not a hard lock (two enqueuers racing in the same
+// drain can both pass), but it collapses that N to ~1; the job is idempotent, so
+// the rare duplicate is harmless.
+export async function hasPendingJobOfType(type: string): Promise<boolean> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM jobs
+    WHERE type = ${type} AND status IN ('pending', 'processing')
+  `);
+  return Number(res.rows?.[0]?.n ?? 0) > 0;
+}
+
 // Count in-flight (pending or processing) jobs of a type for a given run stamp
 // (read from the jsonb payload). The characters.census finalizer uses this as a
 // barrier -- it waits until all characters.verify jobs for the run have settled.
