@@ -63,6 +63,21 @@ export async function hasPendingJobOfType(type: string): Promise<boolean> {
   return Boolean(res.rows?.[0]?.present);
 }
 
+// True when a job of this type is pending OR already processing -- the stricter
+// counterpart to hasPendingJobOfType. Use it where an in-flight (already claimed)
+// job DOES cover the work, so a second enqueue would only duplicate it: e.g. the
+// characters cron skipping a cluster that is already running. Do NOT use it for
+// the detection handoff, where a processing job may have already snapshotted its
+// inputs and so can't cover rows inserted afterward -- that path wants pending-only.
+export async function hasInFlightJobOfType(type: string): Promise<boolean> {
+  const res = await db.execute<{ present: boolean }>(sql`
+    SELECT EXISTS(
+      SELECT 1 FROM jobs WHERE type = ${type} AND status IN ('pending', 'processing')
+    ) AS present
+  `);
+  return Boolean(res.rows?.[0]?.present);
+}
+
 // Count in-flight (pending or processing) jobs of a type for a given run stamp
 // (read from the jsonb payload). The characters.census finalizer uses this as a
 // barrier -- it waits until all characters.verify jobs for the run have settled.

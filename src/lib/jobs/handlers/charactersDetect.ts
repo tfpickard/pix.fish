@@ -24,6 +24,31 @@ type Payload = { imageId: number; force?: boolean };
 // surfaces on the characters page within a couple of minutes.
 const RECLUSTER_DEBOUNCE_MS = 120_000;
 
+// Refresh the recurring-subjects roster after a detection changes the crop set.
+// Clustering is corpus-wide and expensive (all-pairs + an LLM verify per
+// candidate + census), so enqueue a single characters.cluster on a short delay,
+// deduped against any already-PENDING one -- pending, not processing: a
+// processing cluster may already have read the crop set and so can't be relied on
+// to cover crops this detection just changed. A burst of detections collapses to
+// ~one run. The runStamp is stamped at enqueue so a reclaim reuses it and
+// collapses through the census dedupe key (matching /api/admin/characters/cluster);
+// knobs resolve from the saved tuning. Best-effort: the crop changes are already
+// committed, so a failed enqueue must not fail detection.
+async function scheduleRecluster(): Promise<void> {
+  try {
+    if (!(await hasPendingJobOfType('characters.cluster'))) {
+      await enqueueJob({
+        type: 'characters.cluster',
+        payload: { runStamp: Date.now() % 2_147_483_647 },
+        runAt: new Date(Date.now() + RECLUSTER_DEBOUNCE_MS),
+        maxAttempts: 1
+      });
+    }
+  } catch (err) {
+    console.error('characters.detect: failed to enqueue characters.cluster', err);
+  }
+}
+
 const MAX_FIGURES = 6;
 const HEADSHOT_MAX = 384; // px, longest edge of the saved crop
 
@@ -102,8 +127,14 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   const raw = await provider.vision(buf, mime, prompt, img.blobUrl);
   const detections = parseDetectionsJson(raw).slice(0, MAX_FIGURES);
   if (detections.length === 0) {
-    // Re-run with force should clear stale crops even when nothing is found now.
-    if (force) await clearCrops(imageId);
+    if (force) {
+      // A force re-run clears stale crops even when nothing is found now. The
+      // crop set just changed, so refresh the roster too -- otherwise the live
+      // projection keeps pointing at the deleted crop blobs (broken headshots,
+      // stale appearances) until the cron or a manual cluster runs.
+      await clearCrops(imageId);
+      await scheduleRecluster();
+    }
     await markDetected(imageId); // figureless, but examined -- don't re-bill next pass
     return;
   }
@@ -209,31 +240,6 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   }
 
   // Refresh the recurring-subjects roster now that this image's figures are on
-  // file. Clustering is corpus-wide and expensive (all-pairs + an LLM verify per
-  // candidate + census), so debounce rather than run it per detection: enqueue a
-  // single characters.cluster on a short delay, deduped against any already-
-  // pending one. A burst of detections collapses to ~one cluster run once they
-  // settle instead of one per image; /api/cron/characters re-arms this on a
-  // schedule in case a detection ever fails to. Empty payload -> the cluster
-  // resolves its knobs (space, minAppearances, verify) from the saved tuning.
-  // Best-effort: detection has already committed its crops.
-  try {
-    if (!(await hasPendingJobOfType('characters.cluster'))) {
-      await enqueueJob({
-        type: 'characters.cluster',
-        // Stamp the run at enqueue (like /api/admin/characters/cluster) so a
-        // reclaimed/retried cluster reuses the same runStamp and collapses through
-        // the census dedupe key, instead of generating a fresh stamp per attempt
-        // and fanning out a second set of candidates/verify jobs that strand the
-        // first. maxAttempts:1 matches that route -- a failed auto-cluster is
-        // re-armed by the next detection or the cron, not by an in-place retry.
-        // Knobs fall back to the saved tuning in resolveKnobs.
-        payload: { runStamp: Date.now() % 2_147_483_647 },
-        runAt: new Date(Date.now() + RECLUSTER_DEBOUNCE_MS),
-        maxAttempts: 1
-      });
-    }
-  } catch (err) {
-    console.error('characters.detect: failed to enqueue characters.cluster', err);
-  }
+  // file (and its crops may have been re-cut on a force re-detect).
+  await scheduleRecluster();
 }

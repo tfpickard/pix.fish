@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,11 +19,13 @@ async function tick(req: Request) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
-  // Skip when a cluster is already queued -- the debounced enqueue or a prior
-  // tick has it covered, and a second run would just duplicate the verify/census
-  // fan-out.
-  if (await hasPendingJobOfType('characters.cluster')) {
-    return NextResponse.json({ enqueued: false, reason: 'cluster already pending' });
+  // Skip when a cluster is already pending OR processing -- the debounced enqueue,
+  // a prior tick, or a run claimed and executing right now already covers this,
+  // and a second run would just duplicate the corpus-wide verify/census fan-out.
+  // (This is the cron safety net, where an in-flight run genuinely covers the
+  // refresh; the per-detection handoff uses pending-only for the opposite reason.)
+  if (await hasInFlightJobOfType('characters.cluster')) {
+    return NextResponse.json({ enqueued: false, reason: 'cluster already in flight' });
   }
   // Stamp the run at enqueue (like /api/admin/characters/cluster) so a reclaimed
   // cluster reuses the same runStamp and collapses through the census dedupe key
