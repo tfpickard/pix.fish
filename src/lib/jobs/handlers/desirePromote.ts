@@ -45,7 +45,15 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const maxRoutes = payload.maxRoutes ?? DEFAULT_MAX_ROUTES;
 
   const edges = await getTopPaths(TOP_EDGE_LIMIT);
-  const qualifying = assembleRoutes(edges, { minEdgeValue }).filter(
+  // Assemble at the promotion floor, not the (looser) minEdgeValue. Strength is
+  // a chain's weakest edge, so any edge below promoteFloor would drag its whole
+  // corridor below the floor -- and, because assembly is greedy, a weak edge can
+  // get appended to a genuinely hot corridor and sink it (e.g. a qualifying
+  // 1->2->3 discarded because a weak 3->4 was greedily tacked on). Extending
+  // only through >= floor edges keeps qualifying corridors intact; the post
+  // filter then only trims sub-minNodes remnants.
+  const assemblyFloor = Math.max(minEdgeValue, promoteFloor);
+  const qualifying = assembleRoutes(edges, { minEdgeValue: assemblyFloor }).filter(
     (r) => r.strength >= promoteFloor
   );
   // Every corridor still above the floor stays alive: retirement targets only
