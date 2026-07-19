@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import type { Job } from '@/lib/db/schema';
 import { db } from '@/lib/db/client';
 import { captions, images } from '@/lib/db/schema';
+import { getProvider } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { enrichImage } from '@/lib/enrichment';
@@ -74,5 +75,20 @@ export async function enrichImageHandler(job: Job): Promise<void> {
     await enqueueJob({ type: 'derive.image', payload: { imageId: img.id }, maxAttempts: 3 });
   } catch (err) {
     console.error('enrichImage: failed to enqueue derive.image for', img.id, err);
+  }
+
+  // Scan the new image for recurring figures so it can join the characters
+  // roster without a manual "detect all" pass. Detection bills to the owner's
+  // key exactly like this enrichment, so gate on a resolvable vision provider --
+  // no key means enrichment already produced nothing, and we skip rather than
+  // file a guaranteed-failing detect job. The detect handler debounces a roster
+  // recluster, so a match surfaces on the characters page on its own. Best-effort:
+  // a failed enqueue must not fail the enrichment that already committed.
+  try {
+    if (getProvider('captions', cfg, userKeys)?.vision) {
+      await enqueueJob({ type: 'characters.detect', payload: { imageId: img.id }, maxAttempts: 2 });
+    }
+  } catch (err) {
+    console.error('enrichImage: failed to enqueue characters.detect for', img.id, err);
   }
 }

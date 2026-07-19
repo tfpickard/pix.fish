@@ -18,6 +18,12 @@ import { buildDetectPrompt } from '@/lib/universe/characters';
 
 type Payload = { imageId: number; force?: boolean };
 
+// Debounce window for the roster recluster fired after a detection. Long enough
+// that a burst of detections (an upload flurry, or a detect-all) collapses to
+// ~one cluster run via the pending-dedupe, short enough that a single new upload
+// surfaces on the characters page within a couple of minutes.
+const RECLUSTER_DEBOUNCE_MS = 120_000;
+
 const MAX_FIGURES = 6;
 const HEADSHOT_MAX = 384; // px, longest edge of the saved crop
 
@@ -200,5 +206,27 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
     } catch (err) {
       console.error('characters.detect: failed to enqueue characters.backfill-visuals', err);
     }
+  }
+
+  // Refresh the recurring-subjects roster now that this image's figures are on
+  // file. Clustering is corpus-wide and expensive (all-pairs + an LLM verify per
+  // candidate + census), so debounce rather than run it per detection: enqueue a
+  // single characters.cluster on a short delay, deduped against any already-
+  // pending one. A burst of detections collapses to ~one cluster run once they
+  // settle instead of one per image; /api/cron/characters re-arms this on a
+  // schedule in case a detection ever fails to. Empty payload -> the cluster
+  // resolves its knobs (space, minAppearances, verify) from the saved tuning.
+  // Best-effort: detection has already committed its crops.
+  try {
+    if (!(await hasPendingJobOfType('characters.cluster'))) {
+      await enqueueJob({
+        type: 'characters.cluster',
+        payload: {},
+        runAt: new Date(Date.now() + RECLUSTER_DEBOUNCE_MS),
+        maxAttempts: 2
+      });
+    }
+  } catch (err) {
+    console.error('characters.detect: failed to enqueue characters.cluster', err);
   }
 }
