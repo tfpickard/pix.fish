@@ -12,7 +12,7 @@ import {
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
-import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
 
@@ -180,16 +180,21 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   // idempotent + self-draining; skip enqueuing when no Voyage key is configured
   // to avoid a guaranteed-failing job.
   //
-  // Only enqueue when no backfill is already in flight. The job sweeps the WHOLE
-  // corpus of crops missing a visual vector, not just this image's, so one
-  // pending/processing job already covers every crop we just made. Without this
-  // guard a detect-all files one backfill per image -- dozens of identical
-  // corpus-wide jobs all racing the same crop set and, on a rate-limited Voyage
-  // key, all failing identically. The guard is best-effort (a benign race can
-  // still let a second through) but collapses that fan-out to ~1.
+  // Only enqueue when no backfill is already PENDING. The job sweeps the WHOLE
+  // corpus of crops missing a visual vector, not just this image's, so one queued
+  // job already covers the crops we just inserted. Without this guard a detect-all
+  // files one backfill per image -- dozens of identical corpus-wide jobs all
+  // racing the same crop set and, on a rate-limited Voyage key, all failing
+  // identically.
+  //
+  // Check pending only, not processing: a pending backfill runs later and will
+  // see these just-inserted crops, but a processing one may already have read the
+  // crop set (or be finishing on a stale "nothing left" count) and could miss
+  // them, leaving vec_image null indefinitely. So when only a processing backfill
+  // exists we enqueue anyway -- an extra idempotent job beats an orphaned crop.
   if (imageEmbedder) {
     try {
-      if (!(await hasInFlightJobOfType('characters.backfill-visuals'))) {
+      if (!(await hasPendingJobOfType('characters.backfill-visuals'))) {
         await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
       }
     } catch (err) {
