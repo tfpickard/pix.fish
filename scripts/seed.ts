@@ -713,7 +713,13 @@ async function main() {
   }
 
   console.log('Seeding ai_config...');
+  // detect/verify/dossier are intentionally NOT seeded: loadAiConfig() inherits
+  // the resolved `captions` routing for them until an owner pins them explicitly,
+  // so a pinned row here would defeat that (and switch existing installs off their
+  // captions provider). See src/lib/ai/loadConfig.ts.
+  const INHERIT_CAPTIONS_FIELDS = new Set(['detect', 'verify', 'dossier']);
   for (const [field, { provider, model }] of Object.entries(defaultAiConfig)) {
+    if (INHERIT_CAPTIONS_FIELDS.has(field)) continue;
     await db
       .insert(aiConfig)
       .values({ field, provider, model })

@@ -42,19 +42,40 @@ const FIELDS = [
 ] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
 
-const putSchema = z.object({
-  field: z.enum(FIELDS),
-  provider: z.enum(PROVIDERS),
-  model: z.string().min(1).max(120)
-});
+const putSchema = z
+  .object({
+    field: z.enum(FIELDS),
+    provider: z.enum(PROVIDERS),
+    model: z.string().min(1).max(120)
+  })
+  // Reject provider/field combos the runtime would silently ignore: the
+  // enrichment + character pipeline resolve through getProvider (anthropic/openai
+  // only); the Pisci chat widget is Anthropic-only; imagegen has its own provider
+  // set (openrouter/stub). Otherwise a saved row no-ops or bills the wrong
+  // provider despite what the UI shows (see loadAiConfig / pisci-chat).
+  .refine(
+    (v) => {
+      if (v.field === 'imagegen') return true;
+      if (v.field === 'chat') return v.provider === 'anthropic';
+      return v.provider === 'anthropic' || v.provider === 'openai';
+    },
+    {
+      message:
+        'provider not supported for this field (chat: anthropic only; pipeline fields: anthropic or openai; imagegen: openrouter/stub)',
+      path: ['provider']
+    }
+  );
 
 export async function GET() {
   if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const rows = await listAiConfig();
-  const reference = await buildReference();
-  return NextResponse.json({ rows, reference });
+  // `resolved` is the effective per-field routing after inheritance/defaults, so
+  // the UI can show what detect/verify/dossier actually run (their inherited
+  // captions value) instead of a blank input when they have no explicit row.
+  const [reference, resolved] = await Promise.all([buildReference(), loadAiConfig()]);
+  return NextResponse.json({ rows, reference, resolved });
 }
 
 export async function PUT(req: Request) {
