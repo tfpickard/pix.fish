@@ -2,7 +2,7 @@ import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
 import { imageAttention, images } from '../schema';
-import { decayed, ATTENTION_HALF_LIFE_MS } from '../../attention';
+import { decayed, ATTENTION_HALF_LIFE_MS, HOT_MIN_WEIGHT } from '../../attention';
 
 // Query helpers for the image_attention table (anonymous, decaying dwell
 // telemetry). See src/lib/attention.ts for the decay math and privacy notes.
@@ -179,7 +179,7 @@ export async function getTopAttention(opts: {
       slug: r.slug,
       score: decayed(r.value, r.lastUpdatedAt.getTime(), now)
     }))
-    .filter((r) => r.score > 0)
+    .filter((r) => r.score >= HOT_MIN_WEIGHT)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
@@ -213,7 +213,7 @@ export async function getAttentionStanding(imageId: number): Promise<AttentionSt
   const mine = rows.find((r) => r.imageId === imageId);
   const ranked = rows
     .map((r) => ({ imageId: r.imageId, hot: decayed(r.value, r.lastUpdatedAt.getTime(), now) }))
-    .filter((r) => r.hot > 0)
+    .filter((r) => r.hot >= HOT_MIN_WEIGHT)
     .sort((a, b) => b.hot - a.hot);
   const idx = ranked.findIndex((r) => r.imageId === imageId);
 

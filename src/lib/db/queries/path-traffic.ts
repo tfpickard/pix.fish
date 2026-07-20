@@ -2,7 +2,7 @@ import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
-import { images, pathTraffic } from '../schema';
+import { images, pathTraffic, users } from '../schema';
 import { decayed, ATTENTION_HALF_LIFE_MS } from '../../attention';
 
 // Query helpers for the path_traffic table (Substrate 1): anonymous, decaying
@@ -123,6 +123,11 @@ export type VisiblePath = {
   dstId: number;
   srcSlug: string;
   dstSlug: string;
+  // Owner handles so callers link the unambiguous /u/<handle>/<slug> route.
+  // Slugs are unique per owner, so a bare /<slug> can resolve to a different
+  // owner's image when two owners share a slug.
+  srcHandle: string;
+  dstHandle: string;
   value: number;
   lifetime: number;
 };
@@ -143,6 +148,8 @@ export async function getTopPathsVisible(
 
   const src = alias(images, 'src_img');
   const dst = alias(images, 'dst_img');
+  const srcU = alias(users, 'src_usr');
+  const dstU = alias(users, 'dst_usr');
   // Same visibility gate applied to each endpoint. Built inline per-alias
   // because the two aliases carry distinct table-name types (a shared helper
   // would pin the parameter to one alias's literal type).
@@ -155,6 +162,8 @@ export async function getTopPathsVisible(
       dstId: pathTraffic.dstId,
       srcSlug: src.slug,
       dstSlug: dst.slug,
+      srcHandle: srcU.handle,
+      dstHandle: dstU.handle,
       value: pathTraffic.value,
       lifetime: pathTraffic.lifetime,
       lastUpdatedAt: pathTraffic.lastUpdatedAt
@@ -162,6 +171,8 @@ export async function getTopPathsVisible(
     .from(pathTraffic)
     .innerJoin(src, eq(src.id, pathTraffic.srcId))
     .innerJoin(dst, eq(dst.id, pathTraffic.dstId))
+    .innerJoin(srcU, eq(srcU.id, src.ownerId))
+    .innerJoin(dstU, eq(dstU.id, dst.ownerId))
     .where(
       and(
         isNull(src.archivedAt),
@@ -180,6 +191,8 @@ export async function getTopPathsVisible(
       dstId: r.dstId,
       srcSlug: r.srcSlug,
       dstSlug: r.dstSlug,
+      srcHandle: r.srcHandle,
+      dstHandle: r.dstHandle,
       value: decayed(r.value, r.lastUpdatedAt.getTime(), now),
       lifetime: r.lifetime
     }))

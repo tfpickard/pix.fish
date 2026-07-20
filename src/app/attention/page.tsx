@@ -94,11 +94,19 @@ export default async function AttentionPage({
                 key={`${p.srcId}:${p.dstId}`}
                 className="flex items-center justify-center gap-2 font-mono text-xs text-ink-400"
               >
-                <Link href={`/${p.srcSlug}`} prefetch={false} className="truncate hover:text-ink-100">
+                <Link
+                  href={`/u/${p.srcHandle}/${p.srcSlug}`}
+                  prefetch={false}
+                  className="truncate hover:text-ink-100"
+                >
                   {p.srcSlug}
                 </Link>
                 <span className="text-ink-600">&rarr;</span>
-                <Link href={`/${p.dstSlug}`} prefetch={false} className="truncate hover:text-ink-100">
+                <Link
+                  href={`/u/${p.dstHandle}/${p.dstSlug}`}
+                  prefetch={false}
+                  className="truncate hover:text-ink-100"
+                >
                   {p.dstSlug}
                 </Link>
               </li>
