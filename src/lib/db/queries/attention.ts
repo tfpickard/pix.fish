@@ -1,7 +1,8 @@
-import { inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
-import { imageAttention } from '../schema';
-import { decayed, ATTENTION_HALF_LIFE_MS } from '../../attention';
+import { imageAttention, images } from '../schema';
+import { decayed, ATTENTION_HALF_LIFE_MS, HOT_MIN_WEIGHT } from '../../attention';
 
 // Query helpers for the image_attention table (anonymous, decaying dwell
 // telemetry). See src/lib/attention.ts for the decay math and privacy notes.
@@ -103,4 +104,135 @@ export async function getLifetimeAttentionMap(
     if (r.lifetime > 0) out.set(r.imageId, r.lifetime);
   }
   return out;
+}
+
+// AND-composable visibility clause for a leaderboard join on the images table.
+// Mirrors the public gallery's gate: NSFW is filtered per `nsfwMode`, and rows
+// pulled from circulation (archived) or hidden outside it (basement) never
+// surface on a "most looked-at" board. Kept local (rather than importing
+// nsfwPredicate from ./images) so this module has no dependency edge back to
+// the images query file, which already imports from here.
+function boardVisibility(nsfwMode: NsfwMode) {
+  const conds = [isNull(images.archivedAt), eq(images.basement, false)];
+  if (nsfwMode === 'hide') conds.push(eq(images.isNsfw, false));
+  else if (nsfwMode === 'only') conds.push(eq(images.isNsfw, true));
+  return and(...conds);
+}
+
+export type DwellMode = 'hot' | 'lifetime';
+export type RankedImage = { imageId: number; slug: string; score: number };
+
+// getTopAttention(): the most-dwelt images, ranked descending. `mode='hot'`
+// ranks by the live decayed value (what is drawing eyes lately); `lifetime`
+// ranks by the monotonic handling total (what has been looked at most, ever).
+// Visibility mirrors the public gallery via boardVisibility(). image_attention
+// is one row per attended image (bounded by the corpus), so -- exactly like
+// getTopPaths -- we scan it, apply the shared decay() in JS for 'hot' (no SQL
+// decay approximation, no cron), rank, and slice. slug rides along so callers
+// that only need a label (admin bars) skip a second round-trip; callers that
+// render cards hydrate the returned imageIds.
+export async function getTopAttention(opts: {
+  mode: DwellMode;
+  limit?: number;
+  nsfwMode?: NsfwMode;
+}): Promise<RankedImage[]> {
+  const limit = Math.max(0, Math.trunc(opts.limit ?? 24));
+  if (limit === 0) return [];
+  const visibility = boardVisibility(opts.nsfwMode ?? 'hide');
+
+  // 'lifetime' is monotonic -- no read-time decay -- so let Postgres do the
+  // ordering and LIMIT instead of materializing every joined row and sorting in
+  // JS. This keeps the query bounded as the table grows.
+  if (opts.mode === 'lifetime') {
+    const rows = await db
+      .select({
+        imageId: imageAttention.imageId,
+        slug: images.slug,
+        score: imageAttention.lifetime
+      })
+      .from(imageAttention)
+      .innerJoin(images, eq(images.id, imageAttention.imageId))
+      .where(and(visibility, gt(imageAttention.lifetime, 0)))
+      .orderBy(desc(imageAttention.lifetime))
+      .limit(limit);
+    return rows;
+  }
+
+  // 'hot' depends on decayed(value, lastUpdatedAt, now), which Postgres can't
+  // rank without recomputing the decay per row, so we scan the (small,
+  // one-row-per-image) visible set and rank in JS -- same pattern as getTopPaths.
+  const rows = await db
+    .select({
+      imageId: imageAttention.imageId,
+      slug: images.slug,
+      value: imageAttention.value,
+      lastUpdatedAt: imageAttention.lastUpdatedAt
+    })
+    .from(imageAttention)
+    .innerJoin(images, eq(images.id, imageAttention.imageId))
+    .where(visibility);
+
+  const now = Date.now();
+  return rows
+    .map((r) => ({
+      imageId: r.imageId,
+      slug: r.slug,
+      score: decayed(r.value, r.lastUpdatedAt.getTime(), now)
+    }))
+    .filter((r) => r.score >= HOT_MIN_WEIGHT)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+export type AttentionStanding = {
+  // Live decayed dwell ("hot") and the monotonic lifetime handling total.
+  hot: number;
+  lifetime: number;
+  // 1-based rank of this image by hot among all currently-attended images, or
+  // null if it has no live attention. `tracked` is the size of that ranked set.
+  rank: number | null;
+  tracked: number;
+};
+
+// getAttentionStanding(): the per-image detail readout. Returns this image's
+// live/lifetime dwell plus its rank by live attention across the whole board.
+// Ranking is visibility-agnostic (this is the record's own detail context, and
+// a rank is a position, not content). Computed entirely in SQL -- the decay is
+// applied per row in the query and only the four scalars come back -- so a
+// force-dynamic detail view (or a crawler) never materializes and JS-sorts the
+// whole image_attention ledger, which would grow O(N) with the corpus.
+export async function getAttentionStanding(imageId: number): Promise<AttentionStanding> {
+  const halfLifeSeconds = ATTENTION_HALF_LIFE_MS / 1000;
+  const res = await db.execute<{
+    hot: number;
+    lifetime: number;
+    tracked: number;
+    rank: number | null;
+  }>(sql`
+    WITH scored AS (
+      SELECT
+        image_id,
+        value * power(0.5, extract(epoch from (now() - last_updated_at)) / ${halfLifeSeconds}) AS hot,
+        lifetime
+      FROM image_attention
+    ),
+    me AS (SELECT hot, lifetime FROM scored WHERE image_id = ${imageId})
+    SELECT
+      COALESCE((SELECT hot FROM me), 0)::float8 AS hot,
+      COALESCE((SELECT lifetime FROM me), 0)::float8 AS lifetime,
+      (SELECT count(*) FROM scored WHERE hot >= ${HOT_MIN_WEIGHT})::int AS tracked,
+      (CASE
+        WHEN (SELECT hot FROM me) >= ${HOT_MIN_WEIGHT}
+        THEN (SELECT count(*) FROM scored s WHERE s.hot >= ${HOT_MIN_WEIGHT} AND s.hot > (SELECT hot FROM me)) + 1
+        ELSE NULL
+      END)::int AS rank
+  `);
+
+  const row = res.rows[0];
+  return {
+    hot: Number(row?.hot ?? 0),
+    lifetime: Number(row?.lifetime ?? 0),
+    rank: row?.rank == null ? null : Number(row.rank),
+    tracked: Number(row?.tracked ?? 0)
+  };
 }

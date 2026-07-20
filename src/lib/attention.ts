@@ -30,6 +30,13 @@
 // raise it to make popularity stickier.
 export const ATTENTION_HALF_LIFE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 
+// Minimum decayed weight for an image to count as "actively looked at". The
+// ingest credits ~1.0 weight per second on screen, and dwell is surfaced
+// rounded to whole seconds, so a decayed value below 0.5 both rounds to "0s"
+// and represents a stale, long-since-decayed sample. Treat anything under this
+// as inactive rather than ranking it or rendering a misleading "looked at 0s".
+export const HOT_MIN_WEIGHT = 0.5;
+
 // Exponential decay of a stored attention value to a reference time:
 //
 //   decayed = value * 0.5 ** ((now - lastUpdatedAt) / halfLife)

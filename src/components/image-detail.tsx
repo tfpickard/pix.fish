@@ -27,6 +27,8 @@ import { listClerks } from '@/lib/db/queries/clerks';
 import { getDistrict } from '@/lib/db/queries/districts';
 import { ReportButton } from '@/components/report-button';
 import { SurprisalReadout } from '@/components/surprisal-readout';
+import { AttentionReadout } from '@/components/attention-readout';
+import { getAttentionStanding } from '@/lib/db/queries/attention';
 import { JsonLd } from '@/components/json-ld';
 import { buildImageObjectLd } from '@/lib/seo/jsonld';
 import {
@@ -162,12 +164,14 @@ export async function ImageDetail({
     console.error('neighbor lookup failed for image', img.id, err);
   }
 
-  const [reactionCounts, approvedComments, captionVector, provenance] = await Promise.all([
-    countReactions(img.id).catch(() => ({ up: 0, down: 0 })),
-    listApprovedComments(img.id).catch(() => []),
-    getCaptionVector(img.id).catch(() => null),
-    getImageProvenance(img.id).catch(() => [])
-  ]);
+  const [reactionCounts, approvedComments, captionVector, provenance, attentionStanding] =
+    await Promise.all([
+      countReactions(img.id).catch(() => ({ up: 0, down: 0 })),
+      listApprovedComments(img.id).catch(() => []),
+      getCaptionVector(img.id).catch(() => null),
+      getImageProvenance(img.id).catch(() => []),
+      getAttentionStanding(img.id).catch(() => ({ hot: 0, lifetime: 0, rank: null, tracked: 0 }))
+    ]);
 
   // Universe: the specimen's current case file + its amendment history, read
   // from projections (never by replaying the event log at request time). All
@@ -272,6 +276,8 @@ export async function ImageDetail({
         <p className="text-center font-mono text-xs text-ink-500">{uploaded}</p>
 
         <SurprisalReadout surprisal={img.surprisal} />
+
+        <AttentionReadout standing={attentionStanding} />
 
         <ExifFacts exif={img.exif as Record<string, unknown> | null} />
 

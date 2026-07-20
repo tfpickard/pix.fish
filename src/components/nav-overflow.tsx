@@ -55,6 +55,7 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
     { href: '/connect', label: 'connect' },
     { href: '/daily', label: 'daily' },
     { href: '/taste', label: 'taste' },
+    { href: '/attention', label: 'most looked at' },
     { href: '/drift', label: 'drift' },
     { href: '/chronicle', label: 'chronicle' },
     { href: '/characters', label: 'characters' },
