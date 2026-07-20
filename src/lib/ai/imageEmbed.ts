@@ -6,7 +6,7 @@
 // rule holds; it's a plain fetch, no dependency. Key: VOYAGE_API_KEY (env).
 
 const VOYAGE_URL = 'https://api.voyageai.com/v1/multimodalembeddings';
-const VOYAGE_MODEL = 'voyage-multimodal-3.5';
+export const VOYAGE_MODEL = 'voyage-multimodal-3.5';
 export const IMAGE_EMBED_DIM = 1024; // voyage-multimodal-3.5 default
 
 export type ImageEmbedder = {

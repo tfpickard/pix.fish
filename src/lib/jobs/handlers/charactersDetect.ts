@@ -12,11 +12,42 @@ import {
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
-import { enqueueJob } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
 
 type Payload = { imageId: number; force?: boolean };
+
+// Debounce window for the roster recluster fired after a detection. Long enough
+// that a burst of detections (an upload flurry, or a detect-all) collapses to
+// ~one cluster run via the pending-dedupe, short enough that a single new upload
+// surfaces on the characters page within a couple of minutes.
+const RECLUSTER_DEBOUNCE_MS = 120_000;
+
+// Refresh the recurring-subjects roster after a detection changes the crop set.
+// Clustering is corpus-wide and expensive (all-pairs + an LLM verify per
+// candidate + census), so enqueue a single characters.cluster on a short delay,
+// deduped against any already-PENDING one -- pending, not processing: a
+// processing cluster may already have read the crop set and so can't be relied on
+// to cover crops this detection just changed. A burst of detections collapses to
+// ~one run. The runStamp is stamped at enqueue so a reclaim reuses it and
+// collapses through the census dedupe key (matching /api/admin/characters/cluster);
+// knobs resolve from the saved tuning. Best-effort: the crop changes are already
+// committed, so a failed enqueue must not fail detection.
+async function scheduleRecluster(): Promise<void> {
+  try {
+    if (!(await hasPendingJobOfType('characters.cluster'))) {
+      await enqueueJob({
+        type: 'characters.cluster',
+        payload: { runStamp: Date.now() % 2_147_483_647 },
+        runAt: new Date(Date.now() + RECLUSTER_DEBOUNCE_MS),
+        maxAttempts: 1
+      });
+    }
+  } catch (err) {
+    console.error('characters.detect: failed to enqueue characters.cluster', err);
+  }
+}
 
 const MAX_FIGURES = 6;
 const HEADSHOT_MAX = 384; // px, longest edge of the saved crop
@@ -96,8 +127,14 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   const raw = await provider.vision(buf, mime, prompt, img.blobUrl);
   const detections = parseDetectionsJson(raw).slice(0, MAX_FIGURES);
   if (detections.length === 0) {
-    // Re-run with force should clear stale crops even when nothing is found now.
-    if (force) await clearCrops(imageId);
+    if (force) {
+      // A force re-run clears stale crops even when nothing is found now. The
+      // crop set just changed, so refresh the roster too -- otherwise the live
+      // projection keeps pointing at the deleted crop blobs (broken headshots,
+      // stale appearances) until the cron or a manual cluster runs.
+      await clearCrops(imageId);
+      await scheduleRecluster();
+    }
     await markDetected(imageId); // figureless, but examined -- don't re-bill next pass
     return;
   }
@@ -179,11 +216,30 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   // out-of-band, so detect stays text-only and fast. The backfill job is
   // idempotent + self-draining; skip enqueuing when no Voyage key is configured
   // to avoid a guaranteed-failing job.
+  //
+  // Only enqueue when no backfill is already PENDING. The job sweeps the WHOLE
+  // corpus of crops missing a visual vector, not just this image's, so one queued
+  // job already covers the crops we just inserted. Without this guard a detect-all
+  // files one backfill per image -- dozens of identical corpus-wide jobs all
+  // racing the same crop set and, on a rate-limited Voyage key, all failing
+  // identically.
+  //
+  // Check pending only, not processing: a pending backfill runs later and will
+  // see these just-inserted crops, but a processing one may already have read the
+  // crop set (or be finishing on a stale "nothing left" count) and could miss
+  // them, leaving vec_image null indefinitely. So when only a processing backfill
+  // exists we enqueue anyway -- an extra idempotent job beats an orphaned crop.
   if (imageEmbedder) {
     try {
-      await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
+      if (!(await hasPendingJobOfType('characters.backfill-visuals'))) {
+        await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
+      }
     } catch (err) {
       console.error('characters.detect: failed to enqueue characters.backfill-visuals', err);
     }
   }
+
+  // Refresh the recurring-subjects roster now that this image's figures are on
+  // file (and its crops may have been re-cut on a force re-detect).
+  await scheduleRecluster();
 }

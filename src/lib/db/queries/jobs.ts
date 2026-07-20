@@ -35,6 +35,49 @@ export async function inFlightImageIds(type: string): Promise<Set<number>> {
   return out;
 }
 
+// True when a job of this type is already queued but NOT yet started (status
+// 'pending' only -- deliberately excludes 'processing'). Lets a fan-out enqueuer
+// skip filing a duplicate of a job that is corpus-wide rather than per-item:
+// characters.backfill-visuals scans EVERY crop missing a visual vector, so one
+// queued job already covers every image -- a detect-all that files one backfill
+// per detected image just piles up N identical jobs all racing the same global
+// set. This collapses that N to ~1; the job is idempotent, so a rare duplicate
+// is harmless.
+//
+// Why 'pending' and not 'processing': a pending job hasn't queried the crop set
+// yet, so it is guaranteed to see rows a caller inserts BEFORE this check when it
+// later runs. A processing job may already have snapshotted the set (or be about
+// to finish on a now-stale "nothing left" read), so relying on it could let
+// freshly-inserted crops slip through the gap and never get embedded. When only
+// a processing job exists we intentionally enqueue a fresh one -- an extra
+// idempotent job is the safe trade. (The backfill re-enqueues a pending
+// successor whenever work remains, so during a run there is almost always a
+// pending row to dedupe against anyway.) EXISTS short-circuits on the first match
+// rather than counting every pending row.
+export async function hasPendingJobOfType(type: string): Promise<boolean> {
+  const res = await db.execute<{ present: boolean }>(sql`
+    SELECT EXISTS(
+      SELECT 1 FROM jobs WHERE type = ${type} AND status = 'pending'
+    ) AS present
+  `);
+  return Boolean(res.rows?.[0]?.present);
+}
+
+// True when a job of this type is pending OR already processing -- the stricter
+// counterpart to hasPendingJobOfType. Use it where an in-flight (already claimed)
+// job DOES cover the work, so a second enqueue would only duplicate it: e.g. the
+// characters cron skipping a cluster that is already running. Do NOT use it for
+// the detection handoff, where a processing job may have already snapshotted its
+// inputs and so can't cover rows inserted afterward -- that path wants pending-only.
+export async function hasInFlightJobOfType(type: string): Promise<boolean> {
+  const res = await db.execute<{ present: boolean }>(sql`
+    SELECT EXISTS(
+      SELECT 1 FROM jobs WHERE type = ${type} AND status IN ('pending', 'processing')
+    ) AS present
+  `);
+  return Boolean(res.rows?.[0]?.present);
+}
+
 // Count in-flight (pending or processing) jobs of a type for a given run stamp
 // (read from the jsonb payload). The characters.census finalizer uses this as a
 // barrier -- it waits until all characters.verify jobs for the run have settled.

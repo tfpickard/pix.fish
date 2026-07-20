@@ -3,12 +3,15 @@
 import { useEffect, useState, useTransition } from 'react';
 
 type Row = { id: number; field: string; provider: string; model: string; updatedAt: string };
+type RefRow = { feature: string; via?: string; model: string };
+type Reference = { derived: RefRow[]; hardcoded: RefRow[] };
 
 const FIELDS = ['captions', 'descriptions', 'tags', 'embeddings', 'imagegen'] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
 
 export default function AdminAiPage() {
   const [rows, setRows] = useState<Row[]>([]);
+  const [reference, setReference] = useState<Reference | null>(null);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState<Record<string, { provider: string; model: string }>>({});
   const [isPending, startTransition] = useTransition();
@@ -18,6 +21,7 @@ export default function AdminAiPage() {
       .then((r) => r.json())
       .then((data) => {
         setRows(data.rows ?? []);
+        setReference(data.reference ?? null);
         const d: Record<string, { provider: string; model: string }> = {};
         for (const r of data.rows ?? []) d[r.field] = { provider: r.provider, model: r.model };
         setDraft(d);
@@ -89,6 +93,45 @@ export default function AdminAiPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {reference && (
+        <div className="space-y-4 border-t border-ink-800 pt-6">
+          <div className="space-y-1">
+            <h2 className="font-mono text-xs uppercase tracking-wider text-ink-300">
+              other model uses (read-only)
+            </h2>
+            <p className="font-mono text-[11px] text-ink-500">
+              these LLM call sites have no row of their own. selecting them independently is
+              a follow-up; for now this just shows what each one runs.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <p className="font-mono text-[11px] uppercase tracking-wider text-ink-500">
+              follows a field above
+            </p>
+            {reference.derived.map((r) => (
+              <div key={r.feature} className="flex items-baseline gap-2 font-mono text-xs">
+                <span className="flex-1 text-ink-300">{r.feature}</span>
+                <span className="text-ink-500">via {r.via}</span>
+                <span className="text-ink-100">{r.model}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-1">
+            <p className="font-mono text-[11px] uppercase tracking-wider text-ink-500">
+              hardcoded (not yet configurable)
+            </p>
+            {reference.hardcoded.map((r) => (
+              <div key={r.feature} className="flex items-baseline gap-2 font-mono text-xs">
+                <span className="flex-1 text-ink-300">{r.feature}</span>
+                <span className="text-ink-100">{r.model}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

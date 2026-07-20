@@ -2,11 +2,12 @@ import { eq } from 'drizzle-orm';
 import type { Job } from '@/lib/db/schema';
 import { db } from '@/lib/db/client';
 import { captions, images } from '@/lib/db/schema';
+import { getEmbedder, getProvider } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { enrichImage } from '@/lib/enrichment';
 import { persistEnrichment } from '@/lib/enrichment-persist';
-import { enqueueJob } from '@/lib/db/queries/jobs';
+import { enqueueJob, inFlightImageIds } from '@/lib/db/queries/jobs';
 
 // Providers prefer the blob URL; pass an empty buffer to avoid round-tripping
 // the original file through Postgres just to hand it back out to Anthropic.
@@ -74,5 +75,30 @@ export async function enrichImageHandler(job: Job): Promise<void> {
     await enqueueJob({ type: 'derive.image', payload: { imageId: img.id }, maxAttempts: 3 });
   } catch (err) {
     console.error('enrichImage: failed to enqueue derive.image for', img.id, err);
+  }
+
+  // Scan the new image for recurring figures so it can join the characters
+  // roster without a manual "detect all" pass. Detection bills to the owner's
+  // key exactly like this enrichment. The detect handler needs BOTH a vision
+  // provider (to find figures) and an embedder (to embed the crops) and throws
+  // if either is missing, so gate on both -- otherwise a key-less-for-embeddings
+  // owner (e.g. Anthropic key present, OpenAI key absent, no env fallback) files
+  // a detect job that only ever retries and fails. The detect handler debounces
+  // a roster recluster, so a match surfaces on the characters page on its own.
+  // Best-effort: a failed enqueue must not fail the enrichment that already committed.
+  try {
+    if (getProvider('captions', cfg, userKeys)?.vision && getEmbedder(cfg, userKeys)) {
+      // Skip when a detect for this image is already in flight -- e.g. an
+      // overlapping admin detect-all filed one. Two detects for one image are NOT
+      // idempotent (they cut duplicate crops and double-bill vision + embed),
+      // unlike the corpus-wide backfill/cluster dedupes, so match the admin
+      // detect route's inFlightImageIds guard here too.
+      const detectInFlight = await inFlightImageIds('characters.detect');
+      if (!detectInFlight.has(img.id)) {
+        await enqueueJob({ type: 'characters.detect', payload: { imageId: img.id }, maxAttempts: 2 });
+      }
+    }
+  } catch (err) {
+    console.error('enrichImage: failed to enqueue characters.detect for', img.id, err);
   }
 }
