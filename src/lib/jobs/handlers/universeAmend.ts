@@ -92,7 +92,7 @@ export async function universeAmendHandler(job: Job): Promise<void> {
   // AI: the institution writes with the site admin's keys.
   const cfg = await loadAiConfig();
   const keys = await loadUserProviderKeys(getSiteAdminId());
-  const provider = getProvider('captions', cfg, keys);
+  const provider = getProvider('dossier', cfg, keys);
   if (!provider || !provider.text) {
     throw new Error('universe.amend: no text-capable provider available');
   }

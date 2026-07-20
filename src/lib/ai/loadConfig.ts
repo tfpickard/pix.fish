@@ -2,7 +2,17 @@ import { listAiConfig } from '@/lib/db/queries/ai-config';
 import { defaultAiConfig } from './config';
 import type { AiConfigMap, ProviderField, ProviderName } from './types';
 
-const FIELDS: ProviderField[] = ['captions', 'descriptions', 'tags', 'embeddings'];
+const FIELDS: ProviderField[] = [
+  'captions',
+  'descriptions',
+  'tags',
+  'embeddings',
+  'detect',
+  'verify',
+  'dossier',
+  'nsfw',
+  'chat'
+];
 const KNOWN_PROVIDERS: ProviderName[] = ['anthropic', 'openai'];
 
 // Read-only. If a row is missing or contains an unknown provider we fall back

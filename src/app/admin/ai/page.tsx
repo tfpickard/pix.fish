@@ -6,7 +6,18 @@ type Row = { id: number; field: string; provider: string; model: string; updated
 type RefRow = { feature: string; via?: string; model: string };
 type Reference = { derived: RefRow[]; hardcoded: RefRow[] };
 
-const FIELDS = ['captions', 'descriptions', 'tags', 'embeddings', 'imagegen'] as const;
+const FIELDS = [
+  'captions',
+  'descriptions',
+  'tags',
+  'embeddings',
+  'detect',
+  'verify',
+  'dossier',
+  'nsfw',
+  'chat',
+  'imagegen'
+] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
 
 export default function AdminAiPage() {

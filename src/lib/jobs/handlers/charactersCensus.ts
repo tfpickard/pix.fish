@@ -58,7 +58,7 @@ export async function assembleCensus(runStamp: number, minAppearances: number): 
 
   const cfg = groups.length > 0 ? await loadAiConfig() : null;
   const keys = cfg ? await loadUserProviderKeys(getSiteAdminId()) : null;
-  const provider = cfg && keys ? getProvider('captions', cfg, keys) : null;
+  const provider = cfg && keys ? getProvider('dossier', cfg, keys) : null;
   const clerks = groups.length > 0 ? await listClerks() : [];
 
   // Fetch every crop the run references in ONE query (avoids an N+1 per group,

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { getTuning, saveTuning } from '@/lib/db/queries/character-tuning';
+import { nextClusterRunStamp } from '@/lib/db/queries/events';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 
 export const runtime = 'nodejs';
@@ -38,7 +39,7 @@ export async function POST(req: Request) {
   const tuning = await getTuning();
 
   const payload = {
-    runStamp: Date.now() % 2_147_483_647,
+    runStamp: await nextClusterRunStamp(),
     minAppearances: tuning.minAppearances,
     maxDist: tuning.maxDist,
     k: tuning.k,
