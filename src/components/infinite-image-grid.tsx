@@ -254,14 +254,31 @@ export function InfiniteImageGrid({
     // Debounced periodic flush plus a flush on tab-hide so dwell is not lost
     // when the visitor leaves.
     const interval = window.setInterval(flush, 15_000);
-    const onHide = () => {
-      if (document.visibilityState === 'hidden') flush();
+
+    // Pause dwell timing while the tab is backgrounded. Without this, a tile
+    // that was >=50% visible stays in visibleSince when the tab hides, and the
+    // still-running interval (throttled, but it fires) banks background time as
+    // dwell on every flush -- permanently inflating a tab left open. On hide we
+    // flush accrued foreground dwell, then drop the timestamps so nothing
+    // accumulates while hidden. On return we re-stamp the tiles that were
+    // visible (they cannot have scrolled while hidden) so timing resumes at now.
+    let hiddenVisible: number[] = [];
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        flush();
+        hiddenVisible = [...visibleSince.keys()];
+        visibleSince.clear();
+      } else {
+        const now = Date.now();
+        for (const id of hiddenVisible) visibleSince.set(id, now);
+        hiddenVisible = [];
+      }
     };
-    document.addEventListener('visibilitychange', onHide);
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener('visibilitychange', onHide);
+      document.removeEventListener('visibilitychange', onVisibility);
       observer.disconnect();
       flush();
     };

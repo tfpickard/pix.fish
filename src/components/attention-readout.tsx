@@ -48,10 +48,20 @@ export function AttentionReadout({ standing }: { standing: AttentionStanding }) 
         <>not looked at lately</>
       )}
       {lifetimeShown ? (
+        // "logged" rather than "all-time": the lifetime ledger only counts dwell
+        // since logging began (the column shipped at 0, no backfill), so this is
+        // total recorded handling, not the image's entire history. Matches the
+        // disclosure on the public board and admin heading.
         <>
           {' '}
-          &middot; <span className="text-ink-300 tabular-nums">{formatDwell(standing.lifetime)}</span>{' '}
-          all-time
+          &middot;{' '}
+          <span
+            className="text-ink-300 tabular-nums"
+            title="counted since dwell logging began"
+          >
+            {formatDwell(standing.lifetime)}
+          </span>{' '}
+          logged
         </>
       ) : null}
     </p>
