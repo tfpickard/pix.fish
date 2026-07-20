@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
 import { imageAttention, images } from '../schema';
@@ -138,25 +138,46 @@ export async function getTopAttention(opts: {
 }): Promise<RankedImage[]> {
   const limit = Math.max(0, Math.trunc(opts.limit ?? 24));
   if (limit === 0) return [];
+  const visibility = boardVisibility(opts.nsfwMode ?? 'hide');
 
+  // 'lifetime' is monotonic -- no read-time decay -- so let Postgres do the
+  // ordering and LIMIT instead of materializing every joined row and sorting in
+  // JS. This keeps the query bounded as the table grows.
+  if (opts.mode === 'lifetime') {
+    const rows = await db
+      .select({
+        imageId: imageAttention.imageId,
+        slug: images.slug,
+        score: imageAttention.lifetime
+      })
+      .from(imageAttention)
+      .innerJoin(images, eq(images.id, imageAttention.imageId))
+      .where(and(visibility, gt(imageAttention.lifetime, 0)))
+      .orderBy(desc(imageAttention.lifetime))
+      .limit(limit);
+    return rows;
+  }
+
+  // 'hot' depends on decayed(value, lastUpdatedAt, now), which Postgres can't
+  // rank without recomputing the decay per row, so we scan the (small,
+  // one-row-per-image) visible set and rank in JS -- same pattern as getTopPaths.
   const rows = await db
     .select({
       imageId: imageAttention.imageId,
       slug: images.slug,
       value: imageAttention.value,
-      lifetime: imageAttention.lifetime,
       lastUpdatedAt: imageAttention.lastUpdatedAt
     })
     .from(imageAttention)
     .innerJoin(images, eq(images.id, imageAttention.imageId))
-    .where(boardVisibility(opts.nsfwMode ?? 'hide'));
+    .where(visibility);
 
   const now = Date.now();
   return rows
     .map((r) => ({
       imageId: r.imageId,
       slug: r.slug,
-      score: opts.mode === 'hot' ? decayed(r.value, r.lastUpdatedAt.getTime(), now) : r.lifetime
+      score: decayed(r.value, r.lastUpdatedAt.getTime(), now)
     }))
     .filter((r) => r.score > 0)
     .sort((a, b) => b.score - a.score)
