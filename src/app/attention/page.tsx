@@ -70,6 +70,14 @@ export default async function AttentionPage({
             all-time
           </Link>
         </nav>
+        {mode === 'lifetime' ? (
+          // The lifetime ledger only began accumulating when dwell logging
+          // shipped -- earlier views were never recorded per-image, so this is
+          // an all-time total from that point on, not the gallery's full past.
+          <p className="font-mono text-xs text-ink-600">
+            counted since dwell logging began -- earlier views aren&apos;t included
+          </p>
+        ) : null}
       </header>
 
       {images.length === 0 ? (
@@ -77,6 +85,13 @@ export default async function AttentionPage({
           no attention recorded yet -- come back once the collection has been looked at.
         </p>
       ) : (
+        // Known limitation: ImageCard links to the legacy /<slug> and its
+        // reaction controls hit slug-scoped routes, which resolve the admin-or-
+        // oldest owner when two owners share a slug. This is app-wide ImageCard
+        // behavior (gallery, search, neighbors all share it), not specific to
+        // this board; making it owner-exact needs image-id-scoped reaction
+        // routes, tracked separately. The worn-path links below are already
+        // owner-scoped since they are bespoke to this page.
         <ImageGrid images={images} />
       )}
 

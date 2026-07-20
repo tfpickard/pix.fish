@@ -3,7 +3,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import type { NsfwMode } from '@/lib/nsfw';
 import { db } from '../client';
 import { images, pathTraffic, users } from '../schema';
-import { decayed, ATTENTION_HALF_LIFE_MS } from '../../attention';
+import { decayed, ATTENTION_HALF_LIFE_MS, HOT_MIN_WEIGHT } from '../../attention';
 
 // Query helpers for the path_traffic table (Substrate 1): anonymous, decaying
 // per-EDGE traversal telemetry. The edge sibling of image_attention. See
@@ -196,7 +196,11 @@ export async function getTopPathsVisible(
       value: decayed(r.value, r.lastUpdatedAt.getTime(), now),
       lifetime: r.lifetime
     }))
-    .filter((r) => r.value > 0)
+    // Decay is strictly positive forever, so a long-idle edge would otherwise
+    // linger on the board rounding to "0". Require at least HOT_MIN_WEIGHT of
+    // current traffic (the same activity floor the image board uses) so only
+    // genuinely-walked-lately paths surface.
+    .filter((r) => r.value >= HOT_MIN_WEIGHT)
     .sort((a, b) => b.value - a.value)
     .slice(0, cap);
 }

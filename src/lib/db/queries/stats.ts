@@ -14,8 +14,11 @@ export type Stats = {
   recentJobFailures: number;
   webhookSuccessRate: { status: string; count: number }[];
   // Dwell telemetry: most-attended images (live-decayed and all-time) and the
-  // most-walked image-to-image paths. Admin sees everything, so these are read
-  // with nsfwMode 'include'.
+  // most-walked image-to-image paths. Read with nsfwMode 'include' so NSFW rows
+  // count here even though they are hidden on the public board. Note these use
+  // the public-board readers, so archived/basement (out-of-circulation) images
+  // are still excluded -- this is a "top in-circulation dwell" view, not a raw
+  // all-content audit. Add ungated readers if a full operational total is needed.
   topDwellHot: { slug: string; score: number }[];
   topDwellLifetime: { slug: string; score: number }[];
   topPaths: { label: string; score: number }[];
@@ -75,8 +78,8 @@ export async function loadStats(): Promise<Stats> {
   ]);
 
   // Dwell rankings decay in JS (not SQL), so they run as their own helpers
-  // rather than raw db.execute; kept out of the SQL Promise.all above. Admin
-  // view includes NSFW rows.
+  // rather than raw db.execute; kept out of the SQL Promise.all above. NSFW is
+  // included; archived/basement stay excluded (see the note above).
   const [topDwellHot, topDwellLifetime, topPaths] = await Promise.all([
     getTopAttention({ mode: 'hot', limit: 15, nsfwMode: 'include' }),
     getTopAttention({ mode: 'lifetime', limit: 15, nsfwMode: 'include' }),
