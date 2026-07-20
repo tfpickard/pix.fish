@@ -2,7 +2,15 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AIProvider, TagsAndNsfw } from './types';
 import { parseTagsJson, parseVariantsJson } from './types';
 
-export const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-6';
+export const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-5';
+
+// Output cap for the vision/text calls. Kept generous because Sonnet 5+ run
+// adaptive thinking by default (thinking tokens count against this budget), so a
+// tight 1024 could truncate the JSON payload mid-object on a thinking-on model.
+// These calls only ever emit a few short variants, so 4096 is pure headroom, not
+// extra spend. (Fully disabling thinking would be cheaper still, but the pinned
+// SDK 0.35 predates the `thinking` param -- that's an SDK-upgrade follow-up.)
+const MAX_OUTPUT_TOKENS = 4096;
 
 // Per-key client. Multi-user means we cannot share a singleton -- each
 // user's BYO key creates its own client. Constructing an SDK is cheap so
@@ -39,7 +47,7 @@ async function callVision(
   };
   const res = await getClient(apiKey).messages.create({
     model,
-    max_tokens: 1024,
+    max_tokens: MAX_OUTPUT_TOKENS,
     messages: [
       {
         role: 'user',
@@ -93,7 +101,7 @@ export function createAnthropicProvider(
     async text(prompt: string): Promise<string> {
       const res = await getClient(apiKey).messages.create({
         model,
-        max_tokens: 1024,
+        max_tokens: MAX_OUTPUT_TOKENS,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }]
       });
       const block = res.content.find((c) => c.type === 'text');

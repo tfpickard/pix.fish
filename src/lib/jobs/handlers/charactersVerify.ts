@@ -38,7 +38,7 @@ export async function verifyCandidate(runStamp: number, candidateIndex: number):
 
   const cfg = await loadAiConfig();
   const keys = await loadUserProviderKeys(getSiteAdminId());
-  const provider = getProvider('captions', cfg, keys);
+  const provider = getProvider('verify', cfg, keys);
   if (!provider?.vision) {
     // No vision provider -- can't verify. Leave null so the census keeps the
     // whole candidate as one group rather than dropping it.

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { nextClusterRunStamp } from '@/lib/db/queries/events';
 import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 
 export const runtime = 'nodejs';
@@ -33,7 +34,7 @@ async function tick(req: Request) {
   // failed run is re-armed by the next tick. Knobs resolve from the saved tuning.
   const job = await enqueueJob({
     type: 'characters.cluster',
-    payload: { runStamp: Date.now() % 2_147_483_647 },
+    payload: { runStamp: await nextClusterRunStamp() },
     maxAttempts: 1
   });
   return NextResponse.json({ enqueued: 'characters.cluster', jobId: job.id });

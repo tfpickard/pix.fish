@@ -1,6 +1,7 @@
 import { allCropVectors, type CropVector } from '@/lib/db/queries/character-crops';
 import { writeCandidates, deleteCandidatesForRun } from '@/lib/db/queries/character-candidates';
 import { getTuning, type ClusterSpace } from '@/lib/db/queries/character-tuning';
+import { nextClusterRunStamp } from '@/lib/db/queries/events';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import type { Job } from '@/lib/db/schema';
 import { buildCropEdges, cropClusterVector } from '@/lib/universe/characters';
@@ -41,7 +42,14 @@ function num(v: number | undefined, fallback: number): number {
 // Resolve the effective knobs from a payload, falling back to the saved tuning.
 export async function resolveKnobs(payload: Payload): Promise<ResolvedKnobs> {
   const tuning = await getTuning();
-  const runStamp = num(payload.runStamp ?? payload.stamp, Math.floor(Date.now() % 2_147_483_647));
+  // When no stamp is supplied (the offline characters-detect.ts path), allocate a
+  // monotonic one instead of `Date.now() % int4`. Census stamps are now full
+  // millisecond values, so a modulo'd fallback lands far below the latest census
+  // and assembleCensus() would treat the run as stale -- deleting its candidates
+  // and skipping the roster update. Only hit the DB when we actually need it.
+  const provided = payload.runStamp ?? payload.stamp;
+  const runStamp =
+    typeof provided === 'number' && Number.isFinite(provided) ? provided : await nextClusterRunStamp();
   return {
     runStamp,
     minAppearances: Math.max(2, Math.trunc(num(payload.minAppearances, tuning.minAppearances))),

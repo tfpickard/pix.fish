@@ -36,7 +36,19 @@ export interface AIProvider {
   readonly embedModel?: string;
 }
 
-export type ProviderField = 'captions' | 'descriptions' | 'tags' | 'embeddings';
+// Per-field routing keys. The first four are the enrichment pipeline; `detect`,
+// `verify`, and `dossier` are the character pipeline (previously hardwired to the
+// `captions` field); `nsfw` and `chat` were previously hardcoded to Haiku.
+export type ProviderField =
+  | 'captions'
+  | 'descriptions'
+  | 'tags'
+  | 'embeddings'
+  | 'detect'
+  | 'verify'
+  | 'dossier'
+  | 'nsfw'
+  | 'chat';
 export type ProviderName = 'anthropic' | 'openai';
 
 // Resolved per-field routing. Produced by src/lib/ai/loadConfig.ts from the

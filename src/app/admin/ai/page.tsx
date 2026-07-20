@@ -5,8 +5,32 @@ import { useEffect, useState, useTransition } from 'react';
 type Row = { id: number; field: string; provider: string; model: string; updatedAt: string };
 type RefRow = { feature: string; via?: string; model: string };
 type Reference = { derived: RefRow[]; hardcoded: RefRow[] };
+type Resolved = Record<string, { provider: string; model: string }>;
 
-const FIELDS = ['captions', 'descriptions', 'tags', 'embeddings', 'imagegen'] as const;
+// Fields whose runtime uses inherit the `captions` routing until pinned.
+const INHERIT_CAPTIONS = new Set(['detect', 'verify', 'dossier']);
+
+// Providers the runtime actually honors per field (mirrors the PUT validation +
+// loadAiConfig): chat is Anthropic-only; the pipeline is anthropic/openai;
+// imagegen has its own set.
+function providerOptions(field: string): readonly string[] {
+  if (field === 'chat') return ['anthropic'];
+  if (field === 'imagegen') return ['anthropic', 'openai', 'openrouter', 'stub'];
+  return ['anthropic', 'openai'];
+}
+
+const FIELDS = [
+  'captions',
+  'descriptions',
+  'tags',
+  'embeddings',
+  'detect',
+  'verify',
+  'dossier',
+  'nsfw',
+  'chat',
+  'imagegen'
+] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
 
 export default function AdminAiPage() {
@@ -23,7 +47,13 @@ export default function AdminAiPage() {
         setRows(data.rows ?? []);
         setReference(data.reference ?? null);
         const d: Record<string, { provider: string; model: string }> = {};
-        for (const r of data.rows ?? []) d[r.field] = { provider: r.provider, model: r.model };
+        // Prefill from the resolved (effective) config so inherited fields show
+        // their real value; imagegen isn't in that map, so fall back to its row.
+        const resolved: Resolved = data.resolved ?? {};
+        for (const [field, cfg] of Object.entries(resolved)) {
+          d[field] = { provider: cfg.provider, model: cfg.model };
+        }
+        for (const r of data.rows ?? []) if (!d[r.field]) d[r.field] = { provider: r.provider, model: r.model };
         setDraft(d);
         setLoading(false);
       })
@@ -58,9 +88,13 @@ export default function AdminAiPage() {
         <div className="space-y-3">
           {FIELDS.map((f) => {
             const d = draft[f] ?? { provider: 'anthropic', model: '' };
+            const inherited = INHERIT_CAPTIONS.has(f) && !rows.some((r) => r.field === f);
             return (
               <div key={f} className="flex items-center gap-2 rounded border border-ink-800 p-3">
-                <span className="w-28 font-mono text-xs text-ink-300">{f}</span>
+                <span className="flex w-28 flex-col font-mono text-xs text-ink-300">
+                  {f}
+                  {inherited && <span className="text-[10px] text-ink-500">inherits captions</span>}
+                </span>
                 <select
                   value={d.provider}
                   onChange={(e) =>
@@ -68,7 +102,7 @@ export default function AdminAiPage() {
                   }
                   className="rounded border border-ink-800 bg-ink-950 px-2 py-1 font-mono text-xs text-ink-100"
                 >
-                  {PROVIDERS.map((p) => (
+                  {providerOptions(f).map((p) => (
                     <option key={p} value={p}>
                       {p}
                     </option>

@@ -12,6 +12,7 @@ import {
   deleteCropsForImage,
   insertCharacterCrop
 } from '@/lib/db/queries/character-crops';
+import { nextClusterRunStamp } from '@/lib/db/queries/events';
 import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
 import { images, type Job } from '@/lib/db/schema';
 import { buildDetectPrompt } from '@/lib/universe/characters';
@@ -39,7 +40,7 @@ async function scheduleRecluster(): Promise<void> {
     if (!(await hasPendingJobOfType('characters.cluster'))) {
       await enqueueJob({
         type: 'characters.cluster',
-        payload: { runStamp: Date.now() % 2_147_483_647 },
+        payload: { runStamp: await nextClusterRunStamp() },
         runAt: new Date(Date.now() + RECLUSTER_DEBOUNCE_MS),
         maxAttempts: 1
       });
@@ -110,7 +111,7 @@ export async function charactersDetectHandler(job: Job): Promise<void> {
   // site admin's. loadUserProviderKeys falls back to env keys when the owner has
   // none, preserving the single-owner deployment.
   const keys = await loadUserProviderKeys(img.ownerId);
-  const provider = getProvider('captions', cfg, keys);
+  const provider = getProvider('detect', cfg, keys);
   if (!provider || !provider.vision) throw new Error('characters.detect: no vision-capable provider');
   const embedder = getEmbedder(cfg, keys);
   if (!embedder) throw new Error('characters.detect: no embedder available');

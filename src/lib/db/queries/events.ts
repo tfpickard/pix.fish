@@ -91,6 +91,21 @@ export async function maxCensusRunStamp(): Promise<number | null> {
   return m == null ? null : Number(m);
 }
 
+// Next run stamp for a characters clustering pass -- a wall-clock millisecond
+// value kept strictly greater than any census already on file. NOT modulo'd: the
+// stamp is stored as bigint (character_candidates.run_stamp) and text cast to
+// bigint (events.subject_id), so there is no int4 ceiling to fit. The prior
+// `Date.now() % 2_147_483_647` wrapped every ~24.9 days and then read as stale
+// against the pre-wrap census max -- assembleCensus drops runs whose stamp is
+// below the latest census -- freezing automatic roster updates for a wrap cycle.
+// Full Date.now() (~1.75e12, well within Number.MAX_SAFE_INTEGER) never wraps;
+// max(now, latest + 1) guarantees strictly-greater even under a small backward
+// clock adjustment or two runs in the same millisecond.
+export async function nextClusterRunStamp(): Promise<number> {
+  const max = (await maxCensusRunStamp()) ?? 0;
+  return Math.max(Date.now(), max + 1);
+}
+
 // All events in canonical (insert) order. The rebuild replays this slice
 // through the reducers; ordering by id makes the replay deterministic.
 export async function listAllEvents(): Promise<UniverseEvent[]> {

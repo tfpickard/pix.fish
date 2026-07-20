@@ -11,6 +11,7 @@
 // serves anonymous visitors -- there is no signed-in user to load BYO keys for).
 
 import Anthropic from '@anthropic-ai/sdk';
+import { loadAiConfig } from './loadConfig';
 import { seedToNarrative, makeSeedFromInt } from '@/lib/pisci/seed';
 import type { Beat, PersonaSeed } from '@/lib/pisci/types';
 import type { ChatMessage } from '@/lib/pisci/render';
@@ -189,9 +190,15 @@ export async function renderPisciTurn(args: {
 
   const seed: PersonaSeed = makeSeedFromInt(args.seedInt);
   const client = new Anthropic({ apiKey });
+  // Model from the 'chat' ai_config field when it names an Anthropic model. The
+  // widget uses a bespoke Anthropic client + persona, so a non-Anthropic 'chat'
+  // config (or a config-read failure) falls back to the pinned default rather
+  // than sending a foreign model id to the Anthropic SDK.
+  const cfg = await loadAiConfig().catch(() => null);
+  const model = cfg?.chat.provider === 'anthropic' ? cfg.chat.model : PISCI_MODEL;
   const res = await client.messages.create(
     {
-      model: PISCI_MODEL,
+      model,
       max_tokens: clampMaxTokens(PISCI_MAX_TOKENS),
       system: buildSystemPrompt(seed, args.beat, args.directive),
       messages: normalizeHistory(args.messages)
