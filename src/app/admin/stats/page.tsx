@@ -12,9 +12,9 @@ type Stats = {
   jobsByTypeStatus: { type: string; status: string; count: number }[];
   recentJobFailures: number;
   webhookSuccessRate: { status: string; count: number }[];
-  topDwellHot: { slug: string; score: number }[];
-  topDwellLifetime: { slug: string; score: number }[];
-  topPaths: { label: string; score: number }[];
+  topDwellHot: { imageId: number; slug: string; score: number }[];
+  topDwellLifetime: { imageId: number; slug: string; score: number }[];
+  topPaths: { srcId: number; dstId: number; label: string; score: number }[];
 };
 
 function Bar({ value, max, label }: { value: number; max: number; label: string }) {
@@ -123,7 +123,7 @@ export default function AdminStatsPage() {
             <p className="font-mono text-xs text-ink-500">no attention recorded yet</p>
           ) : (
             data.topDwellHot.map((r) => (
-              <Bar key={r.slug} value={r.score} max={hotMax} label={r.slug} />
+              <Bar key={r.imageId} value={r.score} max={hotMax} label={r.slug} />
             ))
           )}
         </div>
@@ -131,14 +131,14 @@ export default function AdminStatsPage() {
 
       <section>
         <h2 className="font-mono text-xs text-ink-500 mb-2">
-          dwell -- all-time handling (lifetime, ~seconds)
+          dwell -- all-time handling (lifetime, ~seconds, counted since dwell logging began)
         </h2>
         <div className="space-y-1">
           {data.topDwellLifetime.length === 0 ? (
             <p className="font-mono text-xs text-ink-500">no attention recorded yet</p>
           ) : (
             data.topDwellLifetime.map((r) => (
-              <Bar key={r.slug} value={r.score} max={lifetimeMax} label={r.slug} />
+              <Bar key={r.imageId} value={r.score} max={lifetimeMax} label={r.slug} />
             ))
           )}
         </div>
@@ -151,7 +151,7 @@ export default function AdminStatsPage() {
             <p className="font-mono text-xs text-ink-500">no traversals recorded yet</p>
           ) : (
             data.topPaths.map((r) => (
-              <Bar key={r.label} value={r.score} max={pathMax} label={r.label} />
+              <Bar key={`${r.srcId}:${r.dstId}`} value={r.score} max={pathMax} label={r.label} />
             ))
           )}
         </div>

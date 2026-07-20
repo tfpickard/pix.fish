@@ -42,7 +42,15 @@ export function ImageCard({ image, similarity }: Props) {
       : null;
 
   return (
-    <div className="neon-card group relative overflow-hidden rounded-md border border-ink-800/80 bg-ink-900/30">
+    // data-attention-id is the dwell-telemetry hook: InfiniteImageGrid's
+    // IntersectionObserver watches [data-attention-id] tiles to measure time on
+    // screen and POST /api/attention. Without it the observer matches nothing
+    // and no attention is ever recorded (feeding the drift sort and the
+    // /attention board). Inert everywhere the observer isn't mounted.
+    <div
+      data-attention-id={image.id}
+      className="neon-card group relative overflow-hidden rounded-md border border-ink-800/80 bg-ink-900/30"
+    >
       {similarityLabel ? (
         <span className="absolute right-2 top-2 z-10 rounded-sm border border-primary/40 bg-ink-950/80 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-primary">
           {similarityLabel}

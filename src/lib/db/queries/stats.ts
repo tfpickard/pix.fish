@@ -19,9 +19,11 @@ export type Stats = {
   // the public-board readers, so archived/basement (out-of-circulation) images
   // are still excluded -- this is a "top in-circulation dwell" view, not a raw
   // all-content audit. Add ungated readers if a full operational total is needed.
-  topDwellHot: { slug: string; score: number }[];
-  topDwellLifetime: { slug: string; score: number }[];
-  topPaths: { label: string; score: number }[];
+  // IDs ride along so the client keys rows uniquely (two owners may share a
+  // slug, so slug/label alone is not a safe React key) and can disambiguate.
+  topDwellHot: { imageId: number; slug: string; score: number }[];
+  topDwellLifetime: { imageId: number; slug: string; score: number }[];
+  topPaths: { srcId: number; dstId: number; label: string; score: number }[];
 };
 
 // Single round-trip helper; eight small queries run in parallel since
@@ -105,8 +107,21 @@ export async function loadStats(): Promise<Stats> {
     webhookSuccessRate: webhookRates.rows.map((r) => ({ status: r.status, count: Number(r.c) })),
     // Round the decayed/lifetime dwell weights to whole units for the bars
     // (weight is ~1.0 per second, so this reads as seconds of attention).
-    topDwellHot: topDwellHot.map((r) => ({ slug: r.slug, score: Math.round(r.score) })),
-    topDwellLifetime: topDwellLifetime.map((r) => ({ slug: r.slug, score: Math.round(r.score) })),
-    topPaths: topPaths.map((p) => ({ label: `${p.srcSlug} → ${p.dstSlug}`, score: Math.round(p.value) }))
+    topDwellHot: topDwellHot.map((r) => ({
+      imageId: r.imageId,
+      slug: r.slug,
+      score: Math.round(r.score)
+    })),
+    topDwellLifetime: topDwellLifetime.map((r) => ({
+      imageId: r.imageId,
+      slug: r.slug,
+      score: Math.round(r.score)
+    })),
+    topPaths: topPaths.map((p) => ({
+      srcId: p.srcId,
+      dstId: p.dstId,
+      label: `${p.srcSlug} → ${p.dstSlug}`,
+      score: Math.round(p.value)
+    }))
   };
 }

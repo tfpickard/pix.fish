@@ -17,7 +17,10 @@ export const revalidate = 0;
 export const metadata: Metadata = {
   title: 'most looked at',
   description:
-    'The images the collection dwells on, ranked by anonymous, aggregate attention.'
+    'The images the collection dwells on, ranked by anonymous, aggregate attention.',
+  // Both ?mode= variants are the same board; without this the route inherits
+  // the root layout's canonical of '/' and search engines fold it into home.
+  alternates: { canonical: '/attention' }
 };
 
 const BOARD_SIZE = 48;
