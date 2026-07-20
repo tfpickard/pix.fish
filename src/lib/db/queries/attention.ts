@@ -197,30 +197,42 @@ export type AttentionStanding = {
 // getAttentionStanding(): the per-image detail readout. Returns this image's
 // live/lifetime dwell plus its rank by live attention across the whole board.
 // Ranking is visibility-agnostic (this is the record's own detail context, and
-// a rank is a position, not content) and scans the small image_attention table
-// once -- cheap relative to the other per-detail queries.
+// a rank is a position, not content). Computed entirely in SQL -- the decay is
+// applied per row in the query and only the four scalars come back -- so a
+// force-dynamic detail view (or a crawler) never materializes and JS-sorts the
+// whole image_attention ledger, which would grow O(N) with the corpus.
 export async function getAttentionStanding(imageId: number): Promise<AttentionStanding> {
-  const rows = await db
-    .select({
-      imageId: imageAttention.imageId,
-      value: imageAttention.value,
-      lifetime: imageAttention.lifetime,
-      lastUpdatedAt: imageAttention.lastUpdatedAt
-    })
-    .from(imageAttention);
+  const halfLifeSeconds = ATTENTION_HALF_LIFE_MS / 1000;
+  const res = await db.execute<{
+    hot: number;
+    lifetime: number;
+    tracked: number;
+    rank: number | null;
+  }>(sql`
+    WITH scored AS (
+      SELECT
+        image_id,
+        value * power(0.5, extract(epoch from (now() - last_updated_at)) / ${halfLifeSeconds}) AS hot,
+        lifetime
+      FROM image_attention
+    ),
+    me AS (SELECT hot, lifetime FROM scored WHERE image_id = ${imageId})
+    SELECT
+      COALESCE((SELECT hot FROM me), 0)::float8 AS hot,
+      COALESCE((SELECT lifetime FROM me), 0)::float8 AS lifetime,
+      (SELECT count(*) FROM scored WHERE hot >= ${HOT_MIN_WEIGHT})::int AS tracked,
+      (CASE
+        WHEN (SELECT hot FROM me) >= ${HOT_MIN_WEIGHT}
+        THEN (SELECT count(*) FROM scored s WHERE s.hot >= ${HOT_MIN_WEIGHT} AND s.hot > (SELECT hot FROM me)) + 1
+        ELSE NULL
+      END)::int AS rank
+  `);
 
-  const now = Date.now();
-  const mine = rows.find((r) => r.imageId === imageId);
-  const ranked = rows
-    .map((r) => ({ imageId: r.imageId, hot: decayed(r.value, r.lastUpdatedAt.getTime(), now) }))
-    .filter((r) => r.hot >= HOT_MIN_WEIGHT)
-    .sort((a, b) => b.hot - a.hot);
-  const idx = ranked.findIndex((r) => r.imageId === imageId);
-
+  const row = res.rows[0];
   return {
-    hot: mine ? decayed(mine.value, mine.lastUpdatedAt.getTime(), now) : 0,
-    lifetime: mine?.lifetime ?? 0,
-    rank: idx >= 0 ? idx + 1 : null,
-    tracked: ranked.length
+    hot: Number(row?.hot ?? 0),
+    lifetime: Number(row?.lifetime ?? 0),
+    rank: row?.rank == null ? null : Number(row.rank),
+    tracked: Number(row?.tracked ?? 0)
   };
 }
