@@ -17,6 +17,7 @@ import { charactersClusterHandler } from './charactersCluster';
 import { charactersVerifyHandler } from './charactersVerify';
 import { charactersCensusHandler } from './charactersCensus';
 import { charactersBackfillVisualsHandler } from './charactersBackfillVisuals';
+import { desirePromoteHandler } from './desirePromote';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -66,5 +67,8 @@ export const handlers: Record<string, JobHandler> = {
   'characters.census': charactersCensusHandler,
   // Backfill visual (Voyage multimodal) vectors for crops that lack one; drains
   // in batches over successive ticks.
-  'characters.backfill-visuals': charactersBackfillVisualsHandler
+  'characters.backfill-visuals': charactersBackfillVisualsHandler,
+  // Desire paths: assemble worn path_traffic edges into corridors and promote
+  // the ones above a strength floor into desire_paths (retiring decayed ones).
+  'desire.promote': desirePromoteHandler
 };

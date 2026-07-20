@@ -848,6 +848,38 @@ export const pathTraffic = pgTable(
   })
 );
 
+// Desire paths: the routes visitors actually walk, promoted from path_traffic
+// into first-class objects. The `desire.promote` job assembles high-traffic
+// adjacent edges into ordered chains (corridors) and files the ones worn past a
+// threshold here, each with a human slug and a clerk-authored name. `edgeSig` is
+// the canonical node-sequence identity (join of nodeIds), so re-promoting the
+// same corridor upserts rather than duplicates. `strength` is the chain's
+// decayed traffic at last promotion (a chain is only as worn as its weakest
+// link -- min edge value); `lifetime` is the monotonic min traversal count.
+// `retiredAt` hides a route that has decayed below the floor without deleting it
+// (the archive never deletes) -- an overgrown path, still on file.
+export const desirePaths = pgTable(
+  'desire_paths',
+  {
+    id: serial('id').primaryKey(),
+    slug: text('slug').notNull().unique(),
+    edgeSig: text('edge_sig').notNull().unique(),
+    nodeIds: jsonb('node_ids').$type<number[]>().notNull(),
+    caption: text('caption'),
+    provider: text('provider'),
+    model: text('model'),
+    strength: real('strength').notNull().default(0),
+    lifetime: real('lifetime').notNull().default(0),
+    lastWalkedAt: timestamp('last_walked_at', { withTimezone: true }),
+    promotedAt: timestamp('promoted_at', { withTimezone: true }).notNull().defaultNow(),
+    retiredAt: timestamp('retired_at', { withTimezone: true })
+  },
+  (t) => ({
+    strengthIdx: index('desire_paths_strength_idx').on(t.strength),
+    retiredIdx: index('desire_paths_retired_idx').on(t.retiredAt)
+  })
+);
+
 // ----------------------------------------------------------------------------
 // Universe (Phase U1): event-sourced canon + projections
 // ----------------------------------------------------------------------------
@@ -1218,6 +1250,8 @@ export type KnnEdge = typeof knnEdges.$inferSelect;
 export type ImageAttention = typeof imageAttention.$inferSelect;
 export type PathTraffic = typeof pathTraffic.$inferSelect;
 export type NewPathTraffic = typeof pathTraffic.$inferInsert;
+export type DesirePath = typeof desirePaths.$inferSelect;
+export type NewDesirePath = typeof desirePaths.$inferInsert;
 export type NewJob = typeof jobs.$inferInsert;
 export type UmapProjection = typeof umapProjections.$inferSelect;
 export type NewUmapProjection = typeof umapProjections.$inferInsert;

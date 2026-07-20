@@ -53,6 +53,7 @@ export function NavOverflow({ signedIn, admin, handle, authed }: Props) {
     { href: '/map', label: 'atlas' },
     { href: '/manifold', label: 'manifold' },
     { href: '/connect', label: 'connect' },
+    { href: '/paths', label: 'paths' },
     { href: '/daily', label: 'daily' },
     { href: '/taste', label: 'taste' },
     { href: '/attention', label: 'most looked at' },
