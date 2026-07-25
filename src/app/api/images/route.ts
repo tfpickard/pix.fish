@@ -5,7 +5,8 @@ import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { images } from '@/lib/db/schema';
 import { extractExif, extractPalette } from '@/lib/image-meta';
-import { hydrateImages, listImages } from '@/lib/db/queries/images';
+import { hydrateImages } from '@/lib/db/queries/images';
+import { getCachedGalleryDefaults, getGalleryPage } from '@/lib/db/queries/gallery-stream';
 import { addLineageEdges, resolveOwnedImageIdsBySlugs } from '@/lib/db/queries/lineage';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
@@ -50,7 +51,8 @@ export async function GET(req: Request) {
     }
     sort = rawSort;
   } else {
-    const defaults = await getGalleryDefaults(getSiteAdminId());
+    const adminId = getSiteAdminId();
+    const defaults = await getCachedGalleryDefaults(adminId, () => getGalleryDefaults(adminId));
     sort = defaults.defaultSort;
   }
   const seed = url.searchParams.get('seed') ?? undefined;
@@ -58,7 +60,14 @@ export async function GET(req: Request) {
   // (e.g. signed-in admin tooling) without flipping the visitor cookie.
   const nsfwMode = await resolveNsfwMode(url.searchParams.get('include_nsfw'));
 
-  const rows = await listImages({ limit, offset, tags: tagsFilter, sort, seed, nsfwMode });
+  // Shares the homepage's short-TTL cache for the default-shaped stream, so
+  // infinite-scroll paging over an unfiltered gallery does not re-run the
+  // 300-row candidate scan on every request.
+  const rows = await getGalleryPage(
+    { tags: tagsFilter, sort, seed: seed ?? '', nsfwMode },
+    limit,
+    offset
+  );
   return NextResponse.json({ images: rows });
 }
 
