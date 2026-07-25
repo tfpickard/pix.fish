@@ -50,30 +50,41 @@ function parseThreshold(raw: string | undefined): number {
 // defaults for any row the user hasn't set yet. Soft-fails to defaults if
 // the table itself is missing (pre-migration environments) so the gallery
 // still renders.
+// Throwing variant. Callers that memoize this MUST use it rather than
+// getGalleryDefaults below: the swallowing version resolves successfully with
+// compiled-in defaults on a database error, which a cache cannot tell apart
+// from a real read, so a transient blip would pin the wrong sort for a whole
+// TTL. Letting the rejection through lets the memo evict and retry.
+export async function getGalleryDefaultsOrThrow(ownerId: string): Promise<GalleryDefaults> {
+  const rows = await db
+    .select()
+    .from(galleryConfig)
+    .where(eq(galleryConfig.ownerId, ownerId));
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
+  const rawSort = byKey.get(KEY_DEFAULT_SORT);
+  const rawPeriod = byKey.get(KEY_DEFAULT_SHUFFLE);
+  return {
+    defaultSort: isSortMode(rawSort) ? rawSort : DEFAULT_SORT,
+    defaultShufflePeriod: isShufflePeriod(rawPeriod) ? rawPeriod : DEFAULT_SHUFFLE_PERIOD,
+    searchSimilarityThreshold: parseThreshold(byKey.get(KEY_SEARCH_SIM_THRESHOLD)),
+    autoApproveComments: byKey.get(KEY_AUTO_APPROVE_COMMENTS) === 'true',
+    lineagePublic: byKey.get(KEY_LINEAGE_PUBLIC) === 'true'
+  };
+}
+
+export const FALLBACK_GALLERY_DEFAULTS: GalleryDefaults = {
+  defaultSort: DEFAULT_SORT,
+  defaultShufflePeriod: DEFAULT_SHUFFLE_PERIOD,
+  searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD,
+  autoApproveComments: false,
+  lineagePublic: false
+};
+
 export async function getGalleryDefaults(ownerId: string): Promise<GalleryDefaults> {
   try {
-    const rows = await db
-      .select()
-      .from(galleryConfig)
-      .where(eq(galleryConfig.ownerId, ownerId));
-    const byKey = new Map(rows.map((r) => [r.key, r.value]));
-    const rawSort = byKey.get(KEY_DEFAULT_SORT);
-    const rawPeriod = byKey.get(KEY_DEFAULT_SHUFFLE);
-    return {
-      defaultSort: isSortMode(rawSort) ? rawSort : DEFAULT_SORT,
-      defaultShufflePeriod: isShufflePeriod(rawPeriod) ? rawPeriod : DEFAULT_SHUFFLE_PERIOD,
-      searchSimilarityThreshold: parseThreshold(byKey.get(KEY_SEARCH_SIM_THRESHOLD)),
-      autoApproveComments: byKey.get(KEY_AUTO_APPROVE_COMMENTS) === 'true',
-      lineagePublic: byKey.get(KEY_LINEAGE_PUBLIC) === 'true'
-    };
+    return await getGalleryDefaultsOrThrow(ownerId);
   } catch {
-    return {
-      defaultSort: DEFAULT_SORT,
-      defaultShufflePeriod: DEFAULT_SHUFFLE_PERIOD,
-      searchSimilarityThreshold: DEFAULT_SEARCH_SIM_THRESHOLD,
-      autoApproveComments: false,
-      lineagePublic: false
-    };
+    return FALLBACK_GALLERY_DEFAULTS;
   }
 }
 

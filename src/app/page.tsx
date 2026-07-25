@@ -1,7 +1,10 @@
 import type { Metadata } from 'next';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { getCachedGalleryDefaults, getHomeStream } from '@/lib/db/queries/gallery-stream';
-import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import {
+  FALLBACK_GALLERY_DEFAULTS,
+  getGalleryDefaultsOrThrow
+} from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { readNsfwMode } from '@/lib/nsfw';
 import { HAIKUS } from '@/lib/haikus';
@@ -42,13 +45,14 @@ export default async function HomePage({ searchParams }: PageProps) {
 
   // Owner defaults feed both the server-side query (when no ?sort= is
   // present) and the client sort bar (for "(owner)" labels + reset).
+  // The throwing variant is required here: getGalleryDefaults swallows DB
+  // errors and resolves with compiled-in defaults, which the memo would
+  // happily cache as a successful read. Letting it reject means a blip is
+  // evicted and retried rather than pinned for the TTL.
   const adminId = getSiteAdminId();
   const defaults = await getCachedGalleryDefaults(adminId, () =>
-    getGalleryDefaults(adminId)
-  ).catch(() => ({
-    defaultSort: 'drifting' as const,
-    defaultShufflePeriod: 'off' as const
-  }));
+    getGalleryDefaultsOrThrow(adminId)
+  ).catch(() => FALLBACK_GALLERY_DEFAULTS);
   const effectiveSort = isSortMode(searchParams.sort) ? searchParams.sort : defaults.defaultSort;
 
   const nsfwMode = await readNsfwMode();

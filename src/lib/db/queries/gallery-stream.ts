@@ -123,7 +123,29 @@ export async function getGalleryPage(
       ? await load()
       : await memoTtl(streamKey(q, limit, offset), GALLERY_STREAM_TTL_MS, load);
 
-  return dropNewlyNsfw(rows, q.nsfwMode);
+  const kept = await dropNewlyNsfw(rows, q.nsfwMode);
+  if (kept.length === rows.length) return kept;
+
+  // Something was filtered. A short page is not harmless here:
+  // InfiniteImageGrid treats any response shorter than pageSize as the end of
+  // the gallery and latches hasMore=false for the session, so dropping one
+  // row would truncate scrolling. Top up from just past this window instead.
+  //
+  // Deliberately uncached and only on this rare path -- rows are filtered
+  // only when a background job flipped an image's verdict inside the TTL.
+  // Coming up short after the top-up is fine: that means we really are at the
+  // end, which is exactly what hasMore=false should mean.
+  if (rows.length < limit) return kept;
+  const topUp = await listImages({
+    limit: limit - kept.length,
+    offset: offset + rows.length,
+    tags: q.tags,
+    sort: q.sort,
+    seed: q.seed,
+    nsfwMode: q.nsfwMode
+  }).catch((): ImageWithRelations[] => []);
+
+  return kept.concat(await dropNewlyNsfw(topUp, q.nsfwMode));
 }
 
 /**

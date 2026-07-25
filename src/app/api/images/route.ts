@@ -9,7 +9,10 @@ import { hydrateImages } from '@/lib/db/queries/images';
 import { getCachedGalleryDefaults, getGalleryPage } from '@/lib/db/queries/gallery-stream';
 import { addLineageEdges, resolveOwnedImageIdsBySlugs } from '@/lib/db/queries/lineage';
 import { enqueueJob } from '@/lib/db/queries/jobs';
-import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import {
+  FALLBACK_GALLERY_DEFAULTS,
+  getGalleryDefaultsOrThrow
+} from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { parseIntParam, resolveNsfwMode } from '@/lib/http-params';
 import { isSortMode, type SortMode } from '@/lib/sort/types';
@@ -51,8 +54,12 @@ export async function GET(req: Request) {
     }
     sort = rawSort;
   } else {
+    // Throwing variant so a failed config read is evicted from the memo
+    // rather than cached as a successful fallback for the whole TTL.
     const adminId = getSiteAdminId();
-    const defaults = await getCachedGalleryDefaults(adminId, () => getGalleryDefaults(adminId));
+    const defaults = await getCachedGalleryDefaults(adminId, () =>
+      getGalleryDefaultsOrThrow(adminId)
+    ).catch(() => FALLBACK_GALLERY_DEFAULTS);
     sort = defaults.defaultSort;
   }
   const seed = url.searchParams.get('seed') ?? undefined;
