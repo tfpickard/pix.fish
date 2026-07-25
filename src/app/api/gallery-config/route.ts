@@ -43,11 +43,20 @@ export async function PATCH(req: Request) {
   };
 
   const ownerId = getSiteAdminId();
+
+  // Validate the whole payload before writing any of it. Validating and
+  // writing field-by-field meant a request with a good first field and a bad
+  // second one persisted the first write and then returned 400 -- leaving the
+  // config half-updated, and skipping the memo invalidation below so this
+  // instance served the superseded value for the rest of the TTL. Collecting
+  // the writes first makes the handler all-or-nothing.
+  const writes: { key: string; value: string }[] = [];
+
   if (payload.defaultSort !== undefined) {
     if (typeof payload.defaultSort !== 'string' || !isSortMode(payload.defaultSort)) {
       return NextResponse.json({ error: 'invalid defaultSort' }, { status: 400 });
     }
-    await setGalleryDefault(ownerId, GALLERY_KEYS.defaultSort, payload.defaultSort);
+    writes.push({ key: GALLERY_KEYS.defaultSort, value: payload.defaultSort });
   }
   if (payload.defaultShufflePeriod !== undefined) {
     if (
@@ -56,7 +65,10 @@ export async function PATCH(req: Request) {
     ) {
       return NextResponse.json({ error: 'invalid defaultShufflePeriod' }, { status: 400 });
     }
-    await setGalleryDefault(ownerId, GALLERY_KEYS.defaultShufflePeriod, payload.defaultShufflePeriod);
+    writes.push({
+      key: GALLERY_KEYS.defaultShufflePeriod,
+      value: payload.defaultShufflePeriod
+    });
   }
   if (payload.searchSimilarityThreshold !== undefined) {
     const n = Number(payload.searchSimilarityThreshold);
@@ -68,11 +80,7 @@ export async function PATCH(req: Request) {
     }
     // Store with three decimal places of precision; the slider step is
     // 0.05 but freeform PATCH callers can submit anything in range.
-    await setGalleryDefault(
-      ownerId,
-      GALLERY_KEYS.searchSimilarityThreshold,
-      n.toFixed(3)
-    );
+    writes.push({ key: GALLERY_KEYS.searchSimilarityThreshold, value: n.toFixed(3) });
   }
   if (payload.autoApproveComments !== undefined) {
     if (typeof payload.autoApproveComments !== 'boolean') {
@@ -81,17 +89,22 @@ export async function PATCH(req: Request) {
         { status: 400 }
       );
     }
-    await setGalleryDefault(
-      ownerId,
-      GALLERY_KEYS.autoApproveComments,
-      payload.autoApproveComments ? 'true' : 'false'
-    );
+    writes.push({
+      key: GALLERY_KEYS.autoApproveComments,
+      value: payload.autoApproveComments ? 'true' : 'false'
+    });
   }
 
-  // The homepage and /api/images read these defaults through a process-local
-  // memo. Clear it here so this instance reflects the save immediately rather
-  // than serving the previous sort until the TTL lapses.
-  invalidateGalleryDefaults(ownerId);
+  try {
+    for (const { key, value } of writes) {
+      await setGalleryDefault(ownerId, key, value);
+    }
+  } finally {
+    // The homepage and /api/images read these defaults through a
+    // process-local memo. Clear it even if a write throws part-way: whatever
+    // did land must not be masked by a stale memo for the rest of the TTL.
+    if (writes.length > 0) invalidateGalleryDefaults(ownerId);
+  }
 
   const defaults = await getGalleryDefaults(ownerId);
   return NextResponse.json(defaults);
