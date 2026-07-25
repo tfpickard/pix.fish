@@ -5,7 +5,7 @@ import {
   countImages,
   getOwnerHandlesForImages,
   listImages,
-  selectVisibleImageIds,
+  selectLiveNsfwFlags,
   type ImageWithRelations
 } from './images';
 import { tagCloud, type TagCount } from './tags';
@@ -86,24 +86,35 @@ function streamKey(q: GalleryQuery, limit: number, offset: number): string {
 // arithmetic. See dropStaleRows for why a short page is dangerous.
 const STALE_FILTER_SLACK = 8;
 
-// Drops rows that are no longer safe to serve a default-hide visitor -- either
-// re-classified NSFW or hard-deleted since the payload was cached. Both happen
+// Drops rows that are no longer safe to serve: hard-deleted since the payload
+// was cached, or re-classified out of the visitor's chosen mode. Both happen
 // in other processes, so a warm instance can never be told to invalidate; see
-// selectVisibleImageIds.
+// selectLiveNsfwFlags.
 //
-// Only 'hide' needs this: 'include' shows everything anyway, and 'only' is
-// admin-facing tooling where a 30s-stale row is not a disclosure.
+// Deletion is checked in EVERY mode, not just 'hide'. All three modes are
+// reachable by any visitor -- /api/nsfw-toggle cycles the cookie through
+// hide -> include -> only with no auth gate -- so a deleted row lingering in
+// 'include' or 'only' is exactly as public as one lingering in 'hide'. It
+// renders a broken card, or keeps advertising the blob URL when the delete
+// route's best-effort cleanup failed.
 async function dropStaleRows(
   rows: ImageWithRelations[],
   nsfwMode: NsfwMode
 ): Promise<ImageWithRelations[]> {
-  if (nsfwMode !== 'hide' || rows.length === 0) return rows;
+  if (rows.length === 0) return rows;
   // On error, keep the cached rows. Failing closed would empty the gallery
-  // during a blip, and the rows were already filtered on isNsfw at fetch time
-  // -- so the cached verdict is the best available answer, not a guess.
-  const visible = await selectVisibleImageIds(rows.map((r) => r.id)).catch(() => null);
-  if (visible === null) return rows;
-  return rows.filter((r) => visible.has(r.id));
+  // during a blip, and the rows were already filtered at fetch time -- so the
+  // cached verdict is the best available answer, not a guess.
+  const flags = await selectLiveNsfwFlags(rows.map((r) => r.id)).catch(() => null);
+  if (flags === null) return rows;
+
+  return rows.filter((r) => {
+    const isNsfw = flags.get(r.id);
+    if (isNsfw === undefined) return false; // deleted out from under the cache
+    if (nsfwMode === 'hide') return !isNsfw;
+    if (nsfwMode === 'only') return isNsfw;
+    return true; // 'include' shows both, so only existence matters
+  });
 }
 
 /**
