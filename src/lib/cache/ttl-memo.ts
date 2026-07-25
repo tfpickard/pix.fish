@@ -58,6 +58,15 @@ export function memoTtl<T>(key: string, ttlMs: number, load: () => Promise<T>): 
   return value;
 }
 
+/**
+ * Drops a single key on this instance. Used by write paths that want their
+ * own next read to be fresh; it cannot reach other instances, so callers must
+ * still pick a TTL they are willing to be stale for.
+ */
+export function deleteMemo(key: string): void {
+  store.delete(key);
+}
+
 /** Test/ops escape hatch -- drops every memoized entry on this instance. */
 export function clearMemo(): void {
   store.clear();

@@ -1,10 +1,11 @@
-import { memoTtl } from '@/lib/cache/ttl-memo';
+import { deleteMemo, memoTtl } from '@/lib/cache/ttl-memo';
 import type { NsfwMode } from '@/lib/nsfw';
 import type { SortMode } from '../../sort/types';
 import {
   countImages,
   getOwnerHandlesForImages,
   listImages,
+  selectNsfwImageIds,
   type ImageWithRelations
 } from './images';
 import { tagCloud, type TagCount } from './tags';
@@ -16,10 +17,13 @@ import { tagCloud, type TagCount } from './tags';
 // is three orders of magnitude at spike volume.
 export const GALLERY_STREAM_TTL_MS = 30_000;
 
-// Gallery defaults are a single admin-owned config row that changes when the
-// admin edits it and never otherwise, so it tolerates a much longer TTL than
-// the image stream.
-export const GALLERY_DEFAULTS_TTL_MS = 300_000;
+// Gallery defaults are a single admin-owned config row, so they tolerate a
+// longer TTL than the image stream. Not *much* longer, though: the PATCH in
+// /api/gallery-config is served by one instance, and a process-local memo on
+// any other warm instance cannot be reached from there. 60s bounds how long
+// the admin sees a saved setting fail to take effect, while still collapsing
+// what is now the most frequent remaining query on the page.
+export const GALLERY_DEFAULTS_TTL_MS = 60_000;
 
 // The homepage paints 16 rows into the DOM but feeds 30 to CollectionPage
 // JSON-LD (COLLECTION_ITEM_CAP in src/lib/seo/jsonld.ts). Both used to be
@@ -55,8 +59,44 @@ function isCacheableShape(q: GalleryQuery): boolean {
   return q.tags.length === 0 && q.seed === '';
 }
 
+// listImages() clamps limit/offset internally, but the raw query-string
+// values reach the cache key first (parseIntParam does not clamp). Without
+// normalizing here, `?offset=-1`, `?offset=-2` and `?limit=99999` each mint
+// a distinct key for what resolves to an identical page -- repeating the
+// expensive candidate scan and evicting genuinely useful entries. Mirrors
+// clampInt() in ./images.
+function clampLimit(limit: number): number {
+  if (!Number.isFinite(limit)) return 24;
+  return Math.min(Math.max(Math.trunc(limit), 1), 100);
+}
+
+function clampOffset(offset: number): number {
+  if (!Number.isFinite(offset)) return 0;
+  return Math.max(Math.trunc(offset), 0);
+}
+
 function streamKey(q: GalleryQuery, limit: number, offset: number): string {
   return `stream:${q.sort}:${q.nsfwMode}:${limit}:${offset}`;
+}
+
+// Drops rows whose live NSFW verdict has flipped to true since the payload
+// was cached. Background jobs flip images.isNsfw in a separate process, so a
+// warm instance can never be told to invalidate -- see selectNsfwImageIds.
+// Only 'hide' needs this: 'include' shows everything anyway, and 'only' is
+// admin-facing tooling where a 30s-stale row is not a disclosure.
+async function dropNewlyNsfw(
+  rows: ImageWithRelations[],
+  nsfwMode: NsfwMode
+): Promise<ImageWithRelations[]> {
+  if (nsfwMode !== 'hide' || rows.length === 0) return rows;
+  // Fail closed is wrong here (an outage would empty the gallery) and so is
+  // failing open silently, so on error fall back to the cached verdict --
+  // which is what the row was already filtered on at fetch time.
+  const flagged = await selectNsfwImageIds(rows.map((r) => r.id)).catch(
+    () => new Set<number>()
+  );
+  if (flagged.size === 0) return rows;
+  return rows.filter((r) => !flagged.has(r.id));
 }
 
 /**
@@ -66,18 +106,24 @@ function streamKey(q: GalleryQuery, limit: number, offset: number): string {
  * empty shell should catch. Failed loads are never retained by the memo, so
  * a database blip does not pin an error for the whole TTL.
  */
-export function getGalleryPage(
+export async function getGalleryPage(
   q: GalleryQuery,
-  limit: number,
-  offset: number
+  rawLimit: number,
+  rawOffset: number
 ): Promise<ImageWithRelations[]> {
+  const limit = clampLimit(rawLimit);
+  const offset = clampOffset(rawOffset);
   const load = () =>
     listImages({ limit, offset, tags: q.tags, sort: q.sort, seed: q.seed, nsfwMode: q.nsfwMode });
 
   // Deep pagination is rare and self-limiting; leaving it uncached keeps a
   // crawler walking ?offset= from filling the memo with single-use entries.
-  if (!isCacheableShape(q) || offset > 500) return load();
-  return memoTtl(streamKey(q, limit, offset), GALLERY_STREAM_TTL_MS, load);
+  const rows =
+    !isCacheableShape(q) || offset > 500
+      ? await load()
+      : await memoTtl(streamKey(q, limit, offset), GALLERY_STREAM_TTL_MS, load);
+
+  return dropNewlyNsfw(rows, q.nsfwMode);
 }
 
 /**
@@ -89,7 +135,7 @@ export function getGalleryPage(
  * pulled 300 rows joined against their 1536-dimension caption embeddings
  * serialized as text -- with one, amortized across the TTL.
  */
-export function getHomeStream(q: GalleryQuery): Promise<HomeStream> {
+export async function getHomeStream(q: GalleryQuery): Promise<HomeStream> {
   const load = async (): Promise<HomeStream> => {
     // The image window is the critical read: if it fails there is no page,
     // so let it reject and drop out of the cache.
@@ -116,8 +162,20 @@ export function getHomeStream(q: GalleryQuery): Promise<HomeStream> {
     return { images, seoImages, totalCount, cloud, handlesByImageId };
   };
 
-  if (!isCacheableShape(q)) return load();
-  return memoTtl(`home:${q.sort}:${q.nsfwMode}`, GALLERY_STREAM_TTL_MS, load);
+  const cached = isCacheableShape(q)
+    ? await memoTtl(`home:${q.sort}:${q.nsfwMode}`, GALLERY_STREAM_TTL_MS, load)
+    : await load();
+
+  // Re-filter after the cache, not inside it, so one payload serves the whole
+  // TTL while every response still reflects the current NSFW verdict. The
+  // count is left alone: it is a headline figure, not a disclosure.
+  const seoImages = await dropNewlyNsfw(cached.seoImages, q.nsfwMode);
+  if (seoImages.length === cached.seoImages.length) return cached;
+  return {
+    ...cached,
+    seoImages,
+    images: seoImages.slice(0, HOME_VISIBLE_LIMIT)
+  };
 }
 
 /**
@@ -129,5 +187,21 @@ export function getCachedGalleryDefaults<T>(
   adminId: string | null,
   load: () => Promise<T>
 ): Promise<T> {
-  return memoTtl(`gallery-defaults:${adminId ?? 'none'}`, GALLERY_DEFAULTS_TTL_MS, load);
+  return memoTtl(galleryDefaultsKey(adminId), GALLERY_DEFAULTS_TTL_MS, load);
+}
+
+function galleryDefaultsKey(adminId: string | null): string {
+  return `gallery-defaults:${adminId ?? 'none'}`;
+}
+
+/**
+ * Drops the memoized gallery defaults after an admin writes them.
+ *
+ * Only clears the instance that served the write -- the memo is process-local
+ * and there is no cross-instance signal -- so this makes the admin's own next
+ * page load correct immediately while other warm instances converge within
+ * GALLERY_DEFAULTS_TTL_MS. That is the reason the TTL is 60s and not longer.
+ */
+export function invalidateGalleryDefaults(adminId: string | null): void {
+  deleteMemo(galleryDefaultsKey(adminId));
 }

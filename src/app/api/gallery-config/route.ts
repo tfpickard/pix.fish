@@ -6,6 +6,7 @@ import {
   setGalleryDefault
 } from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
+import { invalidateGalleryDefaults } from '@/lib/db/queries/gallery-stream';
 import { isShufflePeriod, isSortMode } from '@/lib/sort/types';
 
 export const dynamic = 'force-dynamic';
@@ -86,6 +87,11 @@ export async function PATCH(req: Request) {
       payload.autoApproveComments ? 'true' : 'false'
     );
   }
+
+  // The homepage and /api/images read these defaults through a process-local
+  // memo. Clear it here so this instance reflects the save immediately rather
+  // than serving the previous sort until the TTL lapses.
+  invalidateGalleryDefaults(ownerId);
 
   const defaults = await getGalleryDefaults(ownerId);
   return NextResponse.json(defaults);

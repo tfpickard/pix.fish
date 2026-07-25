@@ -617,6 +617,25 @@ async function getImageBySlugInner(img: Image): Promise<ImageWithRelations> {
 
 // Resolve owner handles for a list of image ids in one round-trip. Used
 // by the home page to feed canonical /u/<handle>/<slug> URLs into the
+// Re-checks the live NSFW verdict for an already-fetched set of ids.
+//
+// Exists because the gallery stream is cached for a short TTL while
+// `images.isNsfw` is flipped by background jobs (nsfwScan, reprocessImage,
+// enrichment-persist) running in a *different* process. A warm web instance
+// therefore cannot be told to invalidate, and a row cached as SFW would keep
+// shipping its blob URL to opted-out visitors until the TTL lapsed. Callers
+// serving 'hide' re-filter against this before sending anything down the
+// wire, which restores the invariant at the cost of one indexed lookup on a
+// handful of ids -- against the ~18 round-trips the cache removes.
+export async function selectNsfwImageIds(imageIds: number[]): Promise<Set<number>> {
+  if (imageIds.length === 0) return new Set();
+  const rows = await db
+    .select({ id: images.id })
+    .from(images)
+    .where(and(inArray(images.id, imageIds), eq(images.isNsfw, true)));
+  return new Set(rows.map((r) => r.id));
+}
+
 // CollectionPage JSON-LD without having to hydrate full user rows.
 // Returns a Map keyed on image id; rows whose owner pre-dates the
 // users-table backfill come back undefined.
