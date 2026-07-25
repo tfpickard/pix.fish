@@ -617,22 +617,26 @@ async function getImageBySlugInner(img: Image): Promise<ImageWithRelations> {
 
 // Resolve owner handles for a list of image ids in one round-trip. Used
 // by the home page to feed canonical /u/<handle>/<slug> URLs into the
-// Re-checks the live NSFW verdict for an already-fetched set of ids.
+// Ids from the input set that are still safe to show a default-hide visitor:
+// the row must still exist AND still be flagged SFW.
 //
-// Exists because the gallery stream is cached for a short TTL while
-// `images.isNsfw` is flipped by background jobs (nsfwScan, reprocessImage,
-// enrichment-persist) running in a *different* process. A warm web instance
-// therefore cannot be told to invalidate, and a row cached as SFW would keep
-// shipping its blob URL to opted-out visitors until the TTL lapsed. Callers
-// serving 'hide' re-filter against this before sending anything down the
-// wire, which restores the invariant at the cost of one indexed lookup on a
-// handful of ids -- against the ~18 round-trips the cache removes.
-export async function selectNsfwImageIds(imageIds: number[]): Promise<Set<number>> {
+// Exists because the gallery stream is cached for a short TTL while rows
+// mutate underneath it in *other* processes -- background jobs (nsfwScan,
+// reprocessImage, enrichment-persist) flip images.isNsfw, and the delete
+// route drops rows outright. A warm web instance can never be told to
+// invalidate, so a row cached as visible would keep shipping its blob URL
+// until the TTL lapsed.
+//
+// Returning the surviving ids rather than the flagged ones is deliberate: it
+// catches deletion and re-classification in a single indexed lookup, where a
+// "which of these are NSFW" query would report a hard-deleted row as "not
+// flagged" and keep serving it.
+export async function selectVisibleImageIds(imageIds: number[]): Promise<Set<number>> {
   if (imageIds.length === 0) return new Set();
   const rows = await db
     .select({ id: images.id })
     .from(images)
-    .where(and(inArray(images.id, imageIds), eq(images.isNsfw, true)));
+    .where(and(inArray(images.id, imageIds), eq(images.isNsfw, false)));
   return new Set(rows.map((r) => r.id));
 }
 

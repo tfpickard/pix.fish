@@ -5,7 +5,7 @@ import {
   countImages,
   getOwnerHandlesForImages,
   listImages,
-  selectNsfwImageIds,
+  selectVisibleImageIds,
   type ImageWithRelations
 } from './images';
 import { tagCloud, type TagCount } from './tags';
@@ -79,24 +79,31 @@ function streamKey(q: GalleryQuery, limit: number, offset: number): string {
   return `stream:${q.sort}:${q.nsfwMode}:${limit}:${offset}`;
 }
 
-// Drops rows whose live NSFW verdict has flipped to true since the payload
-// was cached. Background jobs flip images.isNsfw in a separate process, so a
-// warm instance can never be told to invalidate -- see selectNsfwImageIds.
+// Extra rows fetched beyond the caller's limit so the staleness filter below
+// has slack to remove rows without ever returning a short page. This is the
+// same trick the homepage already relied on by fetching 30 and painting 16;
+// generalizing it is what lets the filter stay honest without any continuation
+// arithmetic. See dropStaleRows for why a short page is dangerous.
+const STALE_FILTER_SLACK = 8;
+
+// Drops rows that are no longer safe to serve a default-hide visitor -- either
+// re-classified NSFW or hard-deleted since the payload was cached. Both happen
+// in other processes, so a warm instance can never be told to invalidate; see
+// selectVisibleImageIds.
+//
 // Only 'hide' needs this: 'include' shows everything anyway, and 'only' is
 // admin-facing tooling where a 30s-stale row is not a disclosure.
-async function dropNewlyNsfw(
+async function dropStaleRows(
   rows: ImageWithRelations[],
   nsfwMode: NsfwMode
 ): Promise<ImageWithRelations[]> {
   if (nsfwMode !== 'hide' || rows.length === 0) return rows;
-  // Fail closed is wrong here (an outage would empty the gallery) and so is
-  // failing open silently, so on error fall back to the cached verdict --
-  // which is what the row was already filtered on at fetch time.
-  const flagged = await selectNsfwImageIds(rows.map((r) => r.id)).catch(
-    () => new Set<number>()
-  );
-  if (flagged.size === 0) return rows;
-  return rows.filter((r) => !flagged.has(r.id));
+  // On error, keep the cached rows. Failing closed would empty the gallery
+  // during a blip, and the rows were already filtered on isNsfw at fetch time
+  // -- so the cached verdict is the best available answer, not a guess.
+  const visible = await selectVisibleImageIds(rows.map((r) => r.id)).catch(() => null);
+  if (visible === null) return rows;
+  return rows.filter((r) => visible.has(r.id));
 }
 
 /**
@@ -113,8 +120,26 @@ export async function getGalleryPage(
 ): Promise<ImageWithRelations[]> {
   const limit = clampLimit(rawLimit);
   const offset = clampOffset(rawOffset);
+
+  // Over-fetch so dropStaleRows has slack. Filtering a page down to fewer
+  // than `limit` rows is not a cosmetic loss: InfiniteImageGrid latches
+  // hasMore=false the moment a response is shorter than pageSize
+  // (infinite-image-grid.tsx:153), so one removed row would end the scroll
+  // for the session. Slack means the filter almost never shortens the page,
+  // and -- unlike topping up from a second query -- it needs no continuation
+  // offset. There is no correct continuation offset to compute: the live
+  // 'hide' query applies its NSFW predicate before OFFSET, so removing a row
+  // shifts every later position by an amount this call cannot know.
+  const fetchLimit = clampLimit(limit + STALE_FILTER_SLACK);
   const load = () =>
-    listImages({ limit, offset, tags: q.tags, sort: q.sort, seed: q.seed, nsfwMode: q.nsfwMode });
+    listImages({
+      limit: fetchLimit,
+      offset,
+      tags: q.tags,
+      sort: q.sort,
+      seed: q.seed,
+      nsfwMode: q.nsfwMode
+    });
 
   // Deep pagination is rare and self-limiting; leaving it uncached keeps a
   // crawler walking ?offset= from filling the memo with single-use entries.
@@ -123,29 +148,14 @@ export async function getGalleryPage(
       ? await load()
       : await memoTtl(streamKey(q, limit, offset), GALLERY_STREAM_TTL_MS, load);
 
-  const kept = await dropNewlyNsfw(rows, q.nsfwMode);
-  if (kept.length === rows.length) return kept;
-
-  // Something was filtered. A short page is not harmless here:
-  // InfiniteImageGrid treats any response shorter than pageSize as the end of
-  // the gallery and latches hasMore=false for the session, so dropping one
-  // row would truncate scrolling. Top up from just past this window instead.
-  //
-  // Deliberately uncached and only on this rare path -- rows are filtered
-  // only when a background job flipped an image's verdict inside the TTL.
-  // Coming up short after the top-up is fine: that means we really are at the
-  // end, which is exactly what hasMore=false should mean.
-  if (rows.length < limit) return kept;
-  const topUp = await listImages({
-    limit: limit - kept.length,
-    offset: offset + rows.length,
-    tags: q.tags,
-    sort: q.sort,
-    seed: q.seed,
-    nsfwMode: q.nsfwMode
-  }).catch((): ImageWithRelations[] => []);
-
-  return kept.concat(await dropNewlyNsfw(topUp, q.nsfwMode));
+  // Slice after filtering so the caller gets a full page whenever one exists.
+  // Coming up short here now means the query itself ran out of rows, which is
+  // genuinely the end of the gallery -- exactly what hasMore=false should
+  // mean. A page can still shorten if more than STALE_FILTER_SLACK rows in a
+  // single window go away at once, which degrades to ending the scroll early
+  // rather than to corrupted offsets.
+  const kept = await dropStaleRows(rows, q.nsfwMode);
+  return kept.slice(0, limit);
 }
 
 /**
@@ -191,7 +201,7 @@ export async function getHomeStream(q: GalleryQuery): Promise<HomeStream> {
   // Re-filter after the cache, not inside it, so one payload serves the whole
   // TTL while every response still reflects the current NSFW verdict. The
   // count is left alone: it is a headline figure, not a disclosure.
-  const seoImages = await dropNewlyNsfw(cached.seoImages, q.nsfwMode);
+  const seoImages = await dropStaleRows(cached.seoImages, q.nsfwMode);
   if (seoImages.length === cached.seoImages.length) return cached;
   return {
     ...cached,
