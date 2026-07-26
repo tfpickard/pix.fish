@@ -1,0 +1,129 @@
+# Manual dry run of the outbound X dispatch (src/lib/dispatch/).
+#
+# Why this exists: the caption tone contract is the heart of that feature and is
+# expected to be iterated heavily, so the drafts need to be generatable on demand
+# without a local checkout. This runs the read-only preview script and prints the
+# would-be posts to the job log.
+#
+# Why a workflow rather than handing the credentials around: the secrets stay in
+# GitHub and are injected straight into the step. Nobody reading the run output
+# sees them (GitHub masks registered secret values in logs), and no credential has
+# to be pasted into a chat, an issue, or a config file elsewhere.
+#
+# SCOPE AND RISK, stated plainly. This job has the production database and the
+# provider API keys in scope, so anyone who can dispatch it -- or who can push to
+# the default branch -- can run code with those credentials. Two things keep that
+# bounded, and both should stay true:
+#   1. POSTGRES_URL should be a READ-ONLY role. scripts/dispatch-dryrun.ts only
+#      issues SELECTs; it writes no events and cannot claim or consume the day's
+#      real dispatch slot.
+#   2. workflow_dispatch ONLY. Never add pull_request or pull_request_target --
+#      that would expose these secrets to code from a fork.
+#
+# The `ref` input is what makes this useful before the dispatch feature merges:
+# workflow_dispatch requires the workflow file to live on the default branch, but
+# the script itself may only exist on a feature branch. Dispatch this from the
+# default branch and point `ref` at whichever branch carries the script.
+
+name: dispatch dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or SHA to run the script from'
+        required: true
+        default: 'claude/x-dispatch-trending-captions-854m14'
+      count:
+        description: 'How many drafts to generate (1-10)'
+        required: false
+        default: '3'
+      mock:
+        description: 'Use a fixed trend instead of live ones'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - jaguar
+          - tragedy
+      drift:
+        description: 'Force the drift variant on every draft'
+        required: false
+        default: false
+        type: boolean
+
+# Least privilege: the job reads the repo and nothing else. No package writes, no
+# PR comments, no token handed to anything that does not need one.
+permissions:
+  contents: read
+
+# One run at a time. Concurrent runs would each spend provider tokens for no
+# extra information, and would interleave unreadably in the logs.
+concurrency:
+  group: dispatch-dryrun
+  cancel-in-progress: false
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    # Generous enough for install plus a handful of model calls, tight enough
+    # that a hung provider request cannot sit burning a runner.
+    timeout-minutes: 10
+    steps:
+      - name: Check out the branch carrying the script
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Fail with a readable message rather than a stack trace when a secret has
+      # not been added yet. Only presence is checked; no value is ever printed.
+      - name: Check required secrets are present
+        env:
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OWNER_GITHUB_ID: ${{ secrets.OWNER_GITHUB_ID }}
+        run: |
+          missing=""
+          [ -n "$POSTGRES_URL" ]     || missing="$missing POSTGRES_URL"
+          [ -n "$ANTHROPIC_API_KEY" ] || missing="$missing ANTHROPIC_API_KEY"
+          [ -n "$OPENAI_API_KEY" ]   || missing="$missing OPENAI_API_KEY"
+          [ -n "$OWNER_GITHUB_ID" ]  || missing="$missing OWNER_GITHUB_ID"
+          if [ -n "$missing" ]; then
+            echo "Missing repository secrets:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "All required secrets are set."
+
+      - name: Dry run
+        env:
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OWNER_GITHUB_ID: ${{ secrets.OWNER_GITHUB_ID }}
+          # Only needed when the site admin has rows in provider_keys: those are
+          # encrypted with a key derived from AUTH_SECRET, and they take priority
+          # over the env-var fallback above. Harmless to leave unset otherwise.
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          # Optional. Raises the caption length ceiling above the 280-char
+          # non-Premium X limit; leave unset to review at the real budget.
+          X_DISPATCH_CHAR_BUDGET: ${{ vars.X_DISPATCH_CHAR_BUDGET }}
+          COUNT: ${{ inputs.count }}
+          MOCK: ${{ inputs.mock }}
+          DRIFT: ${{ inputs.drift }}
+        run: |
+          args="--count $COUNT"
+          if [ "$MOCK" != "none" ]; then args="$args --mock $MOCK"; fi
+          if [ "$DRIFT" = "true" ]; then args="$args --drift"; fi
+          echo "Running: bun scripts/dispatch-dryrun.ts $args"
+          bun scripts/dispatch-dryrun.ts $args
