@@ -30,10 +30,15 @@ name: dispatch dry run
 on:
   workflow_dispatch:
     inputs:
+      # No default, deliberately. Defaulting to the feature branch that carries
+      # the script would rot the moment that branch merges and is deleted: an
+      # untouched dispatch form would fail at checkout, and if the branch were
+      # kept instead, default runs would silently keep using a stale snapshot
+      # rather than the current prompt. Typing the ref is one field and is never
+      # wrong. Use `master` once the dispatch feature has merged.
       ref:
-        description: 'Branch name, tag, or FULL 40-char SHA to run the script from'
+        description: 'Branch name, tag, or FULL 40-char SHA carrying scripts/dispatch-dryrun.ts (use master once the dispatch feature has merged)'
         required: true
-        default: 'claude/x-dispatch-trending-captions-854m14'
       count:
         description: 'How many drafts to generate (1-10)'
         required: false
@@ -166,10 +171,18 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OWNER_GITHUB_ID: ${{ secrets.OWNER_GITHUB_ID }}
-          # Only needed when the site admin has rows in provider_keys: those are
-          # encrypted with a key derived from AUTH_SECRET, and they take priority
-          # over the env-var fallback above. Harmless to leave unset otherwise.
-          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          # AUTH_SECRET is deliberately NOT passed. It is the PBKDF2 root for
+          # every user's stored provider credentials (and the Auth.js signing
+          # secret), so handing it to a job that executes branch code would put
+          # the whole provider_keys table within reach of anything compromised
+          # here -- a far larger blast radius than the two API keys above.
+          #
+          # It is also unnecessary. loadUserProviderKeys catches a per-row
+          # decrypt failure and continues (src/lib/ai/keys.ts:79-84), then falls
+          # through to ANTHROPIC_API_KEY / OPENAI_API_KEY, which this workflow
+          # already requires. When the admin has provider_keys rows the run logs
+          # "provider_keys decrypt failed" for each and uses the env keys: noisy
+          # in the log, correct in behaviour.
           # Optional. Raises the caption length ceiling above the 280-char
           # non-Premium X limit; leave unset to review at the real budget.
           X_DISPATCH_CHAR_BUDGET: ${{ vars.X_DISPATCH_CHAR_BUDGET }}
