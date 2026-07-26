@@ -75,6 +75,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          # Full history. The default shallow fetch resolves a branch name fine,
+          # but `ref` deliberately accepts a raw SHA, and a shallow fetch of one
+          # that is not a branch tip -- an older commit, an abbreviated SHA, one
+          # left behind by a force-push -- can fail to resolve. This workflow runs
+          # by hand a few times a day, so the extra fetch costs nothing worth
+          # optimising against.
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
@@ -122,8 +129,29 @@ jobs:
           MOCK: ${{ inputs.mock }}
           DRIFT: ${{ inputs.drift }}
         run: |
-          args="--count $COUNT"
-          if [ "$MOCK" != "none" ]; then args="$args --mock $MOCK"; fi
-          if [ "$DRIFT" = "true" ]; then args="$args --drift"; fi
-          echo "Running: bun scripts/dispatch-dryrun.ts $args"
-          bun scripts/dispatch-dryrun.ts $args
+          # Validate before building the command. `count` is a free-form string
+          # input, so it can arrive empty or as something that is not a number at
+          # all. Rejecting it here gives a readable failure instead of a confusing
+          # one downstream, and keeps the workflow's contract identical to the
+          # script's own 1-10 clamp.
+          case "$COUNT" in
+            ''|*[!0-9]*)
+              echo "count must be a whole number between 1 and 10 (got: '$COUNT')"
+              exit 1
+              ;;
+          esac
+          if [ "$COUNT" -lt 1 ] || [ "$COUNT" -gt 10 ]; then
+            echo "count must be between 1 and 10 (got: '$COUNT')"
+            exit 1
+          fi
+
+          # Build argv as an array and expand it quoted. Inputs reach this step
+          # through env rather than `${{ }}` interpolation, so they were never a
+          # command-injection vector, but an unquoted string expansion still
+          # word-splits and glob-expands -- a `count` of `*` would have expanded
+          # to filenames. An array passes each argument through intact.
+          args=(--count "$COUNT")
+          if [ "$MOCK" != "none" ]; then args+=(--mock "$MOCK"); fi
+          if [ "$DRIFT" = "true" ]; then args+=(--drift); fi
+          echo "Running: bun scripts/dispatch-dryrun.ts ${args[*]}"
+          bun scripts/dispatch-dryrun.ts "${args[@]}"
