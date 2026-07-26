@@ -48,7 +48,8 @@ export type ProviderField =
   | 'verify'
   | 'dossier'
   | 'nsfw'
-  | 'chat';
+  | 'chat'
+  | 'dispatch';
 export type ProviderName = 'anthropic' | 'openai';
 
 // Resolved per-field routing. Produced by src/lib/ai/loadConfig.ts from the

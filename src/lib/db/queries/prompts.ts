@@ -46,7 +46,12 @@ export const PROMPT_KEYS = [
   'character_dossier',
   // Character-classification tuning -- the mosaic verify "captcha" that splits a
   // noisy candidate cluster into same-individual groups.
-  'character_verify'
+  'character_verify',
+  // Outbound X dispatch -- the caption that rides a trending hashtag while never
+  // addressing it. Expected to be iterated heavily, so it lives in the DB and is
+  // editable at /admin/prompts without a redeploy. The checked-in fallback is
+  // DEFAULT_DISPATCH_CAPTION_TEMPLATE in src/lib/dispatch/caption.ts.
+  'dispatch_caption'
 ] as const;
 
 export type PromptKey = (typeof PROMPT_KEYS)[number];

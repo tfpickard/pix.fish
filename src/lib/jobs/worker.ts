@@ -34,6 +34,10 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   'characters.verify': 45_000, // build mosaic (N blob fetches + sharp) + one vision call
   'characters.census': 55_000, // barrier poll or assemble + budgeted dossier synthesis
   'characters.backfill-visuals': 45_000, // a batch of Voyage image-embed calls, re-enqueues
+  // Trend fetch + one classification call + one embed + one caption call. Each
+  // upstream call carries its own tighter deadline (src/lib/dispatch/config.ts);
+  // this is the outer bound that keeps a hung dispatch inside the tick budget.
+  'x.dispatch': 50_000,
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;
