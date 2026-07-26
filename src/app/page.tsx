@@ -1,7 +1,10 @@
 import type { Metadata } from 'next';
-import { listImages, getOwnerHandlesForImages, countImages } from '@/lib/db/queries/images';
-import { tagCloud } from '@/lib/db/queries/tags';
-import { getGalleryDefaults } from '@/lib/db/queries/gallery-config';
+import type { ImageWithRelations } from '@/lib/db/queries/images';
+import { getCachedGalleryDefaults, getHomeStream } from '@/lib/db/queries/gallery-stream';
+import {
+  FALLBACK_GALLERY_DEFAULTS,
+  getGalleryDefaultsOrThrow
+} from '@/lib/db/queries/gallery-config';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { readNsfwMode } from '@/lib/nsfw';
 import { HAIKUS } from '@/lib/haikus';
@@ -42,10 +45,14 @@ export default async function HomePage({ searchParams }: PageProps) {
 
   // Owner defaults feed both the server-side query (when no ?sort= is
   // present) and the client sort bar (for "(owner)" labels + reset).
-  const defaults = await getGalleryDefaults(getSiteAdminId()).catch(() => ({
-    defaultSort: 'drifting' as const,
-    defaultShufflePeriod: 'off' as const
-  }));
+  // The throwing variant is required here: getGalleryDefaults swallows DB
+  // errors and resolves with compiled-in defaults, which the memo would
+  // happily cache as a successful read. Letting it reject means a blip is
+  // evicted and retried rather than pinned for the TTL.
+  const adminId = getSiteAdminId();
+  const defaults = await getCachedGalleryDefaults(adminId, () =>
+    getGalleryDefaultsOrThrow(adminId)
+  ).catch(() => FALLBACK_GALLERY_DEFAULTS);
   const effectiveSort = isSortMode(searchParams.sort) ? searchParams.sort : defaults.defaultSort;
 
   const nsfwMode = await readNsfwMode();
@@ -60,30 +67,25 @@ export default async function HomePage({ searchParams }: PageProps) {
   // shrink the structured-data signal. `totalCount` powers the human-
   // readable header total -- previously this was just `images.length`,
   // which was already capped at the visible window and silently lied.
-  const [imagesRes, seoImagesRes, totalRes, cloudRes] = await Promise.allSettled([
-    listImages({
-      limit: 16,
-      tags: activeTags,
-      sort: effectiveSort,
-      seed: searchParams.seed,
-      nsfwMode
-    }),
-    listImages({
-      limit: 30,
-      tags: activeTags,
-      sort: effectiveSort,
-      seed: searchParams.seed,
-      nsfwMode
-    }),
-    countImages(activeTags, { nsfwMode }),
-    tagCloud(64)
-  ]);
-  const images = imagesRes.status === 'fulfilled' ? imagesRes.value : [];
-  const seoImages = seoImagesRes.status === 'fulfilled' ? seoImagesRes.value : images;
-  const totalCount =
-    totalRes.status === 'fulfilled' ? totalRes.value : images.length;
-  const cloud = cloudRes.status === 'fulfilled' ? cloudRes.value : [];
-  const dbDown = imagesRes.status === 'rejected' || cloudRes.status === 'rejected';
+  //
+  // All of it now arrives from one short-TTL cached read. This page is
+  // force-dynamic and used to issue ~18 database round-trips per request,
+  // two of which each scanned 300 rows joined against their 1536-dimension
+  // caption embeddings serialized as text -- so a burst of traffic on `/`
+  // turned into hundreds of megabytes a second off Postgres.
+  const stream = await getHomeStream({
+    tags: activeTags,
+    sort: effectiveSort,
+    seed: searchParams.seed ?? '',
+    nsfwMode
+  }).catch(() => null);
+
+  const images = stream?.images ?? [];
+  const seoImages = stream?.seoImages ?? [];
+  const totalCount = stream?.totalCount ?? 0;
+  const cloud = stream?.cloud ?? [];
+  const handlesByImageId = stream?.handlesByImageId ?? new Map<number, string>();
+  const dbDown = stream === null;
 
   // Fresh haiku per render. `dynamic = 'force-dynamic'` above guarantees this
   // re-evaluates on every request, so the tagline rotates with each page load.
@@ -135,22 +137,24 @@ export default async function HomePage({ searchParams }: PageProps) {
       </div>
 
       <div className="grid-floor" aria-hidden="true" />
-      {seoImages.length > 0 ? <CollectionLd images={seoImages} /> : null}
+      {seoImages.length > 0 ? (
+        <CollectionLd images={seoImages} handlesByImageId={handlesByImageId} />
+      ) : null}
     </div>
   );
 }
 
-// Server component that resolves owner handles for the visible image set
-// in one round-trip and feeds them into the CollectionPage JSON-LD so list
-// items emit canonical /u/<handle>/<slug> URLs. Pre-backfill rows fall
-// back to /<slug> automatically.
-async function CollectionLd({
-  images
+// Emits CollectionPage JSON-LD whose list items use canonical
+// /u/<handle>/<slug> URLs. Pre-backfill rows fall back to /<slug>
+// automatically. The handle lookup used to be its own round-trip fired from
+// inside this component; it now rides along with the cached page payload so
+// it is amortized with everything else.
+function CollectionLd({
+  images,
+  handlesByImageId
 }: {
-  images: Awaited<ReturnType<typeof listImages>>;
+  images: ImageWithRelations[];
+  handlesByImageId: Map<number, string>;
 }) {
-  const handlesByImageId = await getOwnerHandlesForImages(images.map((i) => i.id)).catch(
-    () => new Map<number, string>()
-  );
   return <JsonLd data={buildCollectionPageLd(images, handlesByImageId)} />;
 }
