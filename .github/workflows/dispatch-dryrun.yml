@@ -37,7 +37,7 @@ on:
       # rather than the current prompt. Typing the ref is one field and is never
       # wrong. Use `master` once the dispatch feature has merged.
       ref:
-        description: 'Branch name, tag, or FULL 40-char SHA carrying scripts/dispatch-dryrun.ts (use master once the dispatch feature has merged)'
+        description: 'Branch or tag carrying scripts/dispatch-dryrun.ts (use master once the dispatch feature has merged). Raw commit SHAs are rejected.'
         required: true
       count:
         description: 'How many drafts to generate (1-10)'
@@ -80,39 +80,48 @@ jobs:
       # can start this job, but it does not limit what they can point it at, and
       # the steps below run checked-out code (bun install alone executes lifecycle
       # scripts) with the production database and provider keys in the
-      # environment. A ref like `refs/pull/123/head` resolves to a pull request's
-      # head -- including one from a fork -- which would hand those secrets to
-      # code that never passed through this repository. Refuse it outright.
+      # environment.
       #
-      # This does not make the input safe against a hostile maintainer: anyone who
-      # can dispatch can also push a branch. It closes the case where a ref that
-      # LOOKS like an ordinary reference silently pulls in third-party code.
+      # Branch and tag names only. Raw commit SHAs are refused, which is the part
+      # that is easy to get wrong: GitHub keeps the head commits of pull requests
+      # -- including ones opened from forks -- in this repository's object store,
+      # which is how refs/pull/N/head resolves at all. A bare SHA is therefore
+      # fetchable even when it has never existed on any branch here, so rejecting
+      # `refs/pull/*` by name while still accepting `<40 hex chars>` would leave
+      # the same door open under a different label. Requiring a branch or tag
+      # means the job can only ever execute code that someone with push access
+      # put in this repository.
+      #
+      # That is the honest boundary, and it is not the same as "safe". Anyone who
+      # can dispatch this can also push a branch. What it closes is the case where
+      # a ref that looks like an ordinary reference -- or an opaque hex string
+      # someone asked you to "just run" -- silently pulls in third-party code.
       - name: Validate the requested ref
         env:
           REF: ${{ inputs.ref }}
         run: |
+          if [ -z "$REF" ]; then
+            echo "ref must not be empty."
+            exit 1
+          fi
           case "$REF" in
             refs/pull/*|pull/*)
               echo "Refusing to run against a pull-request ref ('$REF')."
               echo "This job exposes production credentials to the checked-out code,"
-              echo "and a PR ref can carry code from a fork. Use a branch, a tag, or"
-              echo "a full 40-character commit SHA from this repository."
-              exit 1
-              ;;
-            '')
-              echo "ref must not be empty."
+              echo "and a PR ref can carry code from a fork."
+              echo "Pass a branch or tag name from this repository instead."
               exit 1
               ;;
           esac
-          # actions/checkout only treats a FULL 40-character hex string as a
-          # commit; anything else unqualified is resolved as a branch or tag name.
-          # An abbreviated SHA therefore fails at checkout with an unhelpful error,
-          # and no fetch depth changes that. Catch it here and say so.
-          if printf '%s' "$REF" | grep -Eq '^[0-9a-fA-F]{4,39}$'; then
-            echo "'$REF' looks like an abbreviated commit SHA."
-            echo "actions/checkout resolves only a full 40-character SHA as a commit;"
-            echo "shorter values are looked up as branch or tag names and will fail."
-            echo "Pass the full SHA, or the branch name."
+          # Any bare hex string: a full SHA is refused on the provenance grounds
+          # above, and a short one would in any case fail at checkout, which
+          # resolves only a full 40-character SHA as a commit and treats anything
+          # shorter as a branch or tag name.
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-fA-F]{4,40}$'; then
+            echo "Refusing to run against a raw commit SHA ('$REF')."
+            echo "A SHA cannot be shown to belong to this repository's own history --"
+            echo "pull request heads from forks are fetchable by SHA too."
+            echo "Push the commit to a branch and pass the branch name."
             exit 1
           fi
           echo "ref '$REF' accepted."
@@ -124,13 +133,11 @@ jobs:
         # for setup-bun below. Update these deliberately, with the version comment.
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          # Validated above: a branch or tag name, never a raw SHA. The default
+          # shallow fetch resolves those correctly, so no fetch-depth override is
+          # needed (the previous one existed only to make bare SHAs resolvable,
+          # and bare SHAs are no longer accepted).
           ref: ${{ inputs.ref }}
-          # Full history. The default shallow fetch resolves a branch name fine,
-          # but `ref` also accepts a full commit SHA, and a shallow fetch of one
-          # that is not a branch tip -- an older commit, one stranded by a
-          # force-push -- can fail to resolve. This workflow runs by hand a few
-          # times a day, so the extra fetch costs nothing worth optimising against.
-          fetch-depth: 0
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
