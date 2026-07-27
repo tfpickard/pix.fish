@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { weightedLength } from '@/lib/dispatch/weighted-length';
 
 // Review surface for the outbound X dispatch. In dry run the assembled post is
 // the deliverable, so this page renders it in full -- image, caption, hashtags,
@@ -102,8 +103,13 @@ function SentCard({ row }: { row: Row }) {
         />
         <div className="min-w-0 flex-1 space-y-2">
           <p className="whitespace-pre-wrap font-sans text-sm text-ink-100">{p.caption}</p>
+          {/* X's weighted count, not string length -- the same number
+              validateCaption enforced. A CJK caption reads at half its real
+              cost under .length, which would make a post that is over budget
+              look comfortably inside it on the one surface meant to catch that. */}
           <p className="text-ink-500">
-            {p.caption.length} chars / {p.hashtags.join(' ') || 'no hashtag'}
+            {weightedLength(p.caption)} weighted chars /{' '}
+            {p.hashtags.join(' ') || 'no hashtag'}
           </p>
           <p className="text-ink-500">
             specimen {p.imageId}{' '}

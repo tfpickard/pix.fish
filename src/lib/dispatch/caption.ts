@@ -2,6 +2,7 @@ import { getPromptByKey } from '@/lib/db/queries/prompts';
 import { dispatchText } from '@/lib/ai/dispatch-text';
 import { CAPTION_MAX_TOKENS, CAPTION_TIMEOUT_MS, MAX_HASHTAGS } from './config';
 import { formatTrendContext, hashtagFor, sanitizeTrendField } from './trends';
+import { weightedLength } from './weighted-length';
 import type { SpecimenCandidate, Trend } from './types';
 
 // Caption generation: the creative core. One bounded Haiku-class call, then a
@@ -108,27 +109,16 @@ export function sanitizeIntakeRecord(raw: string): string {
 const EMOJI_RE =
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu;
 
-// X does not count JavaScript string length. Its weighted algorithm charges 1 for
-// code points in a handful of mostly-Latin ranges and 2 for everything else --
-// CJK, most emoji, many symbols. A caption of 280 JS characters containing any of
-// those is over the real limit, and phase 2 would post it verbatim and be
-// rejected. The trend topic (and therefore the hashtag derived from it) is not
-// guaranteed Latin, so this is reachable without anything exotic in the prose.
-const SINGLE_WEIGHT_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0, 4351],
-  [8192, 8205],
-  [8208, 8223],
-  [8242, 8247]
-];
-
-export function weightedLength(text: string): number {
-  let total = 0;
-  for (const ch of text) {
-    const cp = ch.codePointAt(0)!;
-    total += SINGLE_WEIGHT_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi) ? 1 : 2;
-  }
-  return total;
-}
+// X does not count JavaScript string length. A caption of 280 JS characters
+// containing double-weighted code points is over the real limit, and phase 2 would
+// post it verbatim and be rejected. The trend topic (and therefore the hashtag
+// derived from it) is not guaranteed Latin, so this is reachable without anything
+// exotic in the prose.
+//
+// The implementation lives in ./weighted-length so the client-side review page can
+// import it without dragging the prompts table and the Anthropic SDK along. Re-
+// exported here because this is where callers expect to find it.
+export { weightedLength };
 
 // A link would be wrong twice over: the tone contract has no place for one, and X
 // bills a post containing a URL at $0.200 instead of $0.015. Rejecting is simpler
