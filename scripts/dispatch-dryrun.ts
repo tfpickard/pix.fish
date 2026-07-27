@@ -31,6 +31,7 @@ import {
   captionCharBudget
 } from '../src/lib/dispatch/config';
 import { generateCaption } from '../src/lib/dispatch/caption';
+import { weightedLength } from '../src/lib/dispatch/weighted-length';
 import { hitsDenylist, screenTrends } from '../src/lib/dispatch/safety';
 import { pickSpecimen } from '../src/lib/dispatch/select';
 import { googleTrendsSource, hashtagFor, trendText } from '../src/lib/dispatch/trends';
@@ -189,7 +190,10 @@ async function main() {
       continue;
     }
     console.log(`  model    : ${result.model}`);
-    console.log(`  length   : ${result.caption.length}/${charBudget} chars`);
+    // X's weighted count, matching validateCaption -- the same reason the admin
+    // page reports it. This is the other review surface; a CJK caption reading at
+    // half its real cost here would be just as misleading.
+    console.log(`  length   : ${weightedLength(result.caption)}/${charBudget} weighted`);
     console.log(`\n  ${result.caption}\n`);
   }
 }

@@ -123,7 +123,38 @@ export { weightedLength };
 // A link would be wrong twice over: the tone contract has no place for one, and X
 // bills a post containing a URL at $0.200 instead of $0.015. Rejecting is simpler
 // and better than emulating X's 23-character URL transform.
-const URL_RE = /\b(?:https?:\/\/|www\.)\S+/i;
+// Scheme-prefixed or www. -- unambiguous.
+const EXPLICIT_URL_RE = /\b(?:https?:\/\/|www\.)\S+/i;
+
+// X also auto-linkifies BARE domains, so "pix.fish/specimen" and "example.com"
+// bill and render as links despite matching neither pattern above.
+//
+// Matching any dot-word would be worse than the hole it closes: this rejection
+// costs the entire day, and prose from this prompt is full of innocent dots --
+// "3312.jpg", or a missing space after a full stop. So two narrow rules instead
+// of one broad one:
+//
+//   1. anything followed by a slash-path is a link whatever its TLD;
+//   2. otherwise the TLD must be on a curated list.
+//
+// The list deliberately omits ccTLDs that are also common English words or
+// word-fragments (.is, .it, .in, .to, .me, .at, .be, .so, .us, .no, .as, .by).
+// A caption reading "the filing.is complete" must not cost a day, and those
+// TLDs are not plausible in output from an institutional-notice prompt.
+const LINKIFIED_TLDS =
+  'com|net|org|io|ai|app|dev|xyz|fish|tv|gg|info|biz|news|blog|site|online|store|link|page|edu|gov|uk|de|fr|jp|cn|ru|br|au|ca|nl|se|es|pl';
+const BARE_DOMAIN_RE = new RegExp(
+  // rule 1: dot-word followed by a path
+  `\\b[a-z0-9][a-z0-9-]*\\.[a-z]{2,24}\\/[^\\s]` +
+    '|' +
+    // rule 2: dot-word whose TLD is on the list, not part of a longer label
+    `\\b[a-z0-9][a-z0-9-]*\\.(?:${LINKIFIED_TLDS})(?![a-z0-9-])`,
+  'i'
+);
+
+function containsLink(text: string): boolean {
+  return EXPLICIT_URL_RE.test(text) || BARE_DOMAIN_RE.test(text);
+}
 
 export function extractHashtags(text: string): string[] {
   return text.match(/#[\p{L}\p{N}_]+/gu) ?? [];
@@ -226,7 +257,7 @@ export function validateCaption(
     }
   }
 
-  if (URL_RE.test(text)) {
+  if (containsLink(text)) {
     return { ok: false, reason: 'caption contains a URL' };
   }
 

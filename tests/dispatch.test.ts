@@ -732,6 +732,21 @@ describe('caption validation enforces the tone contract', () => {
     expect(validateCaption('Filed. www.example.com #JaguarRebrand', opts).ok).toBe(false);
   });
 
+  test('rejects a bare domain, which X linkifies anyway', () => {
+    expect(validateCaption('Filed under pix.fish/specimen #JaguarRebrand', opts).ok).toBe(false);
+    expect(validateCaption('Filed. See example.com #JaguarRebrand', opts).ok).toBe(false);
+    expect(validateCaption('Consult archive.org later. #JaguarRebrand', opts).ok).toBe(false);
+  });
+
+  test('ordinary prose with dots is not mistaken for a link', () => {
+    // Over-matching here costs the whole day, so the false-positive cases are the
+    // ones worth pinning: a filename, a missing space after a full stop, and a
+    // decimal. None is a TLD on the list and none is followed by a path.
+    expect(validateCaption('Specimen 3312.jpg has been filed. #JaguarRebrand', opts).ok).toBe(true);
+    expect(validateCaption('The filing.Records were updated. #JaguarRebrand', opts).ok).toBe(true);
+    expect(validateCaption('Shelf depth 3.5 metres, noted. #JaguarRebrand', opts).ok).toBe(true);
+  });
+
   test('rejects prose trailing after the hashtag', () => {
     // Phase 2 posts this verbatim, so a tag buried mid-sentence is the wrong
     // artifact even though a presence check would pass it.
