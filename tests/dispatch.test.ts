@@ -738,6 +738,47 @@ describe('caption validation enforces the tone contract', () => {
     expect(validateCaption('Consult archive.org later. #JaguarRebrand', opts).ok).toBe(false);
   });
 
+  test('rejects bare domains beyond the most common TLDs', () => {
+    // The curated list is broad, not a handful: a Swiss or NZ domain linkifies on
+    // X exactly like a .com does.
+    expect(validateCaption('Filed. See example.ch #JaguarRebrand', opts).ok).toBe(false);
+    expect(validateCaption('Filed. See example.nz #JaguarRebrand', opts).ok).toBe(false);
+    expect(validateCaption('Filed. See example.io #JaguarRebrand', opts).ok).toBe(false);
+  });
+
+  test('English-word ccTLDs stay excluded, by design', () => {
+    // .is, .it and .in are real TLDs deliberately left off the list: matching them
+    // would turn a missing space after a full stop into a skipped day, and that
+    // trade runs the wrong way for this feature.
+    expect(validateCaption('The filing.is complete. #JaguarRebrand', opts).ok).toBe(true);
+    expect(validateCaption('Catalogued.it was straightforward. #JaguarRebrand', opts).ok).toBe(
+      true
+    );
+  });
+
+  test('drops an all-numeric optional hashtag, which X renders as prose', () => {
+    const out = validateCaption('Specimen 3312 filed. #JaguarRebrand #2026', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.hashtags).toEqual(['#JaguarRebrand']);
+      expect(out.caption).not.toContain('#2026');
+      // and the notice must still end on a real hashtag
+      expect(out.caption.endsWith('#JaguarRebrand')).toBe(true);
+    }
+  });
+
+  test('a numeric tag mid-sentence leaves no stranded punctuation', () => {
+    const out = validateCaption('Filed in #2026. Records updated. #JaguarRebrand', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.caption).toBe('Filed in. Records updated. #JaguarRebrand');
+  });
+
+  test('a numeric tag does not consume the optional slot', () => {
+    const out = validateCaption('Filed. #2026 #Archive #JaguarRebrand', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.hashtags).toEqual(['#Archive', '#JaguarRebrand']);
+  });
+
   test('ordinary prose with dots is not mistaken for a link', () => {
     // Over-matching here costs the whole day, so the false-positive cases are the
     // ones worth pinning: a filename, a missing space after a full stop, and a

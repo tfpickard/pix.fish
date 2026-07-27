@@ -137,12 +137,38 @@ const EXPLICIT_URL_RE = /\b(?:https?:\/\/|www\.)\S+/i;
 //   1. anything followed by a slash-path is a link whatever its TLD;
 //   2. otherwise the TLD must be on a curated list.
 //
-// The list deliberately omits ccTLDs that are also common English words or
-// word-fragments (.is, .it, .in, .to, .me, .at, .be, .so, .us, .no, .as, .by).
-// A caption reading "the filing.is complete" must not cost a day, and those
-// TLDs are not plausible in output from an institutional-notice prompt.
-const LINKIFIED_TLDS =
-  'com|net|org|io|ai|app|dev|xyz|fish|tv|gg|info|biz|news|blog|site|online|store|link|page|edu|gov|uk|de|fr|jp|cn|ru|br|au|ca|nl|se|es|pl';
+// The list is broad on purpose -- most gTLDs and nearly every ccTLD -- but it is
+// an allowlist rather than "any dot-word", and it is NOT the full IANA set.
+//
+// Adopting IANA wholesale would be a regression, not an improvement: that set
+// contains .is, .it, .in, .to, .me, .at, .be, .so, .us, .no, .as, .by, .am, .an,
+// .re, .st, .pa, .ma, .la, .on -- every one an English word or word-fragment. A
+// caption reading "the filing.is complete" would then cost the whole day, and
+// skipping is the more expensive error here: a missed link is $0.185 and a bad
+// register in a phase that posts nothing, while a false positive is a day of
+// silence. So those specific TLDs are excluded by name below.
+//
+// Keeping it an allowlist is what protects the cases that actually occur:
+// "3312.jpg" and "filing.Records" match nothing here, and would match any
+// dot-word rule.
+const LINKIFIED_TLDS = [
+  // gTLDs, common and new
+  'com|net|org|info|biz|edu|gov|mil|int|app|dev|io|ai|xyz|fish|site|online|store',
+  'shop|blog|news|page|link|click|space|live|life|world|today|media|tech|cloud',
+  'digital|studio|design|art|gallery|photo|photos|pics|video|wiki|club|team|group',
+  'network|systems|solutions|agency|company|email|chat|social|community|forum',
+  'press|review|reviews|guide|directory|zone|tools|works|jobs|finance|market',
+  // ccTLDs, minus the English-word collisions named above
+  'ac|ad|ae|af|ag|al|ao|aq|ar|aw|ax|az|ba|bb|bd|bf|bg|bh|bi|bj|bm|bn|bo|br|bs|bt',
+  'bw|bz|ca|cc|cd|cf|cg|ch|ci|ck|cl|cm|cn|co|cr|cu|cv|cw|cx|cy|cz|de|dj|dk|dz|ec',
+  'ee|eg|er|es|et|eu|fi|fj|fk|fm|fo|fr|ga|gd|ge|gf|gg|gh|gi|gl|gm|gn|gp|gq|gr|gs',
+  'gt|gu|gw|gy|hk|hn|hr|ht|hu|ie|il|iq|ir|je|jm|jo|jp|ke|kg|kh|ki|km|kn|kp|kr|kw',
+  'ky|kz|lb|lc|li|lk|lr|ls|lt|lu|lv|ly|mc|md|mg|mh|mk|ml|mm|mn|mo|mp|mq|mr|ms|mt',
+  'mu|mv|mw|mx|mz|nc|nf|ng|ni|nl|np|nr|nu|nz|pf|pg|ph|pk|pl|pm|pn|pr|ps|pt|pw|py',
+  'qa|ro|rs|ru|rw|sa|sb|sc|sd|se|sg|si|sk|sl|sm|sn|sr|ss|sv|sx|sy|sz|tc|td|tf|tg',
+  'th|tj|tk|tl|tm|tn|tr|tt|tv|tw|tz|ua|ug|uk|uy|uz|va|vc|ve|vg|vi|vn|vu|wf|ws|yt',
+  'za|zm|zw'
+].join('|');
 const BARE_DOMAIN_RE = new RegExp(
   // rule 1: dot-word followed by a path
   `\\b[a-z0-9][a-z0-9-]*\\.[a-z]{2,24}\\/[^\\s]` +
@@ -158,6 +184,16 @@ function containsLink(text: string): boolean {
 
 export function extractHashtags(text: string): string[] {
   return text.match(/#[\p{L}\p{N}_]+/gu) ?? [];
+}
+
+// X does not treat an all-numeric token as a hashtag: "#2026" renders as plain
+// text, not a link. hashtagFor already refuses to MINT one, but an optional tag
+// the model invents never goes through hashtagFor, so it bypassed that check
+// entirely -- and a caption ending "#JaguarRebrand #2026" then satisfied the
+// ends-on-a-hashtag rule while actually ending in prose. A tag needs at least one
+// letter; digits and underscores alone are not enough.
+export function isValidHashtag(tag: string): boolean {
+  return /^#[\p{L}\p{N}_]+$/u.test(tag) && /\p{L}/u.test(tag);
 }
 
 // Cheap near-identity check against the intake record. The caption must never be
@@ -239,7 +275,10 @@ export function validateCaption(
       // available all along. The repair exists to avoid that skip, so it must not
       // be the thing that causes it.
       const budget = isRequired || kept.has(requiredLower) ? MAX_HASHTAGS : MAX_HASHTAGS - 1;
-      const keepThis = !kept.has(lower) && kept.size < budget;
+      // An all-numeric token is not a hashtag to X, so it neither occupies a slot
+      // nor survives into the text -- leaving it would end the notice on prose
+      // while looking like a tag to every check downstream.
+      const keepThis = isValidHashtag(tag) && !kept.has(lower) && kept.size < budget;
       rebuilt += text.slice(cursor, start);
       if (keepThis) {
         rebuilt += tag;
@@ -248,7 +287,12 @@ export function validateCaption(
       cursor = start + tag.length;
     }
     rebuilt += text.slice(cursor);
-    text = rebuilt.replace(/\s{2,}/g, ' ').trim();
+    // Dropping a tag from mid-sentence can strand a space before punctuation
+    // ("Filed in #2026." -> "Filed in ."), so close that up as well.
+    text = rebuilt
+      .replace(/\s{2,}/g, ' ')
+      .replace(/\s+([.,;:!?])/g, '$1')
+      .trim();
     tags = extractHashtags(text);
     // Belt and braces: if anything above failed to bring the count down, reject
     // rather than post a hashtag wall.
