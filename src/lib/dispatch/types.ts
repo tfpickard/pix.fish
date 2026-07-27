@@ -52,7 +52,14 @@ export const SKIP_REASON = {
   NoSpecimen: 'no_specimen',
   NoProviderKey: 'no_provider_key',
   GenerationFailed: 'generation_failed',
-  PostFailed: 'post_failed'
+  PostFailed: 'post_failed',
+  // Backstop for an unexpected throw anywhere after the day has been claimed --
+  // a transient DB read, a missing OWNER_GITHUB_ID, a provider that cannot
+  // embed. Without it the day would stay claimed with no outcome on the log and
+  // the cron would decline to re-enqueue, producing a silent no-post day. Every
+  // day the job starts must end with an outcome, so unexpected failures get a
+  // reason code too.
+  InternalError: 'internal_error'
 } as const;
 
 export type SkipReason = (typeof SKIP_REASON)[keyof typeof SKIP_REASON];

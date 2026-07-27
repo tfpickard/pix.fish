@@ -51,8 +51,21 @@ type DispatchPayload = {
 export async function xDispatchHandler(job: Job): Promise<void> {
   const payload = (job.payload ?? {}) as DispatchPayload;
   const now = new Date();
-  const dateKey = payload.dateKey ?? utcDateKey(now);
   const trigger = payload.trigger === 'manual' ? 'manual' : 'cron';
+
+  // Claim the EXECUTION date, not the date stamped at enqueue. A job queued at
+  // 23:5x and drained after midnight would otherwise claim yesterday's slot,
+  // leaving today unclaimed -- so the next cron tick enqueues today as well and
+  // the account posts twice inside one UTC day, defeating the guarantee this
+  // whole design rests on. Claiming by execution date keeps "one claim per UTC
+  // day" true regardless of queue latency: the late job takes today's slot, and
+  // today's tick then finds it taken.
+  //
+  // payload.dateKey is therefore advisory. It still drives the drift variant and
+  // the selection seed so a deliberate replay of a given day reproduces, but it
+  // never decides which day is being consumed.
+  const dateKey = utcDateKey(now);
+  const seedKey = payload.dateKey ?? dateKey;
   const slotKey = dedupeKey.dispatchDay(dateKey, payload.claimSuffix);
 
   // Phase 1 is dry run unconditionally. The env switch is read here so the value
@@ -85,6 +98,41 @@ export async function xDispatchHandler(job: Job): Promise<void> {
     });
   };
 
+  // Everything past the claim runs inside this guard. The claim is what makes a
+  // day un-runnable a second time, so a throw between here and the outcome event
+  // would leave the day claimed with nothing on the log to explain it, and the
+  // cron would decline to re-enqueue -- a silent no-post day, which is the one
+  // outcome this feature must never produce quietly.
+  //
+  // The individual stages below still catch their own expected failures and give
+  // them precise reason codes. This is only the backstop for the unexpected: a
+  // transient DB read in the candidate queries or in getPromptByKey, a missing
+  // OWNER_GITHUB_ID, a provider that cannot embed.
+  try {
+    await runDispatch({ dateKey, seedKey, slotKey, mode, liveConfigured, skip });
+  } catch (err) {
+    // Fail closed, but audibly. If the skip write ALSO throws we genuinely
+    // cannot record anything, and that is the one case where letting the job
+    // fail is right -- the queue surfaces it at /admin/jobs.
+    await skip(SKIP_REASON.InternalError, `unhandled failure: ${errText(err)}`);
+  }
+}
+
+// The pipeline proper. Split out so the handler above can wrap the whole thing in
+// one guard; `skip` is injected because it closes over the claim's slot key.
+async function runDispatch(ctx: {
+  dateKey: string;
+  // Drives the drift variant and the selection seed; equals dateKey unless a
+  // replay explicitly asked for another day. Never used for the claim.
+  seedKey: string;
+  slotKey: string;
+  mode: 'dry-run' | 'live';
+  liveConfigured: boolean;
+  skip: (reason: SkipReason, detail: string, trendTopic?: string | null) => Promise<void>;
+}): Promise<void> {
+  const { dateKey, seedKey, slotKey, mode, liveConfigured, skip } = ctx;
+  const now = new Date();
+
   // ---- 1. trend acquisition -------------------------------------------------
   let trends: Trend[];
   try {
@@ -107,7 +155,7 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   if (screened.cleared.length === 0) {
     await skip(
       SKIP_REASON.NoSafeTrend,
-      `no candidate cleared the gate (${trends.length} fetched, ${screened.deniedByList} denied by list, ${screened.screened} classified)`
+      `no candidate cleared the gate (${trends.length} fetched, ${screened.deniedByList} denied by list, ${screened.deniedNoContext} dropped for no headlines, ${screened.screened} classified)`
     );
     return;
   }
@@ -151,7 +199,7 @@ export async function xDispatchHandler(job: Job): Promise<void> {
       excludeImageIds
     });
   }
-  const specimen = pickSpecimen(candidates, { seed: `${dateKey}:${chosen.trend.topic}`, now });
+  const specimen = pickSpecimen(candidates, { seed: `${seedKey}:${chosen.trend.topic}`, now });
   if (!specimen) {
     await skip(
       SKIP_REASON.NoSpecimen,
@@ -162,7 +210,7 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   }
 
   // ---- 4. caption -----------------------------------------------------------
-  const drift = driftForDate(dateKey);
+  const drift = driftForDate(seedKey);
   const caption = await generateCaption({
     trend: chosen.trend,
     specimen,

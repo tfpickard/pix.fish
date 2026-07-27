@@ -29,6 +29,10 @@ const FIELDS = [
   'dossier',
   'nsfw',
   'chat',
+  // Outbound X dispatch: trend safety classification + caption generation.
+  // Anthropic-only -- src/lib/ai/dispatch-text.ts speaks no other provider and
+  // returns null (skipping the day) if this row names one.
+  'dispatch',
   'imagegen'
 ] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;

@@ -38,6 +38,7 @@ const FIELDS = [
   'dossier',
   'nsfw',
   'chat',
+  'dispatch',
   'imagegen'
 ] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
@@ -56,12 +57,12 @@ const putSchema = z
   .refine(
     (v) => {
       if (v.field === 'imagegen') return true;
-      if (v.field === 'chat') return v.provider === 'anthropic';
+      if (v.field === 'chat' || v.field === 'dispatch') return v.provider === 'anthropic';
       return v.provider === 'anthropic' || v.provider === 'openai';
     },
     {
       message:
-        'provider not supported for this field (chat: anthropic only; pipeline fields: anthropic or openai; imagegen: openrouter/stub)',
+        'provider not supported for this field (chat + dispatch: anthropic only; pipeline fields: anthropic or openai; imagegen: openrouter/stub)',
       path: ['provider']
     }
   );

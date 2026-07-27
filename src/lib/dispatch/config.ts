@@ -47,21 +47,43 @@ export const MAX_HASHTAGS = 2;
 export const SAFETY_MAX_TOKENS = 700;
 export const CAPTION_MAX_TOKENS = 400;
 
-// Per-call deadlines. Both sit well inside the worker's per-job timeout for
-// 'x.dispatch' (see src/lib/jobs/worker.ts) so a slow provider aborts here and
-// the day is skipped rather than the job being killed mid-flight.
-export const SAFETY_TIMEOUT_MS = 20_000;
-export const CAPTION_TIMEOUT_MS = 20_000;
+// Per-call deadlines. These run SEQUENTIALLY, so what matters is their sum plus
+// the embed and the DB work, measured against the worker's per-job timeout for
+// 'x.dispatch' (50s, see src/lib/jobs/worker.ts).
+//
+// They were 10 + 20 + 20 = 50s, exactly the outer budget with nothing left for
+// the embedding call or the queries. That is worse than it sounds: withTimeout
+// rejects the job WITHOUT cancelling the work underneath, so a run that merely
+// approached its inner limits would be marked failed from the outside, after the
+// day-claim was written and before any outcome event -- the claimed-with-no-
+// outcome case, reached by a slow-but-otherwise-successful run rather than a
+// bug. The handler's own try/catch cannot help, because the rejection happens
+// outside it.
+//
+// Worst case now: 8 + 12 + 12 = 32s of upstream calls, leaving ~18s for the
+// embedding request and the candidate queries inside the same 50s wall.
+export const SAFETY_TIMEOUT_MS = 12_000;
+export const CAPTION_TIMEOUT_MS = 12_000;
 
 // ---- trend acquisition ----------------------------------------------------
 
-export const TREND_FETCH_TIMEOUT_MS = 10_000;
+export const TREND_FETCH_TIMEOUT_MS = 8_000;
 // How many feed items to consider. The feed returns ~20; classifying more than
 // this buys nothing and costs tokens.
 export const MAX_TREND_CANDIDATES = 12;
 // Headlines carried into the classifier and the caption prompt per trend. Two is
 // enough to disambiguate what a topic is actually about.
 export const MAX_HEADLINES_PER_TREND = 3;
+
+// Sum of every bounded upstream deadline in one dispatch. Exported so the test
+// suite can assert the headroom against the worker budget rather than trusting
+// that someone re-did the arithmetic after editing a constant.
+export const UPSTREAM_DEADLINE_BUDGET_MS =
+  TREND_FETCH_TIMEOUT_MS + SAFETY_TIMEOUT_MS + CAPTION_TIMEOUT_MS;
+// The worker's per-job timeout for 'x.dispatch'. Duplicated here (not imported)
+// because worker.ts owns the queue-wide table and importing it into dispatch
+// config would invert the dependency; the test asserts the two agree.
+export const WORKER_JOB_TIMEOUT_MS = 50_000;
 
 // ---- specimen selection ---------------------------------------------------
 

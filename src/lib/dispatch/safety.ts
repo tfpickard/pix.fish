@@ -117,11 +117,21 @@ export function parseVerdicts(raw: string, trends: Trend[]): SafetyVerdict[] | n
   if (!Array.isArray(parsed)) return null;
 
   const out: SafetyVerdict[] = [];
+  const claimed = new Set<number>();
   for (const entry of parsed as RawVerdict[]) {
     if (!entry || typeof entry !== 'object') continue;
-    const idx = typeof entry.index === 'number' ? entry.index : out.length;
+    // The index must be explicit, an integer, in range, and unused. Falling back
+    // to positional order (the previous behaviour) was a gate bypass: on a
+    // partial or reordered response, a "safe" verdict meant for one topic would
+    // attach to a different, unclassified one and clear it for posting. An entry
+    // we cannot bind to a specific trend with certainty is dropped, which means
+    // that trend simply never gets cleared.
+    const idx = entry.index;
+    if (typeof idx !== 'number' || !Number.isInteger(idx)) continue;
+    if (claimed.has(idx)) continue;
     const trend = trends[idx];
     if (!trend) continue;
+    claimed.add(idx);
     const confidence =
       entry.confidence === 'high' || entry.confidence === 'medium' || entry.confidence === 'low'
         ? entry.confidence
@@ -138,7 +148,13 @@ export function parseVerdicts(raw: string, trends: Trend[]): SafetyVerdict[] | n
 }
 
 export type SafetyOutcome =
-  | { ok: true; cleared: ClassifiedTrend[]; screened: number; deniedByList: number }
+  | {
+      ok: true;
+      cleared: ClassifiedTrend[];
+      screened: number;
+      deniedByList: number;
+      deniedNoContext: number;
+    }
   | { ok: false; error: string };
 
 // Classify the candidate trends and return only those that cleared both stages.
@@ -147,12 +163,27 @@ export type SafetyOutcome =
 export async function screenTrends(trends: Trend[]): Promise<SafetyOutcome> {
   const prefiltered: Trend[] = [];
   let deniedByList = 0;
+  let deniedNoContext = 0;
   for (const t of trends) {
-    if (hitsDenylist(t)) deniedByList++;
-    else prefiltered.push(t);
+    if (hitsDenylist(t)) {
+      deniedByList++;
+      continue;
+    }
+    // No headlines, no classification. This is the same reasoning that made
+    // Google Trends the right source over X's bare topic strings: a term like a
+    // surname is unclassifiable on its own, and the case the gate most needs to
+    // catch -- a name trending because someone died -- looks exactly like an
+    // innocuous name until you read the coverage. Handing the classifier a bare
+    // topic invites a confident verdict with no evidence behind it, so an
+    // uncontexted candidate fails closed here instead.
+    if (t.headlines.length === 0) {
+      deniedNoContext++;
+      continue;
+    }
+    prefiltered.push(t);
   }
   if (prefiltered.length === 0) {
-    return { ok: true, cleared: [], screened: 0, deniedByList };
+    return { ok: true, cleared: [], screened: 0, deniedByList, deniedNoContext };
   }
 
   let raw: { text: string; model: string } | null;
@@ -182,5 +213,5 @@ export async function screenTrends(trends: Trend[]): Promise<SafetyOutcome> {
     if (!verdictClears(verdict) || hitsDenylist(trend)) continue;
     cleared.push({ trend, verdict });
   }
-  return { ok: true, cleared, screened: prefiltered.length, deniedByList };
+  return { ok: true, cleared, screened: prefiltered.length, deniedByList, deniedNoContext };
 }

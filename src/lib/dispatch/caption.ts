@@ -146,7 +146,10 @@ export function validateCaption(
   }
 
   // Over budget: drop whole sentences from the end and re-attach the hashtag, so
-  // the notice stays grammatical. If nothing fits, fail closed.
+  // the notice stays grammatical. If nothing fits, fail closed. Note that the
+  // overlap check above ran on the FULL text -- the trimmed result is re-checked
+  // after this block, because discarding an unrelated tail can leave a leading
+  // sentence that does restate the intake record.
   if (text.length > opts.charBudget) {
     const withoutTags = text.replace(/#[\p{L}\p{N}_]+/gu, '').trim();
     const sentences = withoutTags.match(/[^.!?]+[.!?]+/g) ?? [];
@@ -162,6 +165,27 @@ export function validateCaption(
     }
     text = `${built} ${opts.hashtag}`;
     tags = extractHashtags(text);
+
+    // Re-run the restatement guard on what actually survived. Trimming changes
+    // the text the check applies to: a caption whose opening sentence copies the
+    // intake record can pass on the full text (diluted by an unrelated tail) and
+    // then have exactly that opening kept.
+    if (overlapsIntakeRecord(text, opts.intakeRecord)) {
+      return { ok: false, reason: 'trimmed caption restates the intake record' };
+    }
+  }
+
+  // The notice must END on a hashtag. The tone contract closes on the tag, and
+  // phase 2 posts this text verbatim, so "Notice #Tag trailing words" satisfies a
+  // presence check while being the wrong artifact.
+  //
+  // The rule is "ends on a hashtag", not "ends on the required hashtag": a second
+  // tag is permitted (MAX_HASHTAGS), and when the wall-trimming above keeps one it
+  // necessarily sits after the required one. Requiring the required tag to be
+  // last would reject that legal shape. Presence of the required tag is already
+  // enforced above; this only forbids prose after the tags.
+  if (!/#[\p{L}\p{N}_]+$/u.test(text)) {
+    return { ok: false, reason: 'caption does not end on a hashtag' };
   }
 
   return { ok: true, caption: text, hashtags: tags };

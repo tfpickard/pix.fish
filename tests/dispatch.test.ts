@@ -8,6 +8,8 @@ import {
   MAX_HASHTAGS,
   SAFETY_MAX_TOKENS,
   SAFETY_TIMEOUT_MS,
+  UPSTREAM_DEADLINE_BUDGET_MS,
+  WORKER_JOB_TIMEOUT_MS,
   captionCharBudget,
   dispatchLiveEnabled
 } from '../src/lib/dispatch/config';
@@ -23,7 +25,7 @@ import {
 import { pickSpecimen, recencyWeight } from '../src/lib/dispatch/select';
 import { extractHashtags, overlapsIntakeRecord, validateCaption } from '../src/lib/dispatch/caption';
 import { dedupeKey } from '../src/lib/universe/events';
-import type { SpecimenCandidate, Trend } from '../src/lib/dispatch/types';
+import { SKIP_REASON, type SpecimenCandidate, type Trend } from '../src/lib/dispatch/types';
 
 // Pure, infra-free tests in the style of tests/pisci-cost.test.ts. The guards
 // this feature rests on -- fail-closed safety, one post per day, bounded tokens,
@@ -192,6 +194,41 @@ describe('classifier response parsing', () => {
     expect(verdictClears(out![0]!)).toBe(false);
   });
 
+  test('an entry with no index is dropped rather than bound positionally', () => {
+    // Positional fallback was a gate bypass: a safe verdict meant for one topic
+    // would attach to a different, unclassified one and clear it for posting.
+    const two = [SAFE_TREND, { ...SAFE_TREND, topic: 'Second Topic' }];
+    const out = parseVerdicts('[{"safe":true,"category":"meme","confidence":"high"}]', two);
+    expect(out).toEqual([]);
+  });
+
+  test('a duplicate index is dropped rather than rebinding a trend', () => {
+    const two = [SAFE_TREND, { ...SAFE_TREND, topic: 'Second Topic' }];
+    const out = parseVerdicts(
+      '[{"index":0,"safe":false,"category":"unsafe","confidence":"high"},' +
+        '{"index":0,"safe":true,"category":"meme","confidence":"high"}]',
+      two
+    );
+    expect(out!.length).toBe(1);
+    expect(out![0]!.safe).toBe(false);
+  });
+
+  test('a reordered response still binds each verdict to its own topic', () => {
+    const two = [SAFE_TREND, { ...SAFE_TREND, topic: 'Second Topic' }];
+    const out = parseVerdicts(
+      '[{"index":1,"safe":true,"category":"meme","confidence":"high"},' +
+        '{"index":0,"safe":false,"category":"unsafe","confidence":"high"}]',
+      two
+    );
+    expect(out!.find((v) => v.topic === 'Second Topic')!.safe).toBe(true);
+    expect(out!.find((v) => v.topic === 'Jaguar rebrand')!.safe).toBe(false);
+  });
+
+  test('a non-integer index is dropped', () => {
+    expect(parseVerdicts('[{"index":0.5,"safe":true,"category":"meme","confidence":"high"}]', trends)).toEqual([]);
+    expect(parseVerdicts('[{"index":"0","safe":true,"category":"meme","confidence":"high"}]', trends)).toEqual([]);
+  });
+
   test('a verdict for a topic that was not submitted is dropped', () => {
     const out = parseVerdicts('[{"index":9,"safe":true,"category":"meme","confidence":"high"}]', trends);
     expect(out).toEqual([]);
@@ -270,6 +307,47 @@ describe('one dispatch per day is structural', () => {
   test('one claim yields at most one outcome', () => {
     const slot = dedupeKey.dispatchDay('2026-07-26');
     expect(dedupeKey.dispatchOutcome(slot)).toBe(dedupeKey.dispatchOutcome(slot));
+  });
+});
+
+describe('upstream deadlines leave headroom under the worker budget', () => {
+  // The deadlines run sequentially and withTimeout does NOT cancel the work it
+  // rejects, so if their sum reaches the worker's per-job budget a merely-slow
+  // successful run gets failed from outside the handler -- after the claim, with
+  // no outcome event, and the handler's own catch cannot see it. Assert the
+  // arithmetic instead of trusting whoever last edited a constant.
+  test('the sum of upstream deadlines is well under the job timeout', () => {
+    expect(UPSTREAM_DEADLINE_BUDGET_MS).toBeLessThanOrEqual(WORKER_JOB_TIMEOUT_MS * 0.7);
+  });
+
+  test('enough is left for the embedding call and the candidate queries', () => {
+    expect(WORKER_JOB_TIMEOUT_MS - UPSTREAM_DEADLINE_BUDGET_MS).toBeGreaterThanOrEqual(15_000);
+  });
+});
+
+describe('every claimed day gets an outcome', () => {
+  // The claim is what makes a day un-runnable again, so a claimed day with no
+  // dispatch.sent / dispatch.skipped on the log is a silent no-post -- invisible
+  // at /admin/dispatch and un-retryable, because the cron sees the claim and
+  // declines. The handler therefore wraps everything after the claim and maps an
+  // unexpected throw onto this reason rather than letting the job die.
+  test('there is a reason code for an unexpected failure', () => {
+    expect(SKIP_REASON.InternalError).toBe('internal_error');
+  });
+
+  test('reason codes are unique, non-empty, and machine-groupable', () => {
+    const codes = Object.values(SKIP_REASON);
+    expect(new Set(codes).size).toBe(codes.length);
+    for (const c of codes) expect(c).toMatch(/^[a-z][a-z_]*$/);
+  });
+
+  test('the outcome key is derived from the claim slot, so one claim yields one outcome', () => {
+    const day = dedupeKey.dispatchDay('2026-07-26');
+    const manual = dedupeKey.dispatchDay('2026-07-26', 'manual:1');
+    // Same slot -> same outcome key, whichever path writes it (sent or skipped).
+    expect(dedupeKey.dispatchOutcome(day)).toBe(dedupeKey.dispatchOutcome(day));
+    // A review run's outcome cannot overwrite the real day's outcome.
+    expect(dedupeKey.dispatchOutcome(manual)).not.toBe(dedupeKey.dispatchOutcome(day));
   });
 });
 
@@ -436,6 +514,35 @@ describe('caption validation enforces the tone contract', () => {
       expect(out.hashtags.length).toBeLessThanOrEqual(MAX_HASHTAGS);
       expect(out.hashtags).toContain('#JaguarRebrand');
     }
+  });
+
+  test('rejects prose trailing after the hashtag', () => {
+    // Phase 2 posts this verbatim, so a tag buried mid-sentence is the wrong
+    // artifact even though a presence check would pass it.
+    const out = validateCaption('Specimen 3312 #JaguarRebrand has been filed and closed.', opts);
+    expect(out.ok).toBe(false);
+  });
+
+  test('a permitted second hashtag may follow the required one', () => {
+    const out = validateCaption('Specimen 3312 has been filed. #JaguarRebrand #Archive', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.hashtags).toContain('#JaguarRebrand');
+  });
+
+  test('re-checks intake overlap on the trimmed result, not just the original', () => {
+    // The opening sentence restates the record; the long unrelated tail dilutes
+    // the ratio on the full text, and trimming then keeps exactly that opening.
+    const intake = 'A heron standing in eleven centimetres of runoff behind a depot.';
+    // Each filler sentence is long enough that none of them fits alongside the
+    // opening inside the 280-char budget, so trimming keeps the opening alone --
+    // which is the restatement. On the full text the filler dilutes the ratio.
+    const filler =
+      'Filler clause concerning unrelated quarterly cabinet inventory matters, '.repeat(4) +
+      'concluded.';
+    const long = `${intake} ${filler.repeat(1)} ${filler} #JaguarRebrand`;
+    const out = validateCaption(long, { ...opts, intakeRecord: intake });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toContain('restates the intake record');
   });
 
   test('rejects a caption that just restates the intake record', () => {

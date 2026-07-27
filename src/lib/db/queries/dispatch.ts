@@ -13,8 +13,16 @@ import type { SpecimenCandidate } from '@/lib/dispatch/types';
 //
 // The whole corpus is eligible (recency is a weighting preference applied by the
 // caller, not a filter) and NSFW rows are included by explicit product decision.
-// Archived rows are not: they keep their embeddings, so without the gate a
-// deleted image could be posted to a public account.
+//
+// Two exclusions are NOT preferences and must stay:
+//   archived_at -- archived rows keep their embeddings, so without the gate a
+//     deleted image could be posted to a public account.
+//   basement    -- basement is an access GATE, not a visibility preference. The
+//     schema calls these rows server-gated and every public reader excludes them
+//     (random.ts, path-hydrate.ts, attention.ts, path-traffic.ts, stats.ts).
+//     Posting one to X would publish a blob the site itself refuses to serve
+//     without an unlock, which is a worse leak than any NSFW question -- the
+//     NSFW inclusion here was a deliberate product call, this would not be.
 //
 // `intake_record` prefers the clerk's dossier, falls back to the canonical
 // caption (slug-source first, else lowest variant), and finally the slug.
@@ -68,6 +76,7 @@ export async function listDispatchCandidates(params: {
     WHERE e.kind = 'caption'
       AND e.subject_type = 'image'
       AND i.archived_at IS NULL
+      AND i.basement = false
       AND (e.vec <=> ${vecLiteral}::vector) BETWEEN ${params.minDistance} AND ${params.maxDistance}
       ${exclude}
     ORDER BY distance ASC
