@@ -1,0 +1,225 @@
+# Manual dry run of the outbound X dispatch (src/lib/dispatch/).
+#
+# Why this exists: the caption tone contract is the heart of that feature and is
+# expected to be iterated heavily, so the drafts need to be generatable on demand
+# without a local checkout. This runs the read-only preview script and prints the
+# would-be posts to the job log.
+#
+# Why a workflow rather than handing the credentials around: the secrets stay in
+# GitHub and are injected straight into the step. Nobody reading the run output
+# sees them (GitHub masks registered secret values in logs), and no credential has
+# to be pasted into a chat, an issue, or a config file elsewhere.
+#
+# SCOPE AND RISK, stated plainly. This job has the production database and the
+# provider API keys in scope, so anyone who can dispatch it -- or who can push to
+# the default branch -- can run code with those credentials. Two things keep that
+# bounded, and both should stay true:
+#   1. POSTGRES_URL should be a READ-ONLY role. scripts/dispatch-dryrun.ts only
+#      issues SELECTs; it writes no events and cannot claim or consume the day's
+#      real dispatch slot.
+#   2. workflow_dispatch ONLY. Never add pull_request or pull_request_target --
+#      that would expose these secrets to code from a fork.
+#
+# The `ref` input is what makes this useful before the dispatch feature merges:
+# workflow_dispatch requires the workflow file to live on the default branch, but
+# the script itself may only exist on a feature branch. Dispatch this from the
+# default branch and point `ref` at whichever branch carries the script.
+
+name: dispatch dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      # No default, deliberately. Defaulting to the feature branch that carries
+      # the script would rot the moment that branch merges and is deleted: an
+      # untouched dispatch form would fail at checkout, and if the branch were
+      # kept instead, default runs would silently keep using a stale snapshot
+      # rather than the current prompt. Typing the ref is one field and is never
+      # wrong. Use `master` once the dispatch feature has merged.
+      ref:
+        description: 'Branch or tag carrying scripts/dispatch-dryrun.ts (use master once the dispatch feature has merged). Raw commit SHAs are rejected.'
+        required: true
+      count:
+        description: 'How many drafts to generate (1-10)'
+        required: false
+        default: '3'
+      mock:
+        description: 'Use a fixed trend instead of live ones'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - jaguar
+          - tragedy
+      drift:
+        description: 'Force the drift variant on every draft'
+        required: false
+        default: false
+        type: boolean
+
+# Least privilege: the job reads the repo and nothing else. No package writes, no
+# PR comments, no token handed to anything that does not need one.
+permissions:
+  contents: read
+
+# One run at a time. Concurrent runs would each spend provider tokens for no
+# extra information, and would interleave unreadably in the logs.
+concurrency:
+  group: dispatch-dryrun
+  cancel-in-progress: false
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    # Generous enough for install plus a handful of model calls, tight enough
+    # that a hung provider request cannot sit burning a runner.
+    timeout-minutes: 10
+    steps:
+      # Screen the ref BEFORE any code is fetched. `workflow_dispatch` limits who
+      # can start this job, but it does not limit what they can point it at, and
+      # the steps below run checked-out code (bun install alone executes lifecycle
+      # scripts) with the production database and provider keys in the
+      # environment.
+      #
+      # Branch and tag names only. Raw commit SHAs are refused, which is the part
+      # that is easy to get wrong: GitHub keeps the head commits of pull requests
+      # -- including ones opened from forks -- in this repository's object store,
+      # which is how refs/pull/N/head resolves at all. A bare SHA is therefore
+      # fetchable even when it has never existed on any branch here, so rejecting
+      # `refs/pull/*` by name while still accepting `<40 hex chars>` would leave
+      # the same door open under a different label. Requiring a branch or tag
+      # means the job can only ever execute code that someone with push access
+      # put in this repository.
+      #
+      # That is the honest boundary, and it is not the same as "safe". Anyone who
+      # can dispatch this can also push a branch. What it closes is the case where
+      # a ref that looks like an ordinary reference -- or an opaque hex string
+      # someone asked you to "just run" -- silently pulls in third-party code.
+      - name: Validate the requested ref
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if [ -z "$REF" ]; then
+            echo "ref must not be empty."
+            exit 1
+          fi
+          case "$REF" in
+            refs/pull/*|pull/*)
+              echo "Refusing to run against a pull-request ref ('$REF')."
+              echo "This job exposes production credentials to the checked-out code,"
+              echo "and a PR ref can carry code from a fork."
+              echo "Pass a branch or tag name from this repository instead."
+              exit 1
+              ;;
+          esac
+          # Any bare hex string: a full SHA is refused on the provenance grounds
+          # above, and a short one would in any case fail at checkout, which
+          # resolves only a full 40-character SHA as a commit and treats anything
+          # shorter as a branch or tag name.
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-fA-F]{4,40}$'; then
+            echo "Refusing to run against a raw commit SHA ('$REF')."
+            echo "A SHA cannot be shown to belong to this repository's own history --"
+            echo "pull request heads from forks are fetchable by SHA too."
+            echo "Push the commit to a branch and pass the branch name."
+            exit 1
+          fi
+          echo "ref '$REF' accepted."
+
+      - name: Check out the branch carrying the script
+        # Pinned to a commit SHA, not a tag. This job has production credentials
+        # in scope, so a mutable tag repointed upstream would execute unreviewed
+        # code on the same runner, before the secrets-bearing step. Same reasoning
+        # for setup-bun below. Update these deliberately, with the version comment.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Validated above: a branch or tag name, never a raw SHA. The default
+          # shallow fetch resolves those correctly, so no fetch-depth override is
+          # needed (the previous one existed only to make bare SHAs resolvable,
+          # and bare SHAs are no longer accepted).
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          # Pinned rather than `latest`: a Bun release published between two runs
+          # would otherwise change the runtime executing under these credentials
+          # with no diff to review. This is the version the suite was verified
+          # against. Bump it deliberately.
+          bun-version: '1.3.11'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Fail with a readable message rather than a stack trace when a secret has
+      # not been added yet. Only presence is checked; no value is ever printed.
+      - name: Check required secrets are present
+        env:
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OWNER_GITHUB_ID: ${{ secrets.OWNER_GITHUB_ID }}
+        run: |
+          missing=""
+          [ -n "$POSTGRES_URL" ]     || missing="$missing POSTGRES_URL"
+          [ -n "$ANTHROPIC_API_KEY" ] || missing="$missing ANTHROPIC_API_KEY"
+          [ -n "$OPENAI_API_KEY" ]   || missing="$missing OPENAI_API_KEY"
+          [ -n "$OWNER_GITHUB_ID" ]  || missing="$missing OWNER_GITHUB_ID"
+          if [ -n "$missing" ]; then
+            echo "Missing repository secrets:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "All required secrets are set."
+
+      - name: Dry run
+        env:
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OWNER_GITHUB_ID: ${{ secrets.OWNER_GITHUB_ID }}
+          # AUTH_SECRET is deliberately NOT passed. It is the PBKDF2 root for
+          # every user's stored provider credentials (and the Auth.js signing
+          # secret), so handing it to a job that executes branch code would put
+          # the whole provider_keys table within reach of anything compromised
+          # here -- a far larger blast radius than the two API keys above.
+          #
+          # It is also unnecessary. loadUserProviderKeys catches a per-row
+          # decrypt failure and continues (src/lib/ai/keys.ts:79-84), then falls
+          # through to ANTHROPIC_API_KEY / OPENAI_API_KEY, which this workflow
+          # already requires. When the admin has provider_keys rows the run logs
+          # "provider_keys decrypt failed" for each and uses the env keys: noisy
+          # in the log, correct in behaviour.
+          # Optional. Raises the caption length ceiling above the 280-char
+          # non-Premium X limit; leave unset to review at the real budget.
+          X_DISPATCH_CHAR_BUDGET: ${{ vars.X_DISPATCH_CHAR_BUDGET }}
+          COUNT: ${{ inputs.count }}
+          MOCK: ${{ inputs.mock }}
+          DRIFT: ${{ inputs.drift }}
+        run: |
+          # Validate before building the command. `count` is a free-form string
+          # input, so it can arrive empty or as something that is not a number at
+          # all. Rejecting it here gives a readable failure instead of a confusing
+          # one downstream, and keeps the workflow's contract identical to the
+          # script's own 1-10 clamp.
+          case "$COUNT" in
+            ''|*[!0-9]*)
+              echo "count must be a whole number between 1 and 10 (got: '$COUNT')"
+              exit 1
+              ;;
+          esac
+          if [ "$COUNT" -lt 1 ] || [ "$COUNT" -gt 10 ]; then
+            echo "count must be between 1 and 10 (got: '$COUNT')"
+            exit 1
+          fi
+
+          # Build argv as an array and expand it quoted. Inputs reach this step
+          # through env rather than `${{ }}` interpolation, so they were never a
+          # command-injection vector, but an unquoted string expansion still
+          # word-splits and glob-expands -- a `count` of `*` would have expanded
+          # to filenames. An array passes each argument through intact.
+          args=(--count "$COUNT")
+          if [ "$MOCK" != "none" ]; then args+=(--mock "$MOCK"); fi
+          if [ "$DRIFT" = "true" ]; then args+=(--drift); fi
+          echo "Running: bun scripts/dispatch-dryrun.ts ${args[*]}"
+          bun scripts/dispatch-dryrun.ts "${args[@]}"
