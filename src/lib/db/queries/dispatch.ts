@@ -28,6 +28,14 @@ import type { SpecimenCandidate } from '@/lib/dispatch/types';
 // caption (slug-source first, else lowest variant), and finally the slug.
 export async function listDispatchCandidates(params: {
   vec: number[];
+  // Provenance of the vector above. Cosine distance is only meaningful within one
+  // embedding space, so rows written by a different provider/model are excluded
+  // rather than silently compared. Without this, changing the embeddings model
+  // before the corpus is reprocessed lets stale rows drift into the configured
+  // band and the "middle distance" selection becomes arbitrary -- which would look
+  // like a working dispatch producing nonsense pairings, not like a failure.
+  embedProvider: string;
+  embedModel: string;
   minDistance: number;
   maxDistance: number;
   limit: number;
@@ -75,6 +83,8 @@ export async function listDispatchCandidates(params: {
     ) c ON true
     WHERE e.kind = 'caption'
       AND e.subject_type = 'image'
+      AND e.provider = ${params.embedProvider}
+      AND e.model = ${params.embedModel}
       AND i.archived_at IS NULL
       AND i.basement = false
       AND (e.vec <=> ${vecLiteral}::vector) BETWEEN ${params.minDistance} AND ${params.maxDistance}

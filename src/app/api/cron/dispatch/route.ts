@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasInFlightScheduledDispatch } from '@/lib/db/queries/jobs';
 import { dispatchMinuteForDate, isDispatchDue, utcDateKey } from '@/lib/dispatch/schedule';
 import { eventExists } from '@/lib/db/queries/events';
 import { dedupeKey } from '@/lib/universe/events';
@@ -47,7 +47,10 @@ async function tick(req: Request) {
   if (await eventExists(dedupeKey.dispatchDay(dateKey))) {
     return NextResponse.json({ enqueued: false, reason: 'day already claimed', dateKey });
   }
-  if (await hasInFlightJobOfType('x.dispatch')) {
+  // Scoped to scheduled jobs. An admin review run is a separate slot and must not
+  // stand in for the day's dispatch -- if one happened to be in flight during the
+  // final tick of the day, a type-wide check would drop that day entirely.
+  if (await hasInFlightScheduledDispatch()) {
     return NextResponse.json({ enqueued: false, reason: 'dispatch already in flight', dateKey });
   }
 

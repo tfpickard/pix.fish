@@ -193,8 +193,11 @@ async function runDispatch(ctx: {
   }
 
   const excludeImageIds = await listDispatchedImageIds();
+  // Only rows embedded by the same provider/model are comparable to `vec`.
   let candidates = await listDispatchCandidates({
     vec,
+    embedProvider: embedder.name,
+    embedModel: embedder.model,
     minDistance: BAND_MIN_DISTANCE,
     maxDistance: BAND_MAX_DISTANCE,
     limit: MAX_POOL_CANDIDATES,
@@ -204,6 +207,8 @@ async function runDispatch(ctx: {
   if (candidates.length === 0) {
     candidates = await listDispatchCandidates({
       vec,
+      embedProvider: embedder.name,
+      embedModel: embedder.model,
       minDistance: WIDE_BAND_MIN_DISTANCE,
       maxDistance: WIDE_BAND_MAX_DISTANCE,
       limit: MAX_POOL_CANDIDATES,

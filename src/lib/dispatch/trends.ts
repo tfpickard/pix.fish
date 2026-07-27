@@ -101,15 +101,38 @@ export function trendText(t: Trend): string {
   return [t.topic, ...t.headlines.map((h) => h.title)].join('. ');
 }
 
+// Both prompts that read trend context quarantine it between markers and tell the
+// model it is data. That only holds if the markers cannot be forged from inside
+// the block -- and every field here is third-party text. Topics and headlines are
+// whatever Google's feed carries, which is whatever a publisher chose to title an
+// article; anyone who can get a headline indexed can put text of their choosing in
+// front of the safety classifier, which is the one call whose job is to say no.
+//
+// So: strip every marker token this codebase uses (a trend field must not be able
+// to forge the intake block either, since both appear in the caption prompt), then
+// bound the length. Exported so the test suite can assert a forged marker in a
+// headline does not survive into a prompt.
+export function sanitizeTrendField(raw: string): string {
+  return raw
+    .replace(/<<<\s*(TRENDS|INTAKE)/gi, '(quoted)')
+    .replace(/(TRENDS|INTAKE)\s*>>>/gi, '(quoted)')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+}
+
 export function formatTrendContext(t: Trend): string {
-  const lines = [`Term: ${t.topic}`];
-  if (t.approxTraffic) lines.push(`Reported search volume: ${t.approxTraffic}`);
+  const lines = [`Term: ${sanitizeTrendField(t.topic)}`];
+  if (t.approxTraffic) {
+    lines.push(`Reported search volume: ${sanitizeTrendField(t.approxTraffic)}`);
+  }
   if (t.headlines.length === 0) {
     lines.push('Surrounding coverage: (none reported)');
   } else {
     lines.push('Surrounding coverage:');
     for (const h of t.headlines) {
-      lines.push(`- ${h.title}${h.source ? ` (${h.source})` : ''}`);
+      const source = h.source ? ` (${sanitizeTrendField(h.source)})` : '';
+      lines.push(`- ${sanitizeTrendField(h.title)}${source}`);
     }
   }
   return lines.join('\n');

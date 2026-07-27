@@ -139,6 +139,8 @@ async function main() {
   const excludeImageIds = await listDispatchedImageIds();
   let candidates = await listDispatchCandidates({
     vec,
+    embedProvider: embedder.name,
+    embedModel: embedder.model,
     minDistance: BAND_MIN_DISTANCE,
     maxDistance: BAND_MAX_DISTANCE,
     limit: MAX_POOL_CANDIDATES,
@@ -148,6 +150,8 @@ async function main() {
   if (candidates.length === 0) {
     candidates = await listDispatchCandidates({
       vec,
+      embedProvider: embedder.name,
+      embedModel: embedder.model,
       minDistance: WIDE_BAND_MIN_DISTANCE,
       maxDistance: WIDE_BAND_MAX_DISTANCE,
       limit: MAX_POOL_CANDIDATES,
