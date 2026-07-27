@@ -93,7 +93,7 @@ export async function xDispatchHandler(job: Job): Promise<void> {
       type: EVENT_TYPE.DispatchSkipped,
       subjectType: SUBJECT_TYPE.Dispatch,
       subjectId: dateKey,
-      payload: { mode, reason, detail: detail.slice(0, 500), trendTopic } satisfies DispatchSkippedPayload,
+      payload: { mode, trigger, reason, detail: detail.slice(0, 500), trendTopic } satisfies DispatchSkippedPayload,
       dedupeKey: dedupeKey.dispatchOutcome(slotKey)
     });
   };
@@ -109,7 +109,7 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   // transient DB read in the candidate queries or in getPromptByKey, a missing
   // OWNER_GITHUB_ID, a provider that cannot embed.
   try {
-    await runDispatch({ dateKey, seedKey, slotKey, mode, liveConfigured, skip });
+    await runDispatch({ dateKey, seedKey, slotKey, mode, trigger, liveConfigured, skip });
   } catch (err) {
     // Fail closed, but audibly. If the skip write ALSO throws we genuinely
     // cannot record anything, and that is the one case where letting the job
@@ -127,10 +127,11 @@ async function runDispatch(ctx: {
   seedKey: string;
   slotKey: string;
   mode: 'dry-run' | 'live';
+  trigger: 'cron' | 'manual';
   liveConfigured: boolean;
   skip: (reason: SkipReason, detail: string, trendTopic?: string | null) => Promise<void>;
 }): Promise<void> {
-  const { dateKey, seedKey, slotKey, mode, liveConfigured, skip } = ctx;
+  const { dateKey, seedKey, slotKey, mode, trigger, liveConfigured, skip } = ctx;
   const now = new Date();
 
   // ---- 1. trend acquisition -------------------------------------------------
@@ -228,6 +229,7 @@ async function runDispatch(ctx: {
   // in full and is reviewed at /admin/dispatch.
   const sent: DispatchSentPayload = {
     mode,
+    trigger,
     imageId: specimen.imageId,
     slug: specimen.slug,
     handle: specimen.handle,

@@ -18,6 +18,12 @@ export type Trend = {
 // `safe` is true; the caption prompt never sees it, it exists for the event log
 // and for the "prefer inherently dumb trends" ranking.
 export type SafetyVerdict = {
+  // Index into the exact array submitted to the classifier. The binding must
+  // survive all the way to selection: matching a verdict back to its trend by
+  // topic string silently rebinds when the feed carries two entries with the
+  // same title and different coverage, which could clear a candidate the
+  // classifier actually rejected.
+  index: number;
   topic: string;
   safe: boolean;
   category: string;

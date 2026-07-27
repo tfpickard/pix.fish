@@ -136,6 +136,11 @@ export type DispatchClaimedPayload = {
 // that cleared it.
 export type DispatchSentPayload = {
   mode: 'dry-run' | 'live';
+  // How this outcome came about. The claim event already records it, but nothing
+  // associates a claim with its outcome at read time -- /admin/dispatch lists
+  // outcomes and would otherwise show an admin's review sample and the day's real
+  // artifact as two indistinguishable drafts for the same date.
+  trigger: 'cron' | 'manual';
   imageId: number;
   slug: string;
   handle: string;
@@ -159,6 +164,7 @@ export type DispatchSentPayload = {
 // src/lib/dispatch/types.ts; `detail` is free text for the admin page.
 export type DispatchSkippedPayload = {
   mode: 'dry-run' | 'live';
+  trigger: 'cron' | 'manual';
   reason: string;
   detail: string;
   trendTopic: string | null;

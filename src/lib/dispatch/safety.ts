@@ -137,6 +137,7 @@ export function parseVerdicts(raw: string, trends: Trend[]): SafetyVerdict[] | n
         ? entry.confidence
         : 'low'; // an unrecognised confidence is the least confident one
     out.push({
+      index: idx,
       topic: trend.topic,
       safe: entry.safe === true, // anything but an explicit true is a rejection
       category: typeof entry.category === 'string' ? entry.category : 'unclear',
@@ -204,9 +205,12 @@ export async function screenTrends(trends: Trend[]): Promise<SafetyOutcome> {
   if (!verdicts) return { ok: false, error: 'classifier response was not parseable JSON' };
 
   const cleared: ClassifiedTrend[] = [];
-  for (let i = 0; i < verdicts.length; i++) {
-    const verdict = verdicts[i]!;
-    const trend = prefiltered.find((t) => t.topic === verdict.topic);
+  for (const verdict of verdicts) {
+    // Bind by the validated index, never by topic string. parseVerdicts already
+    // proved the index is explicit, integral, in range and unique; looking the
+    // trend up by title would throw that away and could attach a safe verdict to
+    // a same-titled entry whose coverage was rejected.
+    const trend = prefiltered[verdict.index];
     if (!trend) continue;
     // Belt and braces: re-run the denylist against the cleared candidate. The
     // classifier cannot talk its way past a term the list already rejects.

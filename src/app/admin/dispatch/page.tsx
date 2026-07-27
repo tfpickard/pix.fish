@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 type SentPayload = {
   mode: string;
+  trigger?: string;
   imageId: number;
   slug: string;
   handle: string;
@@ -28,7 +29,20 @@ type SentPayload = {
   postId: string | null;
 };
 
-type SkippedPayload = { mode: string; reason: string; detail: string; trendTopic: string | null };
+type SkippedPayload = {
+  mode: string;
+  trigger?: string;
+  reason: string;
+  detail: string;
+  trendTopic: string | null;
+};
+
+// A review sample and the day's scheduled artifact are both drafts for the same
+// date; without this they read as duplicates on the page.
+function TriggerBadge({ trigger }: { trigger?: string }) {
+  if (trigger !== 'manual') return null;
+  return <span className="rounded border border-ink-700 px-1 text-ink-400">review run</span>;
+}
 
 type Row = {
   id: number;
@@ -59,6 +73,7 @@ function SentCard({ row }: { row: Row }) {
         <span>{row.dateKey}</span>
         <span>/</span>
         <span>{p.mode}</span>
+        <TriggerBadge trigger={p.trigger} />
         {p.drift ? <span className="text-secondary">drift variant</span> : null}
         {p.isNsfw ? <span className="text-destructive">nsfw specimen</span> : null}
       </div>
@@ -113,6 +128,7 @@ function SkippedCard({ row }: { row: Row }) {
         <span className="text-ink-400">no post</span>
         <span className="text-ink-500">{row.dateKey}</span>
         <span className="text-destructive">{p.reason}</span>
+        <TriggerBadge trigger={p.trigger} />
         {p.trendTopic ? <span className="text-ink-500">/ {p.trendTopic}</span> : null}
       </div>
       {p.detail ? <p className="mt-1 text-ink-500">{p.detail}</p> : null}
