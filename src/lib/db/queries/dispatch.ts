@@ -36,6 +36,9 @@ export async function listDispatchCandidates(params: {
   // like a working dispatch producing nonsense pairings, not like a failure.
   embedProvider: string;
   embedModel: string;
+  // Seeds the sample below. Same seed plus same corpus yields the same pool, so a
+  // deliberate replay of a given day reproduces.
+  sampleSeed: string;
   minDistance: number;
   maxDistance: number;
   limit: number;
@@ -89,7 +92,18 @@ export async function listDispatchCandidates(params: {
       AND i.basement = false
       AND (e.vec <=> ${vecLiteral}::vector) BETWEEN ${params.minDistance} AND ${params.maxDistance}
       ${exclude}
-    ORDER BY distance ASC
+    -- Sample the band, do not skim its near edge. Ordering by distance before the
+    -- LIMIT made only the N nearest rows reachable, so every farther specimen had
+    -- zero chance of selection no matter its recency weight -- and the bias grows
+    -- with the corpus. It also worked against the point of the band: the near edge
+    -- is where the specimen is most nearly ABOUT the trend, which is the outcome
+    -- the middle-distance rule exists to avoid.
+    --
+    -- md5 over the id plus a caller-supplied seed gives a uniform pseudo-random
+    -- order that is stable for a given day, so replays reproduce. Distance is
+    -- still returned; it is recorded on the event and reviewed, it just no longer
+    -- decides who is eligible.
+    ORDER BY md5(i.id::text || ${params.sampleSeed})
     LIMIT ${Math.min(Math.max(Math.trunc(params.limit), 1), 2000)}
   `);
 

@@ -106,8 +106,12 @@ export function sanitizeIntakeRecord(raw: string): string {
 
 // Broad emoji + pictograph ranges. Rule 6 of the tone contract is absolute, so
 // this strips rather than warns.
+// U+20E3 and the ZWJ are here because stripping only the pictographs leaves a
+// still-rendered fragment behind: a keycap "1<FE0F><20E3>" loses the variation
+// selector and posts as "1<20E3>", which is a visible emoji the no-emoji rule was
+// supposed to have removed. Combining and joining marks have to go with them.
 const EMOJI_RE =
-  /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu;
+  /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0E}\u{FE0F}\u{20E3}\u{200D}\u{1F1E6}-\u{1F1FF}]/gu;
 
 // X does not count JavaScript string length. A caption of 280 JS characters
 // containing double-weighted code points is over the real limit, and phase 2 would
@@ -182,8 +186,14 @@ function containsLink(text: string): boolean {
   return EXPLICIT_URL_RE.test(text) || BARE_DOMAIN_RE.test(text);
 }
 
+// The lookbehind is the X rule, not decoration: a "#" directly against an
+// alphanumeric is not a hashtag on the platform. "case#JaguarRebrand" renders as
+// plain text, so counting it satisfied the presence and terminal checks while the
+// notice actually ended in prose with no linked tag at all.
+const HASHTAG_RE = /(?<![\p{L}\p{N}_])#[\p{L}\p{N}_]+/gu;
+
 export function extractHashtags(text: string): string[] {
-  return text.match(/#[\p{L}\p{N}_]+/gu) ?? [];
+  return text.match(HASHTAG_RE) ?? [];
 }
 
 // X does not treat an all-numeric token as a hashtag: "#2026" renders as plain
@@ -242,6 +252,16 @@ export function validateCaption(
   if (text.length === 0) return { ok: false, reason: 'empty caption' };
   if (/^#/.test(text)) return { ok: false, reason: 'caption is only a hashtag' };
 
+  // Restore the boundary X needs in front of the REQUIRED tag when the model runs
+  // it into the preceding word. This is a repair rather than a rejection because
+  // rejecting costs the day and the intent is unambiguous, and it is scoped to the
+  // required tag on purpose: blanket-spacing every "word#thing" would turn a
+  // reference like "item#5" into "item" once the numeric tag is dropped.
+  {
+    const bare = opts.hashtag.replace(/^#/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(`([\\p{L}\\p{N}_])(#${bare})`, 'giu'), '$1 $2');
+  }
+
   // Hashtag discipline. Keep the required tag plus at most one more; drop the
   // rest rather than posting a hashtag wall.
   let tags = extractHashtags(text);
@@ -262,7 +282,7 @@ export function validateCaption(
     const kept = new Set<string>();
     let rebuilt = '';
     let cursor = 0;
-    for (const m of text.matchAll(/#[\p{L}\p{N}_]+/gu)) {
+    for (const m of text.matchAll(HASHTAG_RE)) {
       const tag = m[0];
       const lower = tag.toLowerCase();
       const start = m.index!;
@@ -348,7 +368,13 @@ export function validateCaption(
   // necessarily sits after the required one. Requiring the required tag to be
   // last would reject that legal shape. Presence of the required tag is already
   // enforced above; this only forbids prose after the tags.
-  if (!/#[\p{L}\p{N}_]+$/u.test(text)) {
+  //
+  // Tested against the EXTRACTED tags rather than a bare end-anchored pattern, so
+  // it inherits both platform rules the extractor already encodes: a trailing
+  // "item#5" is neither preceded by a valid boundary nor a real hashtag, and must
+  // not satisfy this check just because the string happens to end in "#" + word.
+  const lastTag = tags[tags.length - 1];
+  if (!lastTag || !text.endsWith(lastTag)) {
     return { ok: false, reason: 'caption does not end on a hashtag' };
   }
 

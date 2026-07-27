@@ -1,7 +1,7 @@
 import type { Job } from '@/lib/db/schema';
 import { appendEvent } from '@/lib/db/queries/events';
 import { listDispatchCandidates, listDispatchedImageIds } from '@/lib/db/queries/dispatch';
-import { getEmbedder } from '@/lib/ai';
+import { getDispatchEmbedder } from '@/lib/ai/dispatch-embed';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { getSiteAdminId } from '@/lib/db/queries/users';
@@ -169,21 +169,30 @@ async function runDispatch(ctx: {
   // ---- 3. specimen selection ------------------------------------------------
   const cfg = await loadAiConfig();
   const keys = await loadUserProviderKeys(getSiteAdminId());
-  const embedder = getEmbedder(cfg, keys);
+  // Not getEmbedder(): that path's client retries a 429 or 5xx twice by default,
+  // and racing it against a deadline does not cancel those attempts -- the job
+  // would file its skip while the retries continued underneath. getDispatchEmbedder
+  // disables retries and takes a real abort signal. It also returns null instead
+  // of throwing when embeddings are routed to a provider with no embed(), which
+  // the admin UI permits.
+  const embedder = getDispatchEmbedder(cfg, keys);
   if (!embedder) {
-    await skip(SKIP_REASON.NoProviderKey, 'no embeddings key configured', chosen.trend.topic);
+    await skip(
+      SKIP_REASON.NoProviderKey,
+      'no usable embeddings provider or key for dispatch',
+      chosen.trend.topic
+    );
     return;
   }
 
   let vec: number[];
   try {
-    // Own deadline. The OpenAI SDK path passes no timeout or abort signal, so
-    // without this a hung embed burns the rest of the job budget and the outer
-    // worker wrapper kills the run from outside the handler -- after the claim,
-    // with no outcome written. Racing a timer does not cancel the request, but it
-    // does return control here in time to file the skip, which is the point.
+    // The embedder cancels itself at the deadline; this wrapper stays as the
+    // guarantee that control returns here regardless, in time to file an outcome.
+    // A throw after the claim with nothing logged is the one failure this handler
+    // must never produce.
     vec = await withDeadline(
-      embedder.embed(trendText(chosen.trend)),
+      embedder.embed(trendText(chosen.trend), EMBED_TIMEOUT_MS),
       EMBED_TIMEOUT_MS,
       'trend embedding'
     );
@@ -198,6 +207,7 @@ async function runDispatch(ctx: {
     vec,
     embedProvider: embedder.name,
     embedModel: embedder.model,
+    sampleSeed: `${seedKey}:${chosen.trend.topic}`,
     minDistance: BAND_MIN_DISTANCE,
     maxDistance: BAND_MAX_DISTANCE,
     limit: MAX_POOL_CANDIDATES,
@@ -209,6 +219,7 @@ async function runDispatch(ctx: {
       vec,
       embedProvider: embedder.name,
       embedModel: embedder.model,
+      sampleSeed: `${seedKey}:${chosen.trend.topic}`,
       minDistance: WIDE_BAND_MIN_DISTANCE,
       maxDistance: WIDE_BAND_MAX_DISTANCE,
       limit: MAX_POOL_CANDIDATES,

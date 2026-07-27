@@ -726,6 +726,38 @@ describe('caption validation enforces the tone contract', () => {
     if (out.ok) expect(out.hashtags).toEqual(['#JaguarRebrand', '#Archive']);
   });
 
+  test('restores the boundary X needs before the required hashtag', () => {
+    // "case#JaguarRebrand" is not a hashtag to X, it is plain text -- so the old
+    // extractor counted a tag that would not exist on the platform. Repaired
+    // rather than rejected: the intent is unambiguous and a rejection costs a day.
+    const out = validateCaption('Record filed under case#JaguarRebrand', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.caption).toBe('Record filed under case #JaguarRebrand');
+      expect(out.hashtags).toEqual(['#JaguarRebrand']);
+    }
+  });
+
+  test('a word-adjoined pseudo-tag does not satisfy the terminal rule', () => {
+    // Ends in "#5" by string shape, but that is neither boundary-valid nor a real
+    // hashtag, so the notice would post ending in prose.
+    expect(validateCaption('Filed #JaguarRebrand under item#5', opts).ok).toBe(false);
+  });
+
+  test('extraction ignores hashes glued to a preceding word', () => {
+    expect(extractHashtags('filed under case#Tag and #Real')).toEqual(['#Real']);
+  });
+
+  test('strips a keycap emoji completely, not just its variation selector', () => {
+    // Removing U+FE0F alone left "1<U+20E3>", still a rendered emoji.
+    const out = validateCaption('Shelf 1\u{FE0F}\u{20E3} catalogued. #JaguarRebrand', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.caption).not.toContain('\u{20E3}');
+      expect(out.caption).not.toContain('\u{FE0F}');
+    }
+  });
+
   test('rejects a caption containing a URL', () => {
     // Wrong for the register, and X bills a post with a link at 13x.
     expect(validateCaption('Filed. See https://pix.fish/x #JaguarRebrand', opts).ok).toBe(false);

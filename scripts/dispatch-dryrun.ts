@@ -17,7 +17,7 @@
  * Requires POSTGRES_URL plus the site admin's Anthropic and OpenAI keys, same as
  * the job itself.
  */
-import { getEmbedder } from '../src/lib/ai';
+import { getDispatchEmbedder } from '../src/lib/ai/dispatch-embed';
 import { loadAiConfig } from '../src/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '../src/lib/ai/keys';
 import { getSiteAdminId } from '../src/lib/db/queries/users';
@@ -25,6 +25,7 @@ import { listDispatchCandidates, listDispatchedImageIds } from '../src/lib/db/qu
 import {
   BAND_MAX_DISTANCE,
   BAND_MIN_DISTANCE,
+  EMBED_TIMEOUT_MS,
   MAX_POOL_CANDIDATES,
   WIDE_BAND_MAX_DISTANCE,
   WIDE_BAND_MIN_DISTANCE,
@@ -131,17 +132,18 @@ async function main() {
   // ---- specimen pool -------------------------------------------------------
   const cfg = await loadAiConfig();
   const keys = await loadUserProviderKeys(getSiteAdminId());
-  const embedder = getEmbedder(cfg, keys);
+  const embedder = getDispatchEmbedder(cfg, keys);
   if (!embedder) {
     console.log('\nNO POST: no embeddings key (reason: no_provider_key)');
     return;
   }
-  const vec = await embedder.embed(trendText(chosen.trend));
+  const vec = await embedder.embed(trendText(chosen.trend), EMBED_TIMEOUT_MS);
   const excludeImageIds = await listDispatchedImageIds();
   let candidates = await listDispatchCandidates({
     vec,
     embedProvider: embedder.name,
     embedModel: embedder.model,
+    sampleSeed: `${dateKey}:${chosen.trend.topic}`,
     minDistance: BAND_MIN_DISTANCE,
     maxDistance: BAND_MAX_DISTANCE,
     limit: MAX_POOL_CANDIDATES,
@@ -153,6 +155,7 @@ async function main() {
       vec,
       embedProvider: embedder.name,
       embedModel: embedder.model,
+      sampleSeed: `${dateKey}:${chosen.trend.topic}`,
       minDistance: WIDE_BAND_MIN_DISTANCE,
       maxDistance: WIDE_BAND_MAX_DISTANCE,
       limit: MAX_POOL_CANDIDATES,
