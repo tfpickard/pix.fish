@@ -57,8 +57,23 @@ type Data = {
   livePostingImplemented: boolean;
   charBudget: number;
   today: { dateKey: string; targetUtcMinute: number; driftVariant: boolean };
+  totalOutcomes: number;
+  offset: number;
+  hasMore: boolean;
   events: Row[];
 };
+
+const PAGE_SIZE = 60;
+
+// Merge a freshly fetched page into what is already on screen, newest first.
+// Union by event id rather than concatenating: the poll re-fetches page 0 while
+// older pages are already loaded, so overlap is the normal case, not an error.
+function mergeRows(existing: Row[], incoming: Row[]): Row[] {
+  const byId = new Map<number, Row>();
+  for (const r of existing) byId.set(r.id, r);
+  for (const r of incoming) byId.set(r.id, r);
+  return [...byId.values()].sort((a, b) => b.id - a.id);
+}
 
 function utcMinuteLabel(m: number): string {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')} UTC`;
@@ -138,13 +153,18 @@ function SkippedCard({ row }: { row: Row }) {
 
 export default function AdminDispatchPage() {
   const [data, setData] = useState<Data | null>(null);
+  // Accumulated across pages, so "load more" adds to the view instead of
+  // replacing it and the 10s poll does not throw older pages away.
+  const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
 
+  // Refreshes the newest page only. Anything already paged in stays put.
   const load = useCallback(() => {
-    fetch('/api/admin/dispatch')
+    fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}`)
       .then(async (r) => {
         if (r.status === 403) {
           setForbidden(true);
@@ -152,12 +172,33 @@ export default function AdminDispatchPage() {
         }
         return r.json();
       })
-      .then((d) => {
-        if (d) setData(d);
+      .then((d: Data | null) => {
+        if (d) {
+          setData(d);
+          setRows((prev) => mergeRows(prev, d.events));
+        }
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, []);
+
+  // Pages backwards from what is already loaded. The log only ever appends at the
+  // newest end, so an offset taken from the current count can shift by whatever
+  // arrived in between; merging by id absorbs the resulting overlap.
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const res = await fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}&offset=${rows.length}`);
+      if (!res.ok) return;
+      const d: Data = await res.json();
+      setRows((prev) => mergeRows(prev, d.events));
+      setData((prev) => (prev ? { ...prev, totalOutcomes: d.totalOutcomes } : d));
+    } catch {
+      // A failed page is not worth an error state; the button stays available.
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [rows.length]);
 
   async function runNow() {
     setRunning(true);
@@ -189,8 +230,10 @@ export default function AdminDispatchPage() {
     return <p className="font-mono text-xs text-ink-500">site admins only.</p>;
   }
 
-  const sent = data?.events.filter((e) => e.type === 'dispatch.sent') ?? [];
-  const skipped = data?.events.filter((e) => e.type === 'dispatch.skipped') ?? [];
+  const sent = rows.filter((e) => e.type === 'dispatch.sent');
+  const skipped = rows.filter((e) => e.type === 'dispatch.skipped');
+  const total = data?.totalOutcomes ?? 0;
+  const hasMore = rows.length < total;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -249,6 +292,24 @@ export default function AdminDispatchPage() {
           skipped.map((row) => <SkippedCard key={row.id} row={row} />)
         )}
       </section>
+
+      {total > 0 ? (
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-xs text-ink-500">
+            showing {rows.length} of {total} outcomes
+          </span>
+          {hasMore ? (
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="rounded border border-ink-700 px-2 py-1 font-mono text-xs text-ink-300 hover:bg-ink-800 disabled:opacity-50"
+            >
+              {loadingMore ? 'loading...' : 'load older'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

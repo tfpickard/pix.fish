@@ -18,11 +18,15 @@ export async function GET(req: Request) {
   }
   const now = new Date();
   const dateKey = utcDateKey(now);
-  // Bounded page size, so the review history is reachable past the first screen
-  // rather than silently truncated. listRecentDispatchEvents clamps to 200.
-  const limit = Number(new URL(req.url).searchParams.get('limit') ?? 60);
+  // Bounded page SIZE plus an offset, so the whole history is reachable rather
+  // than capped: limit alone made 200 a ceiling on what could ever be read.
+  const params = new URL(req.url).searchParams;
+  const rawLimit = Number(params.get('limit') ?? 60);
+  const rawOffset = Number(params.get('offset') ?? 0);
+  const limit = Number.isFinite(rawLimit) ? rawLimit : 60;
+  const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
   const [events, totalOutcomes] = await Promise.all([
-    listRecentDispatchEvents(Number.isFinite(limit) ? limit : 60),
+    listRecentDispatchEvents(limit, offset),
     countDispatchOutcomes()
   ]);
   return NextResponse.json({
@@ -37,6 +41,10 @@ export async function GET(req: Request) {
       driftVariant: driftForDate(dateKey)
     },
     totalOutcomes,
+    // Echoed back so a caller (and the review page's load-more) can page without
+    // re-deriving the clamp this route applied.
+    offset: Math.max(Math.trunc(offset), 0),
+    hasMore: Math.max(Math.trunc(offset), 0) + events.length < totalOutcomes,
     events: events.map((e) => ({
       id: e.id,
       type: e.type,

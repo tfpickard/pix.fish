@@ -201,6 +201,7 @@ export function validateCaption(
     // required tag, all of them were in the keep set and none were removed.
     // Position matters too -- text.replace removes the first match, so
     // occurrences are rebuilt rather than blind-replaced.
+    const requiredLower = opts.hashtag.toLowerCase();
     const kept = new Set<string>();
     let rebuilt = '';
     let cursor = 0;
@@ -208,11 +209,16 @@ export function validateCaption(
       const tag = m[0];
       const lower = tag.toLowerCase();
       const start = m.index!;
-      const isRequired = lower === opts.hashtag.toLowerCase();
-      // Always keep the required tag's first occurrence; keep other distinct tags
-      // only while there is room under the ceiling.
-      const room = kept.size < MAX_HASHTAGS;
-      const keepThis = !kept.has(lower) && (isRequired || room);
+      const isRequired = lower === requiredLower;
+      // One slot stays reserved for the required tag until it has actually been
+      // kept. Without the reservation, optional tags appearing BEFORE the required
+      // one fill the ceiling, the required tag is then kept anyway (it must be),
+      // and the count lands one over -- so the hard check below rejects the whole
+      // caption and skips the day, when trimming to "required + one optional" was
+      // available all along. The repair exists to avoid that skip, so it must not
+      // be the thing that causes it.
+      const budget = isRequired || kept.has(requiredLower) ? MAX_HASHTAGS : MAX_HASHTAGS - 1;
+      const keepThis = !kept.has(lower) && kept.size < budget;
       rebuilt += text.slice(cursor, start);
       if (keepThis) {
         rebuilt += tag;

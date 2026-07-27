@@ -126,14 +126,23 @@ export async function listDispatchedImageIds(): Promise<number[]> {
 // a 60-row read covered only ~30 runs, and a day with a review run alongside the
 // scheduled one burned through it faster still. Claims remain on the log; they
 // are the once-per-day lock, not review material.
-export async function listRecentDispatchEvents(limit = 60): Promise<UniverseEvent[]> {
+// `offset` makes the whole history reachable a page at a time. Without it the
+// clamped limit was a hard ceiling rather than a page size: everything past the
+// first 200 outcomes was unreachable from the only review surface, and
+// countDispatchOutcomes just reported that hidden rows existed.
+export async function listRecentDispatchEvents(
+  limit = 60,
+  offset = 0
+): Promise<UniverseEvent[]> {
   const lim = Math.min(Math.max(Math.trunc(limit), 1), 200);
+  const off = Math.max(Math.trunc(offset), 0);
   return db
     .select()
     .from(events)
     .where(inArray(events.type, [EVENT_TYPE.DispatchSent, EVENT_TYPE.DispatchSkipped]))
     .orderBy(desc(events.id))
-    .limit(lim);
+    .limit(lim)
+    .offset(off);
 }
 
 // Total outcomes on file, so the review page can say when it is showing a window

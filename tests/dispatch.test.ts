@@ -403,8 +403,19 @@ describe('hashtag derivation', () => {
     expect(hashtagFor("Jaguar's rebrand!")).toBe('#JaguarsRebrand');
   });
 
+  // Corrected: this previously asserted that any digit-initial tag was refused,
+  // which encoded the bug rather than the rule. X allows digits anywhere in a
+  // hashtag and forbids only an all-numeric one, and refusing here costs the whole
+  // day -- generateCaption fails after the gate and specimen selection have run.
+  test('keeps a digit-initial tag, which X permits', () => {
+    expect(hashtagFor('2026 world cup')).toBe('#2026WorldCup');
+    expect(hashtagFor('2026 something')).toBe('#2026Something');
+  });
+
   test('refuses a topic that would make an invalid tag', () => {
-    expect(hashtagFor('2026 something')).toBe('');
+    // All-numeric is the one form X actually rejects.
+    expect(hashtagFor('2026')).toBe('');
+    expect(hashtagFor('20 26')).toBe('');
     expect(hashtagFor('!!!')).toBe('');
   });
 });
@@ -693,6 +704,26 @@ describe('caption validation enforces the tone contract', () => {
     const out = validateCaption('Specimen 3312 filed. #JaguarRebrand #JaguarRebrand', opts);
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.hashtags).toEqual(['#JaguarRebrand']);
+  });
+
+  test('optional tags preceding the required one do not crowd it out', () => {
+    // Both optionals filled the ceiling before the required tag was reached, so it
+    // was kept on top and the count landed one over -- and the hard check then
+    // rejected a caption the repair existed to save. A slot stays reserved.
+    const out = validateCaption(
+      'Specimen 3312 filed. #Archive #Records #JaguarRebrand',
+      opts
+    );
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.hashtags).toEqual(['#Archive', '#JaguarRebrand']);
+    }
+  });
+
+  test('the reservation does not cost the optional slot once the required tag is in', () => {
+    const out = validateCaption('Specimen 3312 filed. #JaguarRebrand #Archive', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.hashtags).toEqual(['#JaguarRebrand', '#Archive']);
   });
 
   test('rejects a caption containing a URL', () => {

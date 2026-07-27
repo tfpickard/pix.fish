@@ -152,8 +152,14 @@ export function hashtagFor(topic: string): string {
   const joined = words
     .map((w) => (w.toUpperCase() === w ? w : w[0]!.toUpperCase() + w.slice(1)))
     .join('');
-  // A hashtag cannot start with a digit on X; prefix nothing, just drop the tag
-  // rather than post a broken one.
-  if (/^\p{N}/u.test(joined)) return '';
-  return `#${joined.slice(0, 60)}`;
+  const tag = joined.slice(0, 60);
+  // X permits digits anywhere in a hashtag, first position included: #2026WorldCup
+  // is a valid tag. What it forbids is an ALL-numeric one. This previously rejected
+  // every digit-initial tag, which cost the entire day -- generateCaption fails with
+  // "no usable hashtag" only after the gate and specimen selection have run -- for
+  // topics like "2026 World Cup" that are squarely inside the sports category the
+  // safety gate allowlists. Checked after the length cap, since slicing is what
+  // could leave an all-numeric remainder.
+  if (/^\p{N}+$/u.test(tag)) return '';
+  return `#${tag}`;
 }
