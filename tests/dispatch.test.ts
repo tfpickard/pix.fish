@@ -8,6 +8,7 @@ import {
   MAX_HASHTAGS,
   SAFETY_MAX_TOKENS,
   SAFETY_TIMEOUT_MS,
+  EMBED_TIMEOUT_MS,
   UPSTREAM_DEADLINE_BUDGET_MS,
   WORKER_JOB_TIMEOUT_MS,
   captionCharBudget,
@@ -26,6 +27,7 @@ import { pickSpecimen, recencyWeight } from '../src/lib/dispatch/select';
 import {
   extractHashtags,
   overlapsIntakeRecord,
+  weightedLength,
   sanitizeIntakeRecord,
   validateCaption
 } from '../src/lib/dispatch/caption';
@@ -362,6 +364,19 @@ describe('upstream deadlines leave headroom under the worker budget', () => {
   // successful run gets failed from outside the handler -- after the claim, with
   // no outcome event, and the handler's own catch cannot see it. Assert the
   // arithmetic instead of trusting whoever last edited a constant.
+  test('the embedding call has its own deadline', () => {
+    // The OpenAI SDK path sets no timeout; without this the embed can eat the
+    // remaining budget and be killed outside the handler, after the claim.
+    expect(EMBED_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(EMBED_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+  });
+
+  test('every bounded upstream call is counted in the budget', () => {
+    expect(UPSTREAM_DEADLINE_BUDGET_MS).toBe(
+      6_000 + SAFETY_TIMEOUT_MS + EMBED_TIMEOUT_MS + CAPTION_TIMEOUT_MS
+    );
+  });
+
   test('the sum of upstream deadlines is well under the job timeout', () => {
     expect(UPSTREAM_DEADLINE_BUDGET_MS).toBeLessThanOrEqual(WORKER_JOB_TIMEOUT_MS * 0.7);
   });
@@ -463,6 +478,33 @@ describe('drift variant is a deterministic minority', () => {
     expect(rate).toBeGreaterThan(0.1);
     expect(rate).toBeLessThan(0.45);
     expect(DRIFT_PROBABILITY).toBeLessThan(0.5);
+  });
+});
+
+describe("caption length uses X's weighted count", () => {
+  test('latin text weighs one per character', () => {
+    expect(weightedLength('abc def')).toBe(7);
+  });
+
+  test('CJK weighs two per character, so JS length understates it', () => {
+    const cjk = '日本語';
+    expect(cjk.length).toBe(3);
+    expect(weightedLength(cjk)).toBe(6);
+  });
+
+  test('a caption under 280 JS chars but over the weighted limit is rejected', () => {
+    // 200 CJK characters = 200 JS length, 400 weighted -- X would refuse this.
+    const heavy = `${'語'.repeat(200)}. #JaguarRebrand`;
+    expect(heavy.length).toBeLessThan(280);
+    expect(weightedLength(heavy)).toBeGreaterThan(280);
+    const out = validateCaption(heavy, {
+      hashtag: '#JaguarRebrand',
+      charBudget: 280,
+      intakeRecord: 'unrelated record text entirely'
+    });
+    // Either trimmed to fit or rejected -- never returned over the real limit.
+    if (out.ok) expect(weightedLength(out.caption)).toBeLessThanOrEqual(280);
+    else expect(out.ok).toBe(false);
   });
 });
 
@@ -574,6 +616,20 @@ describe('caption validation enforces the tone contract', () => {
       expect(out.hashtags.length).toBeLessThanOrEqual(MAX_HASHTAGS);
       expect(out.hashtags).toContain('#JaguarRebrand');
     }
+  });
+
+  test('a repeated required tag is deduped even at exactly the ceiling', () => {
+    // Two tags is not over MAX_HASHTAGS, so a count-gated branch skipped this
+    // entirely and accepted the required tag twice.
+    const out = validateCaption('Specimen 3312 filed. #JaguarRebrand #JaguarRebrand', opts);
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.hashtags).toEqual(['#JaguarRebrand']);
+  });
+
+  test('rejects a caption containing a URL', () => {
+    // Wrong for the register, and X bills a post with a link at 13x.
+    expect(validateCaption('Filed. See https://pix.fish/x #JaguarRebrand', opts).ok).toBe(false);
+    expect(validateCaption('Filed. www.example.com #JaguarRebrand', opts).ok).toBe(false);
   });
 
   test('rejects prose trailing after the hashtag', () => {

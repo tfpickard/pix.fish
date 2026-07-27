@@ -1,7 +1,7 @@
 import { desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { events, type UniverseEvent } from '../schema';
-import { DISPATCH_EVENT_TYPES, EVENT_TYPE } from '@/lib/universe/events';
+import { EVENT_TYPE } from '@/lib/universe/events';
 import type { SpecimenCandidate } from '@/lib/dispatch/types';
 
 // Data layer for the outbound X dispatch. Query construction stays here, out of
@@ -109,15 +109,31 @@ export async function listDispatchedImageIds(): Promise<number[]> {
   return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
 }
 
-// Recent dispatch activity (sent and skipped) for /admin/dispatch, newest first.
-export async function listRecentDispatchEvents(limit = 40): Promise<UniverseEvent[]> {
+// Recent dispatch OUTCOMES for /admin/dispatch, newest first.
+//
+// Deliberately excludes dispatch.claimed. The page never renders claims, so
+// fetching them spent half of every window on rows that were then discarded --
+// a 60-row read covered only ~30 runs, and a day with a review run alongside the
+// scheduled one burned through it faster still. Claims remain on the log; they
+// are the once-per-day lock, not review material.
+export async function listRecentDispatchEvents(limit = 60): Promise<UniverseEvent[]> {
   const lim = Math.min(Math.max(Math.trunc(limit), 1), 200);
   return db
     .select()
     .from(events)
-    .where(inArray(events.type, [...DISPATCH_EVENT_TYPES]))
+    .where(inArray(events.type, [EVENT_TYPE.DispatchSent, EVENT_TYPE.DispatchSkipped]))
     .orderBy(desc(events.id))
     .limit(lim);
+}
+
+// Total outcomes on file, so the review page can say when it is showing a window
+// onto a longer history rather than the whole thing.
+export async function countDispatchOutcomes(): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM events
+    WHERE type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
 }
 
 // Whether a given UTC date already has a dispatch outcome on file. Used by the

@@ -14,6 +14,7 @@ import type {
 import {
   BAND_MAX_DISTANCE,
   BAND_MIN_DISTANCE,
+  EMBED_TIMEOUT_MS,
   MAX_POOL_CANDIDATES,
   WIDE_BAND_MAX_DISTANCE,
   WIDE_BAND_MIN_DISTANCE,
@@ -176,7 +177,16 @@ async function runDispatch(ctx: {
 
   let vec: number[];
   try {
-    vec = await embedder.embed(trendText(chosen.trend));
+    // Own deadline. The OpenAI SDK path passes no timeout or abort signal, so
+    // without this a hung embed burns the rest of the job budget and the outer
+    // worker wrapper kills the run from outside the handler -- after the claim,
+    // with no outcome written. Racing a timer does not cancel the request, but it
+    // does return control here in time to file the skip, which is the point.
+    vec = await withDeadline(
+      embedder.embed(trendText(chosen.trend)),
+      EMBED_TIMEOUT_MS,
+      'trend embedding'
+    );
   } catch (err) {
     await skip(SKIP_REASON.NoSpecimen, `trend embedding failed: ${errText(err)}`, chosen.trend.topic);
     return;
@@ -259,4 +269,23 @@ async function runDispatch(ctx: {
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// Reject after `ms` regardless of what the underlying promise does. The dangling
+// work is harmless -- the function instance ends with the job -- and returning
+// control on time is what lets the handler record an outcome.
+function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }

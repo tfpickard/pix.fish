@@ -96,6 +96,33 @@ export function sanitizeIntakeRecord(raw: string): string {
 const EMOJI_RE =
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu;
 
+// X does not count JavaScript string length. Its weighted algorithm charges 1 for
+// code points in a handful of mostly-Latin ranges and 2 for everything else --
+// CJK, most emoji, many symbols. A caption of 280 JS characters containing any of
+// those is over the real limit, and phase 2 would post it verbatim and be
+// rejected. The trend topic (and therefore the hashtag derived from it) is not
+// guaranteed Latin, so this is reachable without anything exotic in the prose.
+const SINGLE_WEIGHT_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0, 4351],
+  [8192, 8205],
+  [8208, 8223],
+  [8242, 8247]
+];
+
+export function weightedLength(text: string): number {
+  let total = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!;
+    total += SINGLE_WEIGHT_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi) ? 1 : 2;
+  }
+  return total;
+}
+
+// A link would be wrong twice over: the tone contract has no place for one, and X
+// bills a post containing a URL at $0.200 instead of $0.015. Rejecting is simpler
+// and better than emulating X's 23-character URL transform.
+const URL_RE = /\b(?:https?:\/\/|www\.)\S+/i;
+
 export function extractHashtags(text: string): string[] {
   return text.match(/#[\p{L}\p{N}_]+/gu) ?? [];
 }
@@ -152,13 +179,16 @@ export function validateCaption(
   if (!tags.some((t) => t.toLowerCase() === opts.hashtag.toLowerCase())) {
     return { ok: false, reason: `caption is missing the required hashtag ${opts.hashtag}` };
   }
-  if (tags.length > MAX_HASHTAGS) {
-    // Walk occurrences and keep the first instance of each DISTINCT tag, up to the
-    // ceiling. A membership test alone was not enough: a caption repeating the
-    // required tag ("... #Tag #Tag #Tag") has every occurrence in the keep set, so
-    // nothing was removed and the validator returned more tags than the ceiling
-    // allows. Position matters here too -- text.replace removes the first match,
-    // so occurrences are rebuilt rather than blind-replaced.
+  // Normalise occurrences unconditionally, NOT only when over the ceiling. A
+  // caption ending "#Tag #Tag" has exactly MAX_HASHTAGS tags and would skip a
+  // count-gated branch entirely, yet it carries the required tag twice -- the
+  // second slot exists for a DISTINCT optional tag, not a repeat.
+  {
+    // Keep the first instance of each distinct tag, up to the ceiling. A
+    // membership test alone was not enough: with every occurrence being the
+    // required tag, all of them were in the keep set and none were removed.
+    // Position matters too -- text.replace removes the first match, so
+    // occurrences are rebuilt rather than blind-replaced.
     const kept = new Set<string>();
     let rebuilt = '';
     let cursor = 0;
@@ -188,6 +218,10 @@ export function validateCaption(
     }
   }
 
+  if (URL_RE.test(text)) {
+    return { ok: false, reason: 'caption contains a URL' };
+  }
+
   if (overlapsIntakeRecord(text, opts.intakeRecord)) {
     return { ok: false, reason: 'caption restates the intake record' };
   }
@@ -197,13 +231,13 @@ export function validateCaption(
   // overlap check above ran on the FULL text -- the trimmed result is re-checked
   // after this block, because discarding an unrelated tail can leave a leading
   // sentence that does restate the intake record.
-  if (text.length > opts.charBudget) {
+  if (weightedLength(text) > opts.charBudget) {
     const withoutTags = text.replace(/#[\p{L}\p{N}_]+/gu, '').trim();
     const sentences = withoutTags.match(/[^.!?]+[.!?]+/g) ?? [];
     let built = '';
     for (const s of sentences) {
       const next = (built + s).trim();
-      if (`${next} ${opts.hashtag}`.length > opts.charBudget) break;
+      if (weightedLength(`${next} ${opts.hashtag}`) > opts.charBudget) break;
       built = `${next} `;
     }
     built = built.trim();

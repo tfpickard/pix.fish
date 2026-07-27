@@ -60,14 +60,19 @@ export const CAPTION_MAX_TOKENS = 400;
 // bug. The handler's own try/catch cannot help, because the rejection happens
 // outside it.
 //
-// Worst case now: 8 + 12 + 12 = 32s of upstream calls, leaving ~18s for the
-// embedding request and the candidate queries inside the same 50s wall.
-export const SAFETY_TIMEOUT_MS = 12_000;
-export const CAPTION_TIMEOUT_MS = 12_000;
+// Worst case now: 6 + 10 + 6 + 10 = 32s of upstream calls, leaving ~18s for the
+// candidate queries and the outcome write inside the same 50s wall.
+export const SAFETY_TIMEOUT_MS = 10_000;
+export const CAPTION_TIMEOUT_MS = 10_000;
+// The embedding request needs its own deadline for exactly the same reason. The
+// OpenAI SDK path (src/lib/ai/openai.ts) passes no timeout or abort signal, so a
+// hung embed would run out the whole remaining budget and be killed by the outer
+// wrapper -- outside the handler, where the catch cannot write an outcome.
+export const EMBED_TIMEOUT_MS = 6_000;
 
 // ---- trend acquisition ----------------------------------------------------
 
-export const TREND_FETCH_TIMEOUT_MS = 8_000;
+export const TREND_FETCH_TIMEOUT_MS = 6_000;
 // How many feed items to consider. The feed returns ~20; classifying more than
 // this buys nothing and costs tokens.
 export const MAX_TREND_CANDIDATES = 12;
@@ -79,7 +84,7 @@ export const MAX_HEADLINES_PER_TREND = 3;
 // suite can assert the headroom against the worker budget rather than trusting
 // that someone re-did the arithmetic after editing a constant.
 export const UPSTREAM_DEADLINE_BUDGET_MS =
-  TREND_FETCH_TIMEOUT_MS + SAFETY_TIMEOUT_MS + CAPTION_TIMEOUT_MS;
+  TREND_FETCH_TIMEOUT_MS + SAFETY_TIMEOUT_MS + EMBED_TIMEOUT_MS + CAPTION_TIMEOUT_MS;
 // The worker's per-job timeout for 'x.dispatch'. Duplicated here (not imported)
 // because worker.ts owns the queue-wide table and importing it into dispatch
 // config would invert the dependency; the test asserts the two agree.

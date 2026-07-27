@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
-import { listRecentDispatchEvents } from '@/lib/db/queries/dispatch';
+import { countDispatchOutcomes, listRecentDispatchEvents } from '@/lib/db/queries/dispatch';
 import { dispatchMinuteForDate, driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
 import { captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
 
@@ -12,13 +12,19 @@ export const dynamic = 'force-dynamic';
 // the event log (every would-be post and every skip, with its reason); POST
 // enqueues an immediate review run.
 
-export async function GET() {
+export async function GET(req: Request) {
   if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
   const now = new Date();
   const dateKey = utcDateKey(now);
-  const events = await listRecentDispatchEvents(60);
+  // Bounded page size, so the review history is reachable past the first screen
+  // rather than silently truncated. listRecentDispatchEvents clamps to 200.
+  const limit = Number(new URL(req.url).searchParams.get('limit') ?? 60);
+  const [events, totalOutcomes] = await Promise.all([
+    listRecentDispatchEvents(Number.isFinite(limit) ? limit : 60),
+    countDispatchOutcomes()
+  ]);
   return NextResponse.json({
     // Phase 1 has no X client, so nothing can post regardless of this flag. It is
     // surfaced so the review page can show how the deployment is configured.
@@ -30,6 +36,7 @@ export async function GET() {
       targetUtcMinute: dispatchMinuteForDate(dateKey),
       driftVariant: driftForDate(dateKey)
     },
+    totalOutcomes,
     events: events.map((e) => ({
       id: e.id,
       type: e.type,
