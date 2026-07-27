@@ -106,15 +106,31 @@ export async function listDispatchCandidates(params: {
   }));
 }
 
-// Image ids that have already been dispatched (in either mode). Read straight
-// off the append-only log rather than a projection: the log is the record, and a
-// specimen should not be sent twice even after a projection rebuild.
+// Image ids already spent on a dispatch. Read straight off the append-only log
+// rather than a projection: the log is the record, and a specimen should not be
+// sent twice even after a projection rebuild.
+//
+// Review samples are deliberately NOT counted. A manual run writes the same
+// dispatch.sent type, so counting it here would let reviewing the feature
+// permanently burn a specimen -- changing what the scheduled run picks, or
+// skipping it outright with no_specimen when the sample took the only candidate
+// in the band. /api/admin/dispatch promises a review never consumes the day, and
+// the suffixed claim slot alone does not deliver that; this is the other half.
+//
+// The predicate is written to stay correct through phase 2, where a manual run
+// CAN post for real: anything with a postId was actually sent and is excluded
+// regardless of trigger. A missing trigger counts as scheduled, which is the
+// conservative reading for any row written before the field existed.
 export async function listDispatchedImageIds(): Promise<number[]> {
   const res = await db.execute<{ image_id: number }>(sql`
     SELECT DISTINCT (payload->>'imageId')::int AS image_id
     FROM events
     WHERE type = ${EVENT_TYPE.DispatchSent}
       AND payload->>'imageId' IS NOT NULL
+      AND (
+        payload->>'trigger' IS DISTINCT FROM 'manual'
+        OR payload->>'postId' IS NOT NULL
+      )
   `);
   return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
 }
