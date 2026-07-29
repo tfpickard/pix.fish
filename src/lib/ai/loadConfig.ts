@@ -11,7 +11,8 @@ const FIELDS: ProviderField[] = [
   'verify',
   'dossier',
   'nsfw',
-  'chat'
+  'chat',
+  'dispatch'
 ];
 const KNOWN_PROVIDERS: ProviderName[] = ['anthropic', 'openai'];
 

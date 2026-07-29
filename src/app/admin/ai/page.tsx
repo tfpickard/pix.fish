@@ -14,7 +14,10 @@ const INHERIT_CAPTIONS = new Set(['detect', 'verify', 'dossier']);
 // loadAiConfig): chat is Anthropic-only; the pipeline is anthropic/openai;
 // imagegen has its own set.
 function providerOptions(field: string): readonly string[] {
-  if (field === 'chat') return ['anthropic'];
+  // dispatch-text.ts speaks Anthropic only, and the PUT schema rejects anything
+  // else -- offering OpenAI here would submit a value the API refuses while save()
+  // reloads without surfacing why.
+  if (field === 'chat' || field === 'dispatch') return ['anthropic'];
   if (field === 'imagegen') return ['anthropic', 'openai', 'openrouter', 'stub'];
   return ['anthropic', 'openai'];
 }
@@ -29,6 +32,10 @@ const FIELDS = [
   'dossier',
   'nsfw',
   'chat',
+  // Outbound X dispatch: trend safety classification + caption generation.
+  // Anthropic-only -- src/lib/ai/dispatch-text.ts speaks no other provider and
+  // returns null (skipping the day) if this row names one.
+  'dispatch',
   'imagegen'
 ] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;

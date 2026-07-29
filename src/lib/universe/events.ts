@@ -14,17 +14,35 @@ export const EVENT_TYPE = {
   AuditFlagged: 'audit.flagged',
   // Phase 3: a clustering run that identifies the recurring characters. One
   // event carries the whole roster; the newest census wins in the projection.
-  CharacterCensus: 'character.census'
+  CharacterCensus: 'character.census',
+  // Outbound X dispatch. Three types for one daily run: the claim (which IS the
+  // once-per-day lock -- see dedupeKey.dispatchDay), and exactly one outcome,
+  // either sent or skipped. Every day the job runs leaves a claim plus an
+  // outcome, so the log answers "what did the account do on the 4th" directly.
+  // None of these are reduced into a projection and none are in the chronicle's
+  // type allow-list: surfacing them in the feed is deliberately out of scope.
+  DispatchClaimed: 'dispatch.claimed',
+  DispatchSent: 'dispatch.sent',
+  DispatchSkipped: 'dispatch.skipped'
 } as const;
 
 export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
+
+// The dispatch slice of the taxonomy, for queries that read the whole outbound
+// history at once (/admin/dispatch).
+export const DISPATCH_EVENT_TYPES = [
+  EVENT_TYPE.DispatchClaimed,
+  EVENT_TYPE.DispatchSent,
+  EVENT_TYPE.DispatchSkipped
+] as const;
 
 export const SUBJECT_TYPE = {
   Clerk: 'clerk',
   District: 'district',
   Specimen: 'specimen',
   CrossReference: 'cross_reference',
-  Census: 'census'
+  Census: 'census',
+  Dispatch: 'dispatch'
 } as const;
 
 // ---- payload shapes (the jsonb body of each event) ------------------------
@@ -102,6 +120,56 @@ export type CharacterCensusPayload = {
   }[];
 };
 
+// ---- outbound dispatch payloads -------------------------------------------
+
+// The day-claim. Carries nothing but the mode it intended to run in; its value
+// is entirely in its dedupe key, which is what makes a second dispatch on the
+// same date impossible rather than merely unlikely.
+export type DispatchClaimedPayload = {
+  mode: 'dry-run' | 'live';
+  trigger: 'cron' | 'manual';
+};
+
+// A dispatch that produced a post (live) or a complete would-be post (dry run).
+// Everything needed to review the decision after the fact is on the event: the
+// specimen, the caption as posted, the trend it rode, and the safety verdict
+// that cleared it.
+export type DispatchSentPayload = {
+  mode: 'dry-run' | 'live';
+  // How this outcome came about. The claim event already records it, but nothing
+  // associates a claim with its outcome at read time -- /admin/dispatch lists
+  // outcomes and would otherwise show an admin's review sample and the day's real
+  // artifact as two indistinguishable drafts for the same date.
+  trigger: 'cron' | 'manual';
+  imageId: number;
+  slug: string;
+  handle: string;
+  blobUrl: string;
+  isNsfw: boolean;
+  caption: string;
+  hashtags: string[];
+  drift: boolean;
+  trendTopic: string;
+  trendSource: string;
+  trendHeadlines: string[];
+  safetyCategory: string;
+  safetyConfidence: string;
+  safetyReason: string;
+  distance: number;
+  model: string;
+  postId: string | null; // null in dry run
+};
+
+// A day that ended without a post. `reason` is one of the SKIP_REASON codes in
+// src/lib/dispatch/types.ts; `detail` is free text for the admin page.
+export type DispatchSkippedPayload = {
+  mode: 'dry-run' | 'live';
+  trigger: 'cron' | 'manual';
+  reason: string;
+  detail: string;
+  trendTopic: string | null;
+};
+
 // A cited source: where a clerk says a claim came from. Kept loose (a free
 // label plus an optional ref) so clerks can cite captions, neighbors,
 // districts, or other dossiers without a rigid schema.
@@ -133,5 +201,19 @@ export const dedupeKey = {
   audit: (imageId: number, nonce: number) => `audit.flagged:${imageId}:${nonce}`,
   // Each census run gets a unique stamp so re-clustering files a NEW census
   // (the newest wins) rather than colliding with a prior one.
-  census: (stamp: number) => `character.census:${stamp}`
+  census: (stamp: number) => `character.census:${stamp}`,
+  // THE once-per-day cap for outbound dispatch. The unique index on dedupe_key
+  // is the enforcement: whoever inserts this key first owns the day, and every
+  // other caller -- a double-fired cron, a manual POST, a job reclaimed after a
+  // timeout -- gets inserted=false from appendEvent and stops. The guarantee
+  // therefore does not depend on the cron schedule being correct.
+  //
+  // `suffix` exists so an admin review run can claim a distinct slot ('manual:
+  // <ms>') without consuming the real day's claim. A suffixed claim can never
+  // collide with the bare date key.
+  dispatchDay: (dateKey: string, suffix?: string) =>
+    suffix ? `x.dispatch:${dateKey}:${suffix}` : `x.dispatch:${dateKey}`,
+  // Outcomes are keyed off the same slot id so one claim yields at most one
+  // outcome even if a handler somehow ran twice against the same claim.
+  dispatchOutcome: (slotKey: string) => `x.dispatch.outcome:${slotKey}`
 };

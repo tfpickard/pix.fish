@@ -41,6 +41,7 @@ const ADMIN_NAV = [
   // --- alive ---
   { href: '/admin/alive', label: 'alive' },
   // --- ops ---
+  { href: '/admin/dispatch', label: 'dispatch' },
   { href: '/admin/webhooks', label: 'webhooks' },
   { href: '/admin/jobs', label: 'jobs' },
   { href: '/admin/stats', label: 'stats' },

@@ -17,6 +17,7 @@ import {
   users
 } from '../src/lib/db/schema';
 import { defaultAiConfig } from '../src/lib/ai/config';
+import { DEFAULT_DISPATCH_CAPTION_TEMPLATE } from '../src/lib/dispatch/caption';
 import { DEFAULT_FISH_MORPH_CONFIG, fishConfigToFields } from '../src/lib/fish/config';
 import { DEFAULT_SHUFFLE_PERIOD, DEFAULT_SORT } from '../src/lib/sort/types';
 import { sql } from 'drizzle-orm';
@@ -700,7 +701,8 @@ async function main() {
     ['reverse_haiku', REVERSE_HAIKU_TEMPLATE],
     ['remix', REMIX_TEMPLATE],
     ['remix_idiom_gen', REMIX_IDIOM_GEN_TEMPLATE],
-    ['constraint_card_gen', CONSTRAINT_CARD_GEN_TEMPLATE]
+    ['constraint_card_gen', CONSTRAINT_CARD_GEN_TEMPLATE],
+    ['dispatch_caption', DEFAULT_DISPATCH_CAPTION_TEMPLATE]
   ] as const) {
     await db
       .insert(prompts)

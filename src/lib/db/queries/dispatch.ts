@@ -1,0 +1,208 @@
+import { desc, inArray, sql } from 'drizzle-orm';
+import { db } from '../client';
+import { events, type UniverseEvent } from '../schema';
+import { EVENT_TYPE } from '@/lib/universe/events';
+import type { SpecimenCandidate } from '@/lib/dispatch/types';
+
+// Data layer for the outbound X dispatch. Query construction stays here, out of
+// the job handler, per the project rule against inline Drizzle in handlers.
+
+// Candidates inside a cosine-distance band from the trend vector. The band is the
+// whole selection idea: nearer than the floor and the specimen is genuinely about
+// the trend, which kills the joke; past the ceiling there is no thread at all.
+//
+// The whole corpus is eligible (recency is a weighting preference applied by the
+// caller, not a filter) and NSFW rows are included by explicit product decision.
+//
+// Two exclusions are NOT preferences and must stay:
+//   archived_at -- archived rows keep their embeddings, so without the gate a
+//     deleted image could be posted to a public account.
+//   basement    -- basement is an access GATE, not a visibility preference. The
+//     schema calls these rows server-gated and every public reader excludes them
+//     (random.ts, path-hydrate.ts, attention.ts, path-traffic.ts, stats.ts).
+//     Posting one to X would publish a blob the site itself refuses to serve
+//     without an unlock, which is a worse leak than any NSFW question -- the
+//     NSFW inclusion here was a deliberate product call, this would not be.
+//
+// `intake_record` prefers the clerk's dossier, falls back to the canonical
+// caption (slug-source first, else lowest variant), and finally the slug.
+export async function listDispatchCandidates(params: {
+  vec: number[];
+  // Provenance of the vector above. Cosine distance is only meaningful within one
+  // embedding space, so rows written by a different provider/model are excluded
+  // rather than silently compared. Without this, changing the embeddings model
+  // before the corpus is reprocessed lets stale rows drift into the configured
+  // band and the "middle distance" selection becomes arbitrary -- which would look
+  // like a working dispatch producing nonsense pairings, not like a failure.
+  embedProvider: string;
+  embedModel: string;
+  // Seeds the sample below. Same seed plus same corpus yields the same pool, so a
+  // deliberate replay of a given day reproduces.
+  sampleSeed: string;
+  minDistance: number;
+  maxDistance: number;
+  limit: number;
+  excludeImageIds: number[];
+}): Promise<SpecimenCandidate[]> {
+  const vecLiteral = `[${params.vec.join(',')}]`;
+  const exclude =
+    params.excludeImageIds.length > 0
+      ? sql`AND i.id NOT IN (${sql.join(
+          params.excludeImageIds.map((id) => sql`${id}`),
+          sql`, `
+        )})`
+      : sql``;
+
+  const res = await db.execute<{
+    id: number;
+    slug: string;
+    handle: string;
+    blob_url: string;
+    mime: string | null;
+    is_nsfw: boolean;
+    uploaded_at: string;
+    distance: number;
+    intake_record: string;
+  }>(sql`
+    SELECT
+      i.id,
+      i.slug,
+      u.handle,
+      i.blob_url,
+      i.mime,
+      i.is_nsfw,
+      i.uploaded_at,
+      e.vec <=> ${vecLiteral}::vector AS distance,
+      COALESCE(NULLIF(s.current_dossier, ''), NULLIF(c.text, ''), i.slug) AS intake_record
+    FROM embeddings e
+    JOIN images i ON i.id = e.image_id
+    JOIN users u ON u.id = i.owner_id
+    LEFT JOIN specimens s ON s.image_id = i.id
+    LEFT JOIN LATERAL (
+      SELECT text FROM captions
+      WHERE image_id = i.id
+      ORDER BY is_slug_source DESC, variant ASC
+      LIMIT 1
+    ) c ON true
+    WHERE e.kind = 'caption'
+      AND e.subject_type = 'image'
+      AND e.provider = ${params.embedProvider}
+      AND e.model = ${params.embedModel}
+      AND i.archived_at IS NULL
+      AND i.basement = false
+      AND (e.vec <=> ${vecLiteral}::vector) BETWEEN ${params.minDistance} AND ${params.maxDistance}
+      ${exclude}
+    -- Sample the band, do not skim its near edge. Ordering by distance before the
+    -- LIMIT made only the N nearest rows reachable, so every farther specimen had
+    -- zero chance of selection no matter its recency weight -- and the bias grows
+    -- with the corpus. It also worked against the point of the band: the near edge
+    -- is where the specimen is most nearly ABOUT the trend, which is the outcome
+    -- the middle-distance rule exists to avoid.
+    --
+    -- md5 over the id plus a caller-supplied seed gives a uniform pseudo-random
+    -- order that is stable for a given day, so replays reproduce. Distance is
+    -- still returned; it is recorded on the event and reviewed, it just no longer
+    -- decides who is eligible.
+    ORDER BY md5(i.id::text || ${params.sampleSeed})
+    LIMIT ${Math.min(Math.max(Math.trunc(params.limit), 1), 2000)}
+  `);
+
+  return res.rows.map((r) => ({
+    imageId: Number(r.id),
+    slug: r.slug,
+    handle: r.handle,
+    blobUrl: r.blob_url,
+    mime: r.mime,
+    isNsfw: Boolean(r.is_nsfw),
+    uploadedAt: new Date(r.uploaded_at),
+    intakeRecord: r.intake_record,
+    distance: Number(r.distance)
+  }));
+}
+
+// Image ids already spent on a dispatch. Read straight off the append-only log
+// rather than a projection: the log is the record, and a specimen should not be
+// sent twice even after a projection rebuild.
+//
+// Review samples are deliberately NOT counted. A manual run writes the same
+// dispatch.sent type, so counting it here would let reviewing the feature
+// permanently burn a specimen -- changing what the scheduled run picks, or
+// skipping it outright with no_specimen when the sample took the only candidate
+// in the band. /api/admin/dispatch promises a review never consumes the day, and
+// the suffixed claim slot alone does not deliver that; this is the other half.
+//
+// The predicate is written to stay correct through phase 2, where a manual run
+// CAN post for real: anything with a postId was actually sent and is excluded
+// regardless of trigger. A missing trigger counts as scheduled, which is the
+// conservative reading for any row written before the field existed.
+export async function listDispatchedImageIds(): Promise<number[]> {
+  const res = await db.execute<{ image_id: number }>(sql`
+    SELECT DISTINCT (payload->>'imageId')::int AS image_id
+    FROM events
+    WHERE type = ${EVENT_TYPE.DispatchSent}
+      AND payload->>'imageId' IS NOT NULL
+      AND (
+        payload->>'trigger' IS DISTINCT FROM 'manual'
+        OR payload->>'postId' IS NOT NULL
+      )
+  `);
+  return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
+}
+
+// Recent dispatch OUTCOMES for /admin/dispatch, newest first.
+//
+// Deliberately excludes dispatch.claimed. The page never renders claims, so
+// fetching them spent half of every window on rows that were then discarded --
+// a 60-row read covered only ~30 runs, and a day with a review run alongside the
+// scheduled one burned through it faster still. Claims remain on the log; they
+// are the once-per-day lock, not review material.
+// `offset` makes the whole history reachable a page at a time. Without it the
+// clamped limit was a hard ceiling rather than a page size: everything past the
+// first 200 outcomes was unreachable from the only review surface, and
+// countDispatchOutcomes just reported that hidden rows existed.
+export async function listRecentDispatchEvents(
+  limit = 60,
+  offset = 0
+): Promise<UniverseEvent[]> {
+  const lim = Math.min(Math.max(Math.trunc(limit), 1), 200);
+  const off = Math.max(Math.trunc(offset), 0);
+  return db
+    .select()
+    .from(events)
+    .where(inArray(events.type, [EVENT_TYPE.DispatchSent, EVENT_TYPE.DispatchSkipped]))
+    .orderBy(desc(events.id))
+    .limit(lim)
+    .offset(off);
+}
+
+// Total outcomes on file, so the review page can say when it is showing a window
+// onto a longer history rather than the whole thing.
+export async function countDispatchOutcomes(): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM events
+    WHERE type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
+// Whether a given UTC date already has a dispatch outcome on file. Used by the
+// admin page to show today's state; the hard once-per-day guarantee is enforced
+// by the claim event's unique dedupe key, not by this read.
+export async function dispatchOutcomeForDate(dateKey: string): Promise<UniverseEvent | null> {
+  const [row] = await db
+    .select()
+    .from(events)
+    .where(
+      sql`${events.subjectType} = 'dispatch' AND ${events.subjectId} = ${dateKey} AND ${events.type} <> ${EVENT_TYPE.DispatchClaimed}`
+    )
+    .orderBy(desc(events.id))
+    .limit(1);
+  return row ?? null;
+}
+
+export async function countDispatchEventsOfType(type: string): Promise<number> {
+  const res = await db.execute<{ n: number }>(
+    sql`SELECT count(*)::int AS n FROM events WHERE type = ${type}`
+  );
+  return Number(res.rows?.[0]?.n ?? 0);
+}

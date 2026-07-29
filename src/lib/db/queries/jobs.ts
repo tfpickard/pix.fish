@@ -78,6 +78,23 @@ export async function hasInFlightJobOfType(type: string): Promise<boolean> {
   return Boolean(res.rows?.[0]?.present);
 }
 
+// In-flight SCHEDULED dispatches only -- jobs with no claimSuffix in their
+// payload. A manual review run carries a suffix and claims its own slot, so it
+// can never become the day's dispatch; letting it trip a type-wide guard meant a
+// review overlapping the last cron tick of the day silently cost that day its
+// post, with no later tick to recover.
+export async function hasInFlightScheduledDispatch(): Promise<boolean> {
+  const res = await db.execute<{ present: boolean }>(sql`
+    SELECT EXISTS(
+      SELECT 1 FROM jobs
+      WHERE type = 'x.dispatch'
+        AND status IN ('pending', 'processing')
+        AND payload->>'claimSuffix' IS NULL
+    ) AS present
+  `);
+  return Boolean(res.rows?.[0]?.present);
+}
+
 // Count in-flight (pending or processing) jobs of a type for a given run stamp
 // (read from the jsonb payload). The characters.census finalizer uses this as a
 // barrier -- it waits until all characters.verify jobs for the run have settled.

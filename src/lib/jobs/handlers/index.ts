@@ -18,6 +18,7 @@ import { charactersVerifyHandler } from './charactersVerify';
 import { charactersCensusHandler } from './charactersCensus';
 import { charactersBackfillVisualsHandler } from './charactersBackfillVisuals';
 import { desirePromoteHandler } from './desirePromote';
+import { xDispatchHandler } from './xDispatch';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -70,5 +71,9 @@ export const handlers: Record<string, JobHandler> = {
   'characters.backfill-visuals': charactersBackfillVisualsHandler,
   // Desire paths: assemble worn path_traffic edges into corridors and promote
   // the ones above a strength floor into desire_paths (retiring decayed ones).
-  'desire.promote': desirePromoteHandler
+  'desire.promote': desirePromoteHandler,
+  // Outbound X dispatch: one trend fetch, one safety classification, one
+  // specimen pick, one caption. Enqueued once a day by /api/cron/dispatch with
+  // maxAttempts 1; the day-claim event makes a second run impossible.
+  'x.dispatch': xDispatchHandler
 };

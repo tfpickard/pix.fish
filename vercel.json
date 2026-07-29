@@ -3,6 +3,7 @@
   "crons": [
     { "path": "/api/cron/jobs", "schedule": "* * * * *" },
     { "path": "/api/cron/universe", "schedule": "23 */6 * * *" },
-    { "path": "/api/cron/characters", "schedule": "47 */6 * * *" }
+    { "path": "/api/cron/characters", "schedule": "47 */6 * * *" },
+    { "path": "/api/cron/dispatch", "schedule": "9,39 14-23 * * *" }
   ]
 }

@@ -27,5 +27,10 @@ export const defaultAiConfig: AiConfigMap = {
   dossier: { provider: 'anthropic', model: ANTHROPIC_DEFAULT_MODEL },
   // Standalone NSFW rescan + Pisci chat widget -- previously hardcoded Haiku.
   nsfw: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL },
-  chat: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL }
+  chat: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL },
+  // Outbound X dispatch: trend safety classification + caption generation. Two
+  // short bounded calls a day at most, so the cheap tier is the right one. Note
+  // that src/lib/ai/dispatch-text.ts speaks Anthropic only -- repointing this
+  // row at another provider disables the dispatch rather than switching it.
+  dispatch: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL }
 };
