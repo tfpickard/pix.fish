@@ -214,8 +214,14 @@ jobs:
           fi
 
           # Build argv as an array and expand it quoted. Inputs reach this step
-          # through env rather than `${{ }}` interpolation, so they were never a
-          # command-injection vector, but an unquoted string expansion still
+          # through the env block above rather than GitHub expression
+          # interpolation, so they were never a command-injection vector -- but
+          # do NOT write that expression syntax literally anywhere inside a run
+          # block, not even in a comment like this one. GitHub evaluates
+          # expressions across the whole block before bash ever sees it, so an
+          # empty pair in a shell comment fails the workflow at parse time with
+          # "An expression was expected". That is exactly how this file shipped
+          # broken once. Anyway: an unquoted string expansion still
           # word-splits and glob-expands -- a `count` of `*` would have expanded
           # to filenames. An array passes each argument through intact.
           args=(--count "$COUNT")
