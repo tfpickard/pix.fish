@@ -128,7 +128,12 @@ async function main() {
 }
 
 main()
-  .then(() => process.exit(0))
+  // Honour whatever main() set. The concurrent-modification branches signal
+  // "did not apply" through process.exitCode, and a blanket exit(0) here would
+  // erase that -- a deploy wrapper would read success from a run that wrote
+  // nothing. The other scripts copy this shape harmlessly because none of them
+  // set exitCode; this one does, so it has to defer to it.
+  .then(() => process.exit(process.exitCode ?? 0))
   .catch((err) => {
     console.error(err);
     process.exit(1);
