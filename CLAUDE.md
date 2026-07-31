@@ -30,7 +30,10 @@ backfill-embeddings.ts   # caption embeddings for legacy rows (uses the env ANTH
 ensure-pgvector.ts       # idempotent CREATE EXTENSION vector
 prepare-multiuser.ts     # pre-migration: stand up users table before db:push (bootstrap)
 backfill-multiuser.ts    # backfill owner_id on legacy single-owner rows to the admin user
+sync-dispatch-prompt.ts  # move the live dispatch_caption row to the checked-in default, skipping admin-edited rows (--apply to write)
 ```
+
+Note the asymmetry there: `seed.ts` upserts and so **overwrites the template of every prompt key**, discarding admin edits made at `/admin/prompts`. That makes it the wrong tool for shipping a prompt change to a live install. `sync-dispatch-prompt.ts` is the right one -- it only advances a row whose content still hashes to a default this repo has shipped. Any new prompt-constant change needs the outgoing hash appended to `SHIPPED_DEFAULT_HASHES`, or the update will read as an admin edit and be skipped forever.
 
 There are no unit tests. "Verify a change" = `bun run typecheck && bun run lint && bun run build`, plus exercising the feature in a browser.
 
@@ -139,6 +142,7 @@ One image a day, posted to the site's X account tagged into a currently-trending
 - Specimen selection (`select.ts` + `src/lib/db/queries/dispatch.ts`) takes a *middle band* of cosine distance from the trend vector: nearer and the specimen is genuinely about the trend, further and there is no thread. Whole corpus eligible, NSFW included by product decision, recency a weight rather than a filter, already-dispatched images excluded from the log.
 - LLM calls go through `src/lib/ai/dispatch-text.ts`, not `AIProvider.text()`: that path hardcodes 4096 tokens and the SDK's two retries, and this job needs tight caps and `maxRetries: 0`. Routed via the `dispatch` ai_config field (Haiku default); it speaks Anthropic only and returns null otherwise, which callers treat as skip.
 - **Dry run is the default regardless of credentials.** Live posting is phase 2 and is not implemented; the assembled post is written in full to `dispatch.sent` and reviewed at `/admin/dispatch` or via `bun run dispatch:dryrun`. Guard constants live in `dispatch/config.ts` and are asserted by `tests/dispatch.test.ts` -- keep them enforced there, not just configured.
+- **The drift variant is built but switched off** (`DRIFT_ENABLED = false`). Dry runs showed it either dropping the required wrong connection or emitting on-topic commentary about the trend, which rule 1 forbids outright; since caption generation never retries, leaving it on would cost or spoil a quarter of dispatches. `driftForDate` stays a pure predicate and the `--drift` dry-run flag still exercises the path, so iterating on the directive needs no code change. Turn it back on only after a dry run shows the variant holding the contract.
 - Events (`dispatch.claimed` / `dispatch.sent` / `dispatch.skipped`) extend the universe canon but are **not** reduced into any projection and are **not** in the chronicle's type allowlist. Surfacing them in the feed is deliberately out of scope.
 
 ### Gallery sort + color pages
