@@ -120,3 +120,28 @@ export const DISPATCH_JITTER_TYPICAL_MIN = 60;
 export const DISPATCH_JITTER_TAIL_MIN = 240;
 // Share of days that take the wide excursion instead of the typical one.
 export const DISPATCH_TAIL_PROBABILITY = 0.1;
+
+// ---- drift variant --------------------------------------------------------
+
+// Whether a SCHEDULED dispatch may take the drift variant. Off until the variant
+// has a contract the model can actually satisfy. Two review rounds and two dry
+// runs agree it does not yet:
+//
+//   run 1 -- two of three drafts obeyed the drift opener and silently dropped the
+//            wrong connection; the third overran the character budget.
+//   run 2 -- after the opener was tightened, all three produced ONLY the opener:
+//            on-topic commentary about the trending term, no specimen, no
+//            connection. "Rebranding requires a complete organizational
+//            restructuring" addresses the trend directly, which is the one thing
+//            rule 1 forbids absolutely and the whole feature exists to prevent.
+//
+// Left on, a quarter of scheduled dispatches would either fail generation (there
+// is no retry, so the day is simply lost) or post commentary on the trend. The
+// second outcome is worse than posting nothing, and "no post today" is already
+// the designed-for correct result -- so off is the honest setting.
+//
+// Nothing is deleted: DRIFT_PROBABILITY, driftForDate, DRIFT_DIRECTIVE and the
+// dry-run --drift flag all still work, so iterating on the contract needs no code
+// change and re-enabling is this one constant. The variant is a term of the tone
+// contract; it is not finished, which is different from being unwanted.
+export const DRIFT_ENABLED = false;

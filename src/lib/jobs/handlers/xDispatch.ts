@@ -14,6 +14,7 @@ import type {
 import {
   BAND_MAX_DISTANCE,
   BAND_MIN_DISTANCE,
+  DRIFT_ENABLED,
   EMBED_TIMEOUT_MS,
   MAX_POOL_CANDIDATES,
   WIDE_BAND_MAX_DISTANCE,
@@ -237,7 +238,11 @@ async function runDispatch(ctx: {
   }
 
   // ---- 4. caption -----------------------------------------------------------
-  const drift = driftForDate(seedKey);
+  // driftForDate stays the pure "would today drift" predicate; DRIFT_ENABLED is
+  // the shipping decision. See config.ts for why the variant is currently off --
+  // in short, it produces on-topic commentary, which is the one outcome worse
+  // than not posting.
+  const drift = DRIFT_ENABLED && driftForDate(seedKey);
   const caption = await generateCaption({
     trend: chosen.trend,
     specimen,

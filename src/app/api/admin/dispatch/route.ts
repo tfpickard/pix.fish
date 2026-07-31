@@ -3,7 +3,7 @@ import { auth, isSiteAdmin } from '@/lib/auth';
 import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import { countDispatchOutcomes, listRecentDispatchEvents } from '@/lib/db/queries/dispatch';
 import { dispatchMinuteForDate, driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
-import { captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
+import { DRIFT_ENABLED, captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,7 +38,12 @@ export async function GET(req: Request) {
     today: {
       dateKey,
       targetUtcMinute: dispatchMinuteForDate(dateKey),
-      driftVariant: driftForDate(dateKey)
+      // Must carry the same DRIFT_ENABLED gate the handler applies. driftForDate
+      // alone answers "would today drift", which is not the question the review
+      // page is asking -- it would announce "drift variant" for a quarter of days
+      // that then ship a standard caption, and the one surface meant to tell the
+      // truth about the run would be the one lying about it.
+      driftVariant: DRIFT_ENABLED && driftForDate(dateKey)
     },
     totalOutcomes,
     // Echoed back so a caller (and the review page's load-more) can page without

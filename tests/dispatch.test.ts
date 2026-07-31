@@ -12,7 +12,8 @@ import {
   UPSTREAM_DEADLINE_BUDGET_MS,
   WORKER_JOB_TIMEOUT_MS,
   captionCharBudget,
-  dispatchLiveEnabled
+  dispatchLiveEnabled,
+  DRIFT_ENABLED
 } from '../src/lib/dispatch/config';
 import {
   buildClassifierPrompt,
@@ -133,6 +134,26 @@ describe('live switch defaults to off', () => {
     expect(dispatchLiveEnabled()).toBe(false);
     process.env.X_DISPATCH_LIVE = 'true';
     expect(dispatchLiveEnabled()).toBe(true);
+  });
+});
+
+describe('drift variant is disabled for scheduled dispatches', () => {
+  // The variant currently produces on-topic commentary about the trend, which
+  // rule 1 forbids outright and which is worse than posting nothing. Enforced
+  // here rather than merely configured, so re-enabling is a deliberate act with
+  // a red test attached and not an accident of editing a constant.
+  test('the guard constant is off', () => {
+    expect(DRIFT_ENABLED).toBe(false);
+  });
+
+  test('the date predicate still selects a minority, independent of the guard', () => {
+    // driftForDate stays pure on purpose: turning the variant back on must not
+    // require restoring deleted selection logic, and the seeded distribution is
+    // still the thing under test.
+    const days = Array.from({ length: 400 }, (_, i) => `2026-${String((i % 12) + 1).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')}`);
+    const rate = days.filter(driftForDate).length / days.length;
+    expect(rate).toBeGreaterThan(0);
+    expect(rate).toBeLessThan(0.5);
   });
 });
 

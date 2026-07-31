@@ -61,6 +61,11 @@ export function isDispatchDue(now: Date): boolean {
 // dispatches, chosen from the date so a re-run of the same day is reproducible.
 export const DRIFT_PROBABILITY = 0.25;
 
+// This stays a pure seeded predicate: which days WOULD take the drift variant.
+// Whether a scheduled dispatch actually honours it is a separate question, gated
+// by DRIFT_ENABLED in config.ts and applied at the point the caption is
+// assembled -- keeping the two apart means the schedule module has no opinion on
+// whether the variant is currently fit to ship.
 export function driftForDate(dateKey: string): boolean {
   return mulberry32(seedFromString(`x.dispatch.drift:${dateKey}`))() < DRIFT_PROBABILITY;
 }
