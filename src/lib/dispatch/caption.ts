@@ -67,7 +67,23 @@ INTAKE>>>
 Write the notice now. Output only the notice text.`;
 
 // Injected on the minority of days that take the drift variant.
-export const DRIFT_DIRECTIVE = `DRIFT VARIANT -- today only. This replaces the placement of the wrong connection, not the requirement for one. Begin as though the notice genuinely concerns the popular term: the first sentence must be one that a reader who came for that term would accept as being about it, which means the term or its subject has to appear there. An opening that starts on the specimen has already failed this variant, and so has one that starts with the record number -- the reference belongs later, once you have drifted. Then follow your own associations away from it. By roughly two thirds through, the reader should realize the notice was never about that term at all, that the apparent relevance was an accident of a word you happened to share, and that you never knew what the term meant. Wander the way a mind wanders, one association to the next. Do not build to a punchline and do not land anywhere clever. End on the specimen.`;
+//
+// This directive has to survive contact with rules 2 and 3, which it looks like
+// it contradicts: rule 3 says being on topic is a failure, and this asks the
+// notice to open on topic. The reconciliation is that the opening only SOUNDS
+// topical -- it is already the wrong connection, spoken in the term's own
+// vocabulary before the specimen is named, so nothing is actually on topic at
+// any point. Saying that explicitly matters: the first draft of this directive
+// left it implied, and the model resolved the apparent conflict by dropping the
+// connection altogether and just describing the specimen, which is the exact
+// failure rule 2 exists to forbid.
+export const DRIFT_DIRECTIVE = `DRIFT VARIANT -- today only. This moves WHERE the wrong connection appears. It does not excuse you from making one, and a drift notice with no wrong connection in it is the same automatic fail as any other.
+
+Open inside your misunderstanding of the term. The first sentence must be one a reader who came for that term would accept as being about it -- so it speaks in that term's vocabulary -- while in fact already being about the thing you have wrongly filed under it. You are never on topic, not even in that first sentence; you only sound it, because the words your mistake needs happen to be the term's words. Do not name the specimen or its record number yet. Both belong later, once you have drifted.
+
+Then follow your own associations away from the opening. By roughly two thirds through, the reader should work out that the notice was never about that term at all, that what sounded like relevance was your error showing, and that you still do not know what the term meant. Wander the way a mind wanders, one association to the next. Do not build to a punchline and do not land anywhere clever. End on the specimen.
+
+You may run longer than the two sentences the standard notice wants, because the drift needs somewhere to happen -- but the character ceiling is not negotiable and a notice that overruns it is discarded unposted. Wander in fewer words.`;
 
 const NO_DRIFT_DIRECTIVE = `Stay on the specimen from the first sentence. Do not open as though the notice concerns the popular term.`;
 
