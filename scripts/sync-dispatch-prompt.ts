@@ -66,7 +66,19 @@ async function main() {
       console.log('would insert it so the prompt becomes editable at /admin/prompts.');
       return;
     }
-    await db.insert(prompts).values({ key: KEY, template: DEFAULT_DISPATCH_CAPTION_TEMPLATE, version: 1 });
+    // Same reasoning as the update below: if the row appeared between the SELECT
+    // and here, the insert must yield to it rather than race the unique index.
+    const inserted = await db
+      .insert(prompts)
+      .values({ key: KEY, template: DEFAULT_DISPATCH_CAPTION_TEMPLATE, version: 1 })
+      .onConflictDoNothing({ target: prompts.key })
+      .returning({ version: prompts.version });
+    if (inserted.length === 0) {
+      console.log('a row appeared while this script was running -- nothing was written.');
+      console.log('re-run it to see the current state.');
+      process.exitCode = 1;
+      return;
+    }
     console.log('inserted.');
     return;
   }
@@ -89,15 +101,30 @@ async function main() {
     console.log('would update it to the current default and bump the version. Re-run with --apply.');
     return;
   }
-  await db
+  // Compare-and-set on the template we actually read. Matching on the key alone
+  // would make the "unmodified" check advisory: an admin saving an edit, or a
+  // promotion from the prompt composer, between the SELECT above and this UPDATE
+  // would be silently overwritten by the very script whose only job is to not do
+  // that. The window is small and this is a hand-run script, but the guarantee is
+  // the entire reason it exists, so it belongs in the predicate rather than in
+  // the gap between two statements.
+  const updated = await db
     .update(prompts)
     .set({
       template: DEFAULT_DISPATCH_CAPTION_TEMPLATE,
       version: row.version + 1,
       updatedAt: sql`now()`
     })
-    .where(sql`${prompts.key} = ${KEY}`);
-  console.log(`updated to v${row.version + 1}.`);
+    .where(sql`${prompts.key} = ${KEY} AND ${prompts.template} = ${row.template}`)
+    .returning({ version: prompts.version });
+
+  if (updated.length === 0) {
+    console.log('the row changed while this script was running -- nothing was written.');
+    console.log('re-run it to see the current state.');
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`updated to v${updated[0]!.version}.`);
 }
 
 main()
