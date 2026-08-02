@@ -18,7 +18,7 @@ import { getSiteAdminId } from '@/lib/db/queries/users';
 // Provider routing does not: this helper speaks Anthropic only. A 'dispatch' row
 // naming another provider makes the call return null, which every caller treats
 // as "skip the day" -- fail closed rather than silently running unbounded.
-export type DispatchTextResult = { text: string; model: string };
+export type DispatchTextResult = { text: string; model: string; stopReason: string | null };
 
 export async function dispatchText(opts: {
   prompt: string;
@@ -47,6 +47,19 @@ export async function dispatchText(opts: {
   );
 
   const block = res.content.find((c) => c.type === 'text');
-  if (!block || block.type !== 'text') throw new Error('dispatch call returned no text block');
-  return { text: block.text, model: row.model };
+  if (!block || block.type !== 'text') {
+    // Name the cause instead of the symptom. "no text block" is true and
+    // useless: it is equally consistent with a max_tokens cut before any text
+    // was emitted, a refusal, or a model whose response is entirely non-text
+    // blocks -- three problems with three different fixes, and the event log is
+    // the only place an operator sees any of it. Report the stop reason and the
+    // block types actually returned.
+    const kinds = res.content.map((c) => c.type).join(', ') || 'none';
+    throw new Error(
+      `dispatch call returned no text block (model ${row.model}, stop_reason ${
+        res.stop_reason ?? 'unknown'
+      }, blocks: ${kinds}, max_tokens ${opts.maxTokens})`
+    );
+  }
+  return { text: block.text, model: row.model, stopReason: res.stop_reason ?? null };
 }

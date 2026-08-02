@@ -6,6 +6,7 @@ import {
   CAPTION_TIMEOUT_MS,
   DEFAULT_CAPTION_CHAR_BUDGET,
   MAX_HASHTAGS,
+  MAX_TREND_CANDIDATES,
   SAFETY_MAX_TOKENS,
   SAFETY_TIMEOUT_MS,
   EMBED_TIMEOUT_MS,
@@ -90,7 +91,11 @@ const TRAGEDY_TREND: Trend = {
 
 describe('cost guards', () => {
   test('LLM output budgets are tight, not just present', () => {
-    expect(SAFETY_MAX_TOKENS).toBeLessThanOrEqual(1000);
+    // Ceiling, not a target. The classifier batches up to MAX_TREND_CANDIDATES
+    // verdicts into one response, so this has to clear ~40 tokens x 12 topics
+    // with margin -- while still being a cap rather than an open budget.
+    expect(SAFETY_MAX_TOKENS).toBeLessThanOrEqual(2000);
+    expect(SAFETY_MAX_TOKENS).toBeGreaterThan(MAX_TREND_CANDIDATES * 40);
     expect(CAPTION_MAX_TOKENS).toBeLessThanOrEqual(600);
     expect(SAFETY_MAX_TOKENS).toBeGreaterThan(0);
     expect(CAPTION_MAX_TOKENS).toBeGreaterThan(0);

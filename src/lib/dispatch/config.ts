@@ -44,7 +44,23 @@ export const MAX_HASHTAGS = 2;
 // caption is at most a few hundred characters. Neither needs headroom, and an
 // unbounded max_tokens on a daily job is exactly the kind of thing that quietly
 // costs money for a year before anyone looks.
-export const SAFETY_MAX_TOKENS = 700;
+// Sized from the work, not picked round. The classifier judges up to
+// MAX_TREND_CANDIDATES (12) topics in ONE batched call and must emit one JSON
+// object per topic:
+//
+//   {"index":0,"safe":true,"category":"brand-fail","confidence":"high","reason":"..."}
+//
+// That is ~40 tokens each when the model keeps `reason` to the short phrase the
+// prompt asks for, so 12 topics is ~480 with the array syntax. At 700 the whole
+// margin was four verbose reasons wide -- and the model is not bound by the word
+// "short". Going over does not degrade gracefully: the array is cut mid-object,
+// JSON.parse fails, and the day is skipped as classifier_error. That reads as a
+// broken feature rather than a budget that was ~200 tokens short.
+//
+// 1500 keeps the guard meaningful (this is still a capped Haiku call costing a
+// fraction of a cent) while putting real distance between the normal case and
+// the cliff.
+export const SAFETY_MAX_TOKENS = 1500;
 export const CAPTION_MAX_TOKENS = 400;
 
 // Per-call deadlines. These run SEQUENTIALLY, so what matters is their sum plus
