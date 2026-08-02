@@ -73,6 +73,10 @@ type DispatchPayload = {
   claimSuffix?: string;
   // Forces dry run regardless of env. Honoured alongside the live switch.
   dryRun?: boolean;
+  // Set when an admin explicitly asked for a live post. Carried through the queue
+  // so the handler can tell "nobody asked to post" (degrade to dry, correct) from
+  // "someone asked and we cannot" (refuse and say so).
+  requestedLive?: boolean;
 };
 
 export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void> {
@@ -139,6 +143,20 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
       dedupeKey: dedupeKey.dispatchOutcome(slotKey)
     });
   };
+
+  // An explicit live request that can no longer post is refused, not downgraded.
+  // The admin endpoint validated the switch and the credentials before queuing,
+  // but a deployment or a credential rotation can land in between, and by then
+  // the operator has been told a LIVE job is queued. Filing a draft under that
+  // promise is the same class of mistake as the review button reporting success
+  // while doing nothing: the surface says posted, the account says otherwise.
+  if (payload.requestedLive === true && !liveConfigured) {
+    await skip(
+      SKIP_REASON.LiveUnavailable,
+      `live was requested but the deployment cannot post now (switch ${dispatchLiveEnabled() ? 'on' : 'off'}, credentials ${getXCredentials() ? 'present' : 'missing'})`
+    );
+    return;
+  }
 
   // Everything past the claim runs inside this guard. The claim is what makes a
   // day un-runnable a second time, so a throw between here and the outcome event

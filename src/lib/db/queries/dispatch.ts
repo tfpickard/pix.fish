@@ -199,13 +199,20 @@ export async function listDispatchedImageIds(): Promise<number[]> {
         -- permission, say) would quietly consume one good specimen per day while
         -- posting nothing. post_indeterminate deliberately does NOT rescue the
         -- specimen: not knowing is exactly when to stay conservative.
+        --
+        -- Correlated by SLOT, not by date. subject_id is only the UTC date, and
+        -- manual runs are unlimited, so one date holds many independent runs. On
+        -- a date-only match any one run's definite rejection would rescue every
+        -- other run's specimen -- including one whose post may be public. That is
+        -- the precise case this predicate exists to prevent, so matching on the
+        -- date turns the guard into its own counterexample.
         OR (
           type = ${EVENT_TYPE.DispatchAttempted}
           AND NOT EXISTS (
             SELECT 1 FROM events o
             WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
               AND o.subject_type = 'dispatch'
-              AND o.subject_id = events.subject_id
+              AND o.payload->>'slotKey' = events.payload->>'slotKey'
               AND o.payload->>'reason' = 'post_failed'
           )
         )
@@ -295,6 +302,20 @@ export async function livePostAttemptedOnDate(dateKey: string): Promise<boolean>
     WHERE subject_type = 'dispatch'
       AND subject_id = ${dateKey}
       AND type = ${EVENT_TYPE.DispatchAttempted}
+      -- An attempt that X definitely rejected published nothing, so it must not
+      -- stand down the day's scheduled post. A manual run refused with a 403 --
+      -- an access token minted before write permission was granted, say -- is the
+      -- likely case, and the operator fixing the credentials should still get
+      -- their scheduled dispatch rather than silently losing the day to a post
+      -- that never existed. post_indeterminate still suppresses: not knowing is
+      -- when to stay conservative.
+      AND NOT EXISTS (
+        SELECT 1 FROM events o
+        WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+          AND o.subject_type = 'dispatch'
+          AND o.payload->>'slotKey' = events.payload->>'slotKey'
+          AND o.payload->>'reason' = 'post_failed'
+      )
   `);
   return Number(res.rows?.[0]?.n ?? 0) > 0;
 }

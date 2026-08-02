@@ -132,7 +132,10 @@ export async function POST(req: Request) {
       dateKey: utcDateKey(now),
       trigger: 'manual',
       claimSuffix: `manual:${now.getTime()}`,
-      dryRun: !wantsLive
+      dryRun: !wantsLive,
+      // Carried so the handler refuses rather than silently filing a draft if the
+      // switch or the credentials change between this response and the drain.
+      requestedLive: wantsLive
     },
     maxAttempts: 1
   });

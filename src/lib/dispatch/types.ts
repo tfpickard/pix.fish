@@ -71,6 +71,14 @@ export const SKIP_REASON = {
   // saying that about a day whose post may exist is the audit surface asserting
   // something it does not know. An operator seeing this should check the account.
   PostIndeterminate: 'post_indeterminate',
+  // A run was queued as an explicit live request but was no longer live-capable
+  // by the time it drained -- the switch was turned off, or credentials rotated,
+  // in the gap between the admin endpoint accepting it and the queue running it.
+  // Its own outcome rather than a silent dry run: the POST already told the
+  // operator a LIVE job was queued, so quietly filing a draft would leave them
+  // believing a post went out. Everywhere else "not configured" degrades to dry,
+  // which is right when nothing asked to post; here something did.
+  LiveUnavailable: 'live_unavailable',
   // Backstop for an unexpected throw anywhere after the day has been claimed --
   // a transient DB read, a missing OWNER_GITHUB_ID, a provider that cannot
   // embed. Without it the day would stay claimed with no outcome on the log and

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { enqueueJob, hasInFlightScheduledDispatch } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasInFlightPostingDispatch } from '@/lib/db/queries/jobs';
 import { dispatchMinuteForDate, isDispatchDue, utcDateKey } from '@/lib/dispatch/schedule';
 import { eventExists } from '@/lib/db/queries/events';
 import { livePostAttemptedOnDate } from '@/lib/db/queries/dispatch';
@@ -63,10 +63,12 @@ async function tick(req: Request) {
   if (await livePostAttemptedOnDate(dateKey)) {
     return NextResponse.json({ enqueued: false, reason: 'already posted live today', dateKey });
   }
-  // Scoped to scheduled jobs. An admin review run is a separate slot and must not
-  // stand in for the day's dispatch -- if one happened to be in flight during the
-  // final tick of the day, a type-wide check would drop that day entirely.
-  if (await hasInFlightScheduledDispatch()) {
+  // Scoped to jobs that could POST. A dry review run is a separate slot and must
+  // not stand in for the day's dispatch -- if one happened to be in flight during
+  // the final tick of the day, a type-wide check would drop that day entirely.
+  // A manual LIVE run is the opposite case: running alongside it would have both
+  // handlers select the same seeded specimen and post it twice.
+  if (await hasInFlightPostingDispatch()) {
     return NextResponse.json({ enqueued: false, reason: 'dispatch already in flight', dateKey });
   }
 
