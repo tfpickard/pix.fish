@@ -40,28 +40,39 @@ export const MAX_HASHTAGS = 2;
 
 // ---- LLM budgets ----------------------------------------------------------
 
-// Bounded output on every call. The classifier emits a small JSON array; the
-// caption is at most a few hundred characters. Neither needs headroom, and an
-// unbounded max_tokens on a daily job is exactly the kind of thing that quietly
-// costs money for a year before anyone looks.
-// Sized from the work, not picked round. The classifier judges up to
-// MAX_TREND_CANDIDATES (12) topics in ONE batched call and must emit one JSON
-// object per topic:
+// Bounded output on every call. An unbounded max_tokens on a daily job is
+// exactly the kind of thing that quietly costs money for a year before anyone
+// looks -- so these stay caps. But a cap that is too SMALL does not save
+// anything: the call is billed either way and the day is lost, converting the
+// whole spend into waste. These are sized to be sufficient first and bounded
+// second, which is the opposite of how they were originally picked.
 //
-//   {"index":0,"safe":true,"category":"brand-fail","confidence":"high","reason":"..."}
+// Two things have to fit under the cap, and the second is easy to forget:
 //
-// That is ~40 tokens each when the model keeps `reason` to the short phrase the
-// prompt asks for, so 12 topics is ~480 with the array syntax. At 700 the whole
-// margin was four verbose reasons wide -- and the model is not bound by the word
-// "short". Going over does not degrade gracefully: the array is cut mid-object,
-// JSON.parse fails, and the day is skipped as classifier_error. That reads as a
-// broken feature rather than a budget that was ~200 tokens short.
+//   1. The visible output. The classifier judges up to MAX_TREND_CANDIDATES (12)
+//      topics in ONE batched call, emitting a JSON object per topic --
+//      {"index":0,"safe":true,"category":"brand-fail","confidence":"high",...}
+//      -- at roughly 40 tokens each, so ~480 for a full batch. The caption is a
+//      few hundred characters.
 //
-// 1500 keeps the guard meaningful (this is still a capped Haiku call costing a
-// fraction of a cent) while putting real distance between the normal case and
-// the cliff.
-export const SAFETY_MAX_TOKENS = 1500;
-export const CAPTION_MAX_TOKENS = 400;
+//   2. EXTENDED THINKING, on any model that does it. Thinking tokens are drawn
+//      from this same budget and are spent BEFORE any text is produced, so an
+//      undersized cap does not truncate the answer -- it can consume the entire
+//      budget and return a response with no text block at all. The `dispatch`
+//      ai_config row is repointable from /admin/ai (Haiku by default, but a
+//      thinking-class model is a legitimate choice for caption quality), so this
+//      is a configuration the operator can reach, not a hypothetical.
+//
+// That second case is why 700 failed in two different-looking ways on the same
+// model: sometimes the budget was gone before any text (no text block),
+// sometimes thinking finished with just enough left to emit a truncated array
+// (unparseable JSON). One cause, two symptoms, neither naming it.
+//
+// So both caps clear a realistic thinking budget plus the output. Still bounded,
+// still cheap for a once-a-day job, and now sufficient for the models the admin
+// UI actually allows.
+export const SAFETY_MAX_TOKENS = 4000;
+export const CAPTION_MAX_TOKENS = 2000;
 
 // Per-call deadlines. These run SEQUENTIALLY, so what matters is their sum plus
 // the embed and the DB work, measured against the worker's per-job timeout for

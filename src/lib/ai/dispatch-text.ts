@@ -55,11 +55,24 @@ export async function dispatchText(opts: {
     // the only place an operator sees any of it. Report the stop reason and the
     // block types actually returned.
     const kinds = res.content.map((c) => c.type).join(', ') || 'none';
-    throw new Error(
-      `dispatch call returned no text block (model ${row.model}, stop_reason ${
-        res.stop_reason ?? 'unknown'
-      }, blocks: ${kinds}, max_tokens ${opts.maxTokens})`
-    );
+    const context = `model ${row.model}, stop_reason ${res.stop_reason ?? 'unknown'}, blocks: ${kinds}, max_tokens ${opts.maxTokens}`;
+    // Name the specific trap rather than leaving an operator to infer it from a
+    // block-type list. Thinking tokens come out of the SAME max_tokens budget and
+    // are spent before any text, so a thinking model under a tight cap returns a
+    // response with no text at all -- which looks like a broken provider and is
+    // actually a number being too small.
+    // Compared as a widened string: the pinned SDK's ContentBlock union predates
+    // thinking blocks, so the narrow type would reject the comparison even though
+    // the API really can return them. The wire format is what matters here, not
+    // what this SDK version knows how to name.
+    const isThinking = (c: { type: string }) =>
+      c.type === 'thinking' || c.type === 'redacted_thinking';
+    if (res.content.some((c) => isThinking(c as { type: string }))) {
+      throw new Error(
+        `dispatch call spent its whole token budget on extended thinking and emitted no text -- raise max_tokens or route 'dispatch' at a non-thinking model (${context})`
+      );
+    }
+    throw new Error(`dispatch call returned no text block (${context})`);
   }
   return { text: block.text, model: row.model, stopReason: res.stop_reason ?? null };
 }

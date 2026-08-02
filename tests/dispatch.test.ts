@@ -91,14 +91,18 @@ const TRAGEDY_TREND: Trend = {
 
 describe('cost guards', () => {
   test('LLM output budgets are tight, not just present', () => {
-    // Ceiling, not a target. The classifier batches up to MAX_TREND_CANDIDATES
-    // verdicts into one response, so this has to clear ~40 tokens x 12 topics
-    // with margin -- while still being a cap rather than an open budget.
-    expect(SAFETY_MAX_TOKENS).toBeLessThanOrEqual(2000);
-    expect(SAFETY_MAX_TOKENS).toBeGreaterThan(MAX_TREND_CANDIDATES * 40);
-    expect(CAPTION_MAX_TOKENS).toBeLessThanOrEqual(600);
-    expect(SAFETY_MAX_TOKENS).toBeGreaterThan(0);
-    expect(CAPTION_MAX_TOKENS).toBeGreaterThan(0);
+    // Bounded, but sufficient FIRST. These are caps against an unbounded daily
+    // job, not an attempt to shave tokens: a cap too small to finish the work
+    // gets billed anyway and loses the day, so undersizing saves nothing. Both
+    // must clear the visible output plus a thinking budget, since thinking
+    // tokens come out of the same allowance and the 'dispatch' model is
+    // repointable from /admin/ai.
+    expect(SAFETY_MAX_TOKENS).toBeGreaterThan(MAX_TREND_CANDIDATES * 40 + 1024);
+    expect(CAPTION_MAX_TOKENS).toBeGreaterThan(1024);
+    // Still capped -- an open-ended budget on an unattended job is the thing
+    // these constants exist to prevent.
+    expect(SAFETY_MAX_TOKENS).toBeLessThanOrEqual(8000);
+    expect(CAPTION_MAX_TOKENS).toBeLessThanOrEqual(4000);
   });
 
   // Both upstream deadlines must sit inside the worker's 50s per-job timeout for
