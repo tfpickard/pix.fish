@@ -4,6 +4,7 @@ import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import { countDispatchOutcomes, listRecentDispatchEvents } from '@/lib/db/queries/dispatch';
 import { dispatchMinuteForDate, driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
 import { DRIFT_ENABLED, captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
+import { getXCredentials } from '@/lib/dispatch/x-client';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -30,10 +31,14 @@ export async function GET(req: Request) {
     countDispatchOutcomes()
   ]);
   return NextResponse.json({
-    // Phase 1 has no X client, so nothing can post regardless of this flag. It is
-    // surfaced so the review page can show how the deployment is configured.
+    // How the deployment is configured. Posting needs BOTH the switch and
+    // credentials; either alone means dry run.
     liveEnvEnabled: dispatchLiveEnabled(),
-    livePostingImplemented: false,
+    livePostingImplemented: true,
+    // Whether the deployment could actually post right now. The env switch alone
+    // is not enough -- without credentials the handler degrades to a dry run, and
+    // the review page should say so rather than implying posts are going out.
+    liveCredentialsPresent: getXCredentials() !== null,
     charBudget: captionCharBudget(),
     today: {
       dateKey,

@@ -19,15 +19,19 @@ import {
   MAX_POOL_CANDIDATES,
   WIDE_BAND_MAX_DISTANCE,
   WIDE_BAND_MIN_DISTANCE,
+  IMAGE_FETCH_TIMEOUT_MS,
+  LIVE_ALLOW_NSFW,
   captionCharBudget,
-  dispatchLiveEnabled
+  dispatchLiveEnabled,
+  madeWithAiFlag
 } from '@/lib/dispatch/config';
+import { createPost, fetchSpecimenImage, getXCredentials, uploadMedia } from '@/lib/dispatch/x-client';
 import { googleTrendsSource, trendText } from '@/lib/dispatch/trends';
 import { screenTrends } from '@/lib/dispatch/safety';
 import { pickSpecimen } from '@/lib/dispatch/select';
 import { generateCaption } from '@/lib/dispatch/caption';
 import { driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
-import { SKIP_REASON, type SkipReason, type Trend } from '@/lib/dispatch/types';
+import { SKIP_REASON, type SkipReason, type SpecimenCandidate, type Trend } from '@/lib/dispatch/types';
 
 // The daily outbound dispatch, start to finish. Runs at most once per UTC day and
 // never retries: the cron enqueues it with maxAttempts 1, and the day-claim event
@@ -37,16 +41,17 @@ import { SKIP_REASON, type SkipReason, type Trend } from '@/lib/dispatch/types';
 // throws when it cannot log at all (a dead database), because that is the one
 // case where retrying is the right behaviour.
 //
-// PHASE 1 SCOPE: everything up to and including the assembled post. There is no
-// X client yet, so `mode` is always 'dry-run' and postId is always null. The
-// live switch and the posting call land in phase 2.
+// Dry run is the default and stays the default: `mode` is only 'live' when the
+// X_DISPATCH_LIVE switch is on, credentials resolve, and the job was not queued
+// with dryRun. Everything up to the post is identical in both modes, so a dry run
+// exercises the whole pipeline.
 
 type DispatchPayload = {
   dateKey?: string;
   trigger?: 'cron' | 'manual';
   // A review run claims a distinct slot so it does not consume the real day.
   claimSuffix?: string;
-  // Forces dry run regardless of env. Phase 2 honours this alongside the live switch.
+  // Forces dry run regardless of env. Honoured alongside the live switch.
   dryRun?: boolean;
 };
 
@@ -70,11 +75,13 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   const seedKey = payload.dateKey ?? dateKey;
   const slotKey = dedupeKey.dispatchDay(dateKey, payload.claimSuffix);
 
-  // Phase 1 is dry run unconditionally. The env switch is read here so the value
-  // recorded on the event is honest about how the deployment is configured, but
-  // it cannot produce a live post until phase 2 wires a client.
-  const mode: 'dry-run' | 'live' = 'dry-run';
-  const liveConfigured = dispatchLiveEnabled() && payload.dryRun !== true;
+  // Live requires all three: the env switch, a job that did not ask for a dry
+  // run, and credentials actually present. Missing credentials degrade to a dry
+  // run rather than to a failure -- a deployment with the switch on but no keys
+  // should still produce a reviewable draft, not a claimed day with nothing on it.
+  const liveConfigured =
+    dispatchLiveEnabled() && payload.dryRun !== true && getXCredentials() !== null;
+  const mode: 'dry-run' | 'live' = liveConfigured ? 'live' : 'dry-run';
 
   // ---- the day-claim. This, not the cron schedule, is the once-per-day cap.
   const claim = await appendEvent({
@@ -227,7 +234,16 @@ async function runDispatch(ctx: {
       excludeImageIds
     });
   }
-  const specimen = pickSpecimen(candidates, { seed: `${seedKey}:${chosen.trend.topic}`, now });
+  // NSFW rows stay in the band for dry runs and for selection generally -- that
+  // was a deliberate product call. They are filtered only for a LIVE post, and
+  // only because X API v2 dropped the per-post sensitivity flag that v1.1 had:
+  // there is no way to mark an individual post as sensitive at post time, so an
+  // unflagged NSFW post would put the account itself at risk. Filtering here
+  // rather than at the post call means the day picks another specimen instead of
+  // being spent on a skip.
+  const eligible =
+    liveConfigured && !LIVE_ALLOW_NSFW ? candidates.filter((c) => !c.isNsfw) : candidates;
+  const specimen = pickSpecimen(eligible, { seed: `${seedKey}:${chosen.trend.topic}`, now });
   if (!specimen) {
     await skip(
       SKIP_REASON.NoSpecimen,
@@ -255,9 +271,24 @@ async function runDispatch(ctx: {
   }
 
   // ---- 5. dispatch ----------------------------------------------------------
-  // Phase 2 posts here when `liveConfigured` is true and credentials resolve.
-  // Until then the assembled post IS the deliverable: it goes on the event log
-  // in full and is reviewed at /admin/dispatch.
+  // In dry run the assembled post IS the deliverable: it goes on the event log
+  // in full and is reviewed at /admin/dispatch. Live mode posts it first and
+  // records the resulting id alongside.
+  let postId: string | null = null;
+  let postUrl: string | null = null;
+  if (liveConfigured) {
+    const posted = await postToX({ specimen, caption: caption.caption });
+    if (!posted.ok) {
+      // A failed post is a skip, never a retry. The day is already claimed, so
+      // the outcome is recorded and the run ends -- re-attempting a post that
+      // may have partially succeeded is the one thing this must not do.
+      await skip(SKIP_REASON.PostFailed, posted.reason, chosen.trend.topic);
+      return;
+    }
+    postId = posted.postId;
+    postUrl = posted.url;
+  }
+
   const sent: DispatchSentPayload = {
     mode,
     trigger,
@@ -277,7 +308,8 @@ async function runDispatch(ctx: {
     safetyReason: chosen.verdict.reason,
     distance: specimen.distance,
     model: caption.model,
-    postId: null
+    postId,
+    postUrl
   };
   await appendEvent({
     type: EVENT_TYPE.DispatchSent,
@@ -308,5 +340,33 @@ function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
         reject(err);
       }
     );
+  });
+}
+
+// Fetch the specimen image and post it. Every failure path returns a reason
+// string the caller turns into a `post_failed` skip; nothing throws and nothing
+// retries.
+//
+// The image is fetched from the blob URL rather than passed through from
+// selection because the handler never holds the bytes -- selection deals in
+// rows, and holding a 5MB buffer across the caption call would be wasted
+// residency on the days that end in a skip before ever reaching here.
+async function postToX(ctx: {
+  specimen: SpecimenCandidate;
+  caption: string;
+}): Promise<{ ok: true; postId: string; url: string } | { ok: false; reason: string }> {
+  const creds = getXCredentials();
+  if (!creds) return { ok: false, reason: 'X credentials are not configured' };
+
+  const image = await fetchSpecimenImage(ctx.specimen.blobUrl, IMAGE_FETCH_TIMEOUT_MS);
+  if (!image.ok) return { ok: false, reason: image.reason };
+
+  const media = await uploadMedia(creds, image.bytes, image.mime);
+  if (!media.ok) return { ok: false, reason: media.reason };
+
+  return createPost(creds, {
+    text: ctx.caption,
+    mediaId: media.mediaId,
+    madeWithAi: madeWithAiFlag()
   });
 }

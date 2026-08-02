@@ -158,6 +158,10 @@ export type DispatchSentPayload = {
   distance: number;
   model: string;
   postId: string | null; // null in dry run
+  // Permalink to the live post. Derived from postId, but stored rather than
+  // rebuilt at read time: the URL shape is X's to change, and the log is meant
+  // to stay resolvable without this codebase being around to reconstruct it.
+  postUrl?: string | null;
 };
 
 // A day that ended without a post. `reason` is one of the SKIP_REASON codes in
