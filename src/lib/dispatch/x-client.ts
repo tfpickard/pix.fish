@@ -22,7 +22,12 @@ const CREATE_POST_URL = 'https://api.x.com/2/tweets';
 
 export type XPostResult =
   | { ok: true; postId: string; url: string }
-  | { ok: false; reason: string };
+  // `indeterminate` means the request left this process and no usable answer came
+  // back -- a timeout, an abort, a socket error. X may well have accepted it, so
+  // the post may be public. Distinguishing that from a definite rejection (an
+  // HTTP error we actually read) is the difference between the log saying "no
+  // post" truthfully and saying it when a post exists.
+  | { ok: false; reason: string; indeterminate: boolean };
 
 // Credentials come from the environment rather than provider_keys: these are the
 // SITE's posting identity, not a per-user BYO credential, and there is exactly
@@ -139,6 +144,7 @@ export async function uploadMedia(
   }
 }
 
+
 /**
  * Create the post. JSON body, so again nothing but the oauth_* params is signed.
  *
@@ -174,13 +180,32 @@ export async function createPost(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(POST_TIMEOUT_MS)
     });
-    if (!res.ok) return { ok: false, reason: `post failed: ${await errorDetail(res)}` };
+    // A response we can read is a definite answer: X rejected it, nothing is
+    // public, and the log can say so.
+    if (!res.ok) {
+      return { ok: false, reason: `post rejected: ${await errorDetail(res)}`, indeterminate: false };
+    }
 
-    const json = (await res.json()) as { data?: { id?: string } };
+    let json: { data?: { id?: string } };
+    try {
+      json = (await res.json()) as { data?: { id?: string } };
+    } catch (err) {
+      // 2xx whose body we could not read. The post almost certainly exists; we
+      // just cannot name it.
+      return {
+        ok: false,
+        reason: `post accepted but the response was unreadable: ${errText(err)}`,
+        indeterminate: true
+      };
+    }
     const postId = json.data?.id;
-    if (!postId) return { ok: false, reason: 'post returned no id' };
+    if (!postId) {
+      return { ok: false, reason: 'post accepted but returned no id', indeterminate: true };
+    }
     return { ok: true, postId, url: `https://x.com/i/web/status/${postId}` };
   } catch (err) {
-    return { ok: false, reason: `post failed: ${errText(err)}` };
+    // Threw before or after the request was written -- fetch does not tell us
+    // which, so this has to be treated as possibly-published.
+    return { ok: false, reason: `post outcome unknown: ${errText(err)}`, indeterminate: true };
   }
 }

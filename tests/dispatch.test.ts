@@ -1074,3 +1074,15 @@ describe('media category follows the specimen mime', () => {
     expect(mediaCategoryFor('image/webp')).toBe('tweet_image');
   });
 });
+
+describe('an unknown post outcome is not reported as no-post', () => {
+  // The account is the source of truth and the log is the only record of what we
+  // believe. post_failed asserts nothing was published; post_indeterminate
+  // asserts we do not know. Collapsing the second into the first makes the audit
+  // surface state something it cannot know, on exactly the days it matters.
+  test('the two outcomes are distinct reason codes', () => {
+    expect(SKIP_REASON.PostFailed).toBe('post_failed');
+    expect(SKIP_REASON.PostIndeterminate).toBe('post_indeterminate');
+    expect(SKIP_REASON.PostIndeterminate).not.toBe(SKIP_REASON.PostFailed);
+  });
+});

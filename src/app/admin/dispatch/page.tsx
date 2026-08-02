@@ -164,7 +164,14 @@ function SkippedCard({ row }: { row: Row }) {
   return (
     <div className="rounded border border-ink-800 p-3 font-mono text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-ink-400">no post</span>
+        {/* An indeterminate outcome must not read as "no post": the request
+            reached X and the answer was lost, so a post may exist. Saying "no
+            post" there is the audit page asserting something it does not know. */}
+        {p.reason === 'post_indeterminate' ? (
+          <span className="text-secondary">POST MAY EXIST -- check the account</span>
+        ) : (
+          <span className="text-ink-400">no post</span>
+        )}
         <span className="text-ink-500">{row.dateKey}</span>
         <span className="text-destructive">{p.reason}</span>
         <TriggerBadge trigger={p.trigger} />

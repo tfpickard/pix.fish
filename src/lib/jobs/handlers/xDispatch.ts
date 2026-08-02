@@ -306,21 +306,43 @@ async function runDispatch(ctx: {
     // safe. Checking the clock does: a day skipped because the upstream ran slow
     // costs one post, whereas a post landing as the job is killed leaves a public
     // post with no outcome on the log.
-    const elapsed = Date.now() - startedAt;
-    if (!canStartPostPhase(elapsed)) {
+    const budgetLeft = () => canStartPostPhase(Date.now() - startedAt);
+    if (!budgetLeft()) {
       await skip(
         SKIP_REASON.PostFailed,
-        `not enough job budget left to post safely: ${elapsed}ms elapsed, ${POST_PHASE_BUDGET_MS}ms needed`,
+        `not enough job budget left to post safely: ${Date.now() - startedAt}ms elapsed, ${POST_PHASE_BUDGET_MS}ms needed`,
         chosen.trend.topic
       );
       return;
     }
 
-    // Burn the specimen BEFORE the side effect. If the post succeeds and the
-    // dispatch.sent write below then fails, the handler records an internal_error
-    // and the post is public with no outcome row -- at which point only this
-    // attempt row stops the same specimen going out again on a later day.
-    // listDispatchedImageIds() counts attempts for exactly that reason.
+    // Fetch and upload FIRST. Neither can publish anything, so a blob 404 or an
+    // oversized image must not retire the specimen -- it is still perfectly good
+    // for another day.
+    const media = await prepareMedia(specimen);
+    if (!media.ok) {
+      await skip(SKIP_REASON.PostFailed, media.reason, chosen.trend.topic);
+      return;
+    }
+
+    // Re-check the clock. The gate above was taken before an image fetch, an
+    // upload, and (below) a database write, none of which are instant; a stale
+    // "yes" is exactly how a post lands after the worker has already given up on
+    // the job.
+    if (!budgetLeft()) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `budget exhausted after media upload: ${Date.now() - startedAt}ms elapsed`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Burn the specimen immediately before the ONE call that can make something
+    // public. If the post succeeds and the dispatch.sent write below then fails,
+    // the handler records an internal_error and the post is public with no
+    // outcome row -- at which point only this attempt row stops the same specimen
+    // going out again. listDispatchedImageIds() counts attempts for that reason.
     await appendEvent({
       type: EVENT_TYPE.DispatchAttempted,
       subjectType: SUBJECT_TYPE.Dispatch,
@@ -333,12 +355,26 @@ async function runDispatch(ctx: {
       dedupeKey: dedupeKey.dispatchAttempt(slotKey)
     });
 
-    const posted = await postToX({ specimen, caption: caption.caption });
+    const creds = getXCredentials();
+    if (!creds) {
+      await skip(SKIP_REASON.PostFailed, 'X credentials disappeared mid-run', chosen.trend.topic);
+      return;
+    }
+    const posted = await createPost(creds, {
+      text: caption.caption,
+      mediaId: media.mediaId,
+      madeWithAi: madeWithAiFlag()
+    });
     if (!posted.ok) {
-      // A failed post is a skip, never a retry. The day is already claimed, so
-      // the outcome is recorded and the run ends -- re-attempting a post that
-      // may have partially succeeded is the one thing this must not do.
-      await skip(SKIP_REASON.PostFailed, posted.reason, chosen.trend.topic);
+      // Never a retry: a retry that succeeds after a timeout has already posted.
+      // But do not claim "no post" when we do not know -- an indeterminate
+      // outcome gets its own reason so the log stays honest and an operator knows
+      // to check the account.
+      await skip(
+        posted.indeterminate ? SKIP_REASON.PostIndeterminate : SKIP_REASON.PostFailed,
+        posted.reason,
+        chosen.trend.topic
+      );
       return;
     }
     postId = posted.postId;
@@ -399,30 +435,26 @@ function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-// Fetch the specimen image and post it. Every failure path returns a reason
-// string the caller turns into a `post_failed` skip; nothing throws and nothing
-// retries.
+// Everything needed before the post, and nothing that can publish: fetch the
+// specimen image and upload it, returning a media id. Kept separate from
+// createPost so the caller can put the attempt marker between them -- a blob 404
+// or an oversized image must not retire a specimen that never reached X.
+//
+// Every failure returns a reason string the caller turns into a definite
+// `post_failed`; nothing here is ambiguous, because nothing here is public.
 //
 // The image is fetched from the blob URL rather than passed through from
 // selection because the handler never holds the bytes -- selection deals in
 // rows, and holding a 5MB buffer across the caption call would be wasted
 // residency on the days that end in a skip before ever reaching here.
-async function postToX(ctx: {
-  specimen: SpecimenCandidate;
-  caption: string;
-}): Promise<{ ok: true; postId: string; url: string } | { ok: false; reason: string }> {
+async function prepareMedia(
+  specimen: SpecimenCandidate
+): Promise<{ ok: true; mediaId: string } | { ok: false; reason: string }> {
   const creds = getXCredentials();
   if (!creds) return { ok: false, reason: 'X credentials are not configured' };
 
-  const image = await fetchSpecimenImage(ctx.specimen.blobUrl, IMAGE_FETCH_TIMEOUT_MS);
+  const image = await fetchSpecimenImage(specimen.blobUrl, IMAGE_FETCH_TIMEOUT_MS);
   if (!image.ok) return { ok: false, reason: image.reason };
 
-  const media = await uploadMedia(creds, image.bytes, image.mime);
-  if (!media.ok) return { ok: false, reason: media.reason };
-
-  return createPost(creds, {
-    text: ctx.caption,
-    mediaId: media.mediaId,
-    madeWithAi: madeWithAiFlag()
-  });
+  return uploadMedia(creds, image.bytes, image.mime);
 }

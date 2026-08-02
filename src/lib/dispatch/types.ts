@@ -59,6 +59,12 @@ export const SKIP_REASON = {
   NoProviderKey: 'no_provider_key',
   GenerationFailed: 'generation_failed',
   PostFailed: 'post_failed',
+  // The request reached X and no usable answer came back -- a timeout, an abort,
+  // a 2xx whose body could not be read. The post MAY be public. Distinct from
+  // post_failed on purpose: the admin page renders a skip as "no post", and
+  // saying that about a day whose post may exist is the audit surface asserting
+  // something it does not know. An operator seeing this should check the account.
+  PostIndeterminate: 'post_indeterminate',
   // Backstop for an unexpected throw anywhere after the day has been claimed --
   // a transient DB read, a missing OWNER_GITHUB_ID, a provider that cannot
   // embed. Without it the day would stay claimed with no outcome on the log and
