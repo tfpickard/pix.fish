@@ -16,8 +16,11 @@ import {
   DRIFT_ENABLED,
   LIVE_ALLOW_NSFW,
   MAX_MEDIA_BYTES,
+  POST_PHASE_BUDGET_MS,
+  canStartPostPhase,
   madeWithAiFlag
 } from '../src/lib/dispatch/config';
+import { mediaCategoryFor } from '../src/lib/dispatch/x-client';
 import {
   authorizationHeader,
   normalizeParams,
@@ -1032,5 +1035,42 @@ describe('live posting guards', () => {
       if (original === undefined) delete process.env.X_DISPATCH_MADE_WITH_AI;
       else process.env.X_DISPATCH_MADE_WITH_AI = original;
     }
+  });
+});
+
+describe('the post phase never starts without time to finish and record', () => {
+  // The worst case upstream (32s) plus the post phase does not fit in the
+  // worker's 50s, and the cron function dies at 60s, so no timeout makes the sum
+  // safe. The clock check is what keeps a post from landing while the job is
+  // being killed -- which would leave a public post with no outcome on the log.
+  test('the phase budget is satisfiable at all', () => {
+    expect(POST_PHASE_BUDGET_MS).toBeLessThan(WORKER_JOB_TIMEOUT_MS);
+  });
+
+  test('a fresh job may post; one that already burned the budget may not', () => {
+    expect(canStartPostPhase(0)).toBe(true);
+    expect(canStartPostPhase(WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS)).toBe(true);
+    expect(canStartPostPhase(WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS + 1)).toBe(false);
+    expect(canStartPostPhase(WORKER_JOB_TIMEOUT_MS)).toBe(false);
+  });
+
+  test('the full upstream budget still leaves the gate reachable', () => {
+    // If this ever inverts, every live dispatch would skip on the clock and the
+    // feature would look broken rather than merely slow.
+    expect(UPSTREAM_DEADLINE_BUDGET_MS).toBeLessThan(
+      WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS + SAFETY_TIMEOUT_MS + CAPTION_TIMEOUT_MS
+    );
+  });
+});
+
+describe('media category follows the specimen mime', () => {
+  // A GIF sent as tweet_image can be rejected or mishandled, turning a valid
+  // dispatch into post_failed. The upload route accepts image/gif.
+  test('GIFs get tweet_gif, stills get tweet_image', () => {
+    expect(mediaCategoryFor('image/gif')).toBe('tweet_gif');
+    expect(mediaCategoryFor('IMAGE/GIF')).toBe('tweet_gif');
+    expect(mediaCategoryFor('image/jpeg')).toBe('tweet_image');
+    expect(mediaCategoryFor('image/png')).toBe('tweet_image');
+    expect(mediaCategoryFor('image/webp')).toBe('tweet_image');
   });
 });

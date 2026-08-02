@@ -139,11 +139,22 @@ export async function listDispatchedImageIds(): Promise<number[]> {
   const res = await db.execute<{ image_id: number }>(sql`
     SELECT DISTINCT (payload->>'imageId')::int AS image_id
     FROM events
-    WHERE type = ${EVENT_TYPE.DispatchSent}
-      AND payload->>'imageId' IS NOT NULL
+    WHERE payload->>'imageId' IS NOT NULL
       AND (
-        payload->>'trigger' IS DISTINCT FROM 'manual'
-        OR payload->>'postId' IS NOT NULL
+        (
+          type = ${EVENT_TYPE.DispatchSent}
+          AND (
+            payload->>'trigger' IS DISTINCT FROM 'manual'
+            OR payload->>'postId' IS NOT NULL
+          )
+        )
+        -- Attempts count unconditionally, including manual ones. The attempt row
+        -- is only ever written on a LIVE run immediately before the X call, so it
+        -- means "this specimen may already be public" -- which is exactly the
+        -- state that must never be re-selected. Reading only dispatch.sent left a
+        -- window where a successful post whose outcome write then failed would
+        -- leave the specimen eligible and let it go out a second time.
+        OR type = ${EVENT_TYPE.DispatchAttempted}
       )
   `);
   return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));

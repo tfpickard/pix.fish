@@ -86,6 +86,14 @@ export async function fetchSpecimenImage(
   }
 }
 
+// X distinguishes GIFs from stills: a GIF sent as `tweet_image` can be rejected
+// or handled as the wrong media type, turning an otherwise valid dispatch into a
+// post_failed. The upload route accepts image/gif, so a GIF specimen really can
+// reach here.
+export function mediaCategoryFor(mime: string): 'tweet_gif' | 'tweet_image' {
+  return mime.toLowerCase() === 'image/gif' ? 'tweet_gif' : 'tweet_image';
+}
+
 /**
  * Single-request image upload. The body is multipart/form-data, so per RFC 5849
  * none of it is signed -- the Authorization header covers the oauth_* params
@@ -102,7 +110,7 @@ export async function uploadMedia(
   const ab = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(ab).set(bytes);
   form.append('media', new Blob([ab], { type: mime }), 'specimen');
-  form.append('media_category', 'tweet_image');
+  form.append('media_category', mediaCategoryFor(mime));
   form.append('media_type', mime);
 
   try {

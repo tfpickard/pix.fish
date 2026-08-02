@@ -148,13 +148,35 @@ export const DRIFT_ENABLED = false;
 
 // ---- live posting ---------------------------------------------------------
 
-// Bounds on the two outbound X calls. Both are well inside the worker's
-// per-type timeout, and neither call retries -- a retried post that succeeds
-// after a timeout has already posted, which is the one failure this feature
-// cannot take back.
-export const IMAGE_FETCH_TIMEOUT_MS = 10_000;
-export const MEDIA_UPLOAD_TIMEOUT_MS = 20_000;
-export const POST_TIMEOUT_MS = 10_000;
+// Bounds on the outbound X calls. Neither retries -- a retried post that
+// succeeds after a timeout has already posted, which is the one failure this
+// feature cannot take back.
+export const IMAGE_FETCH_TIMEOUT_MS = 8_000;
+export const MEDIA_UPLOAD_TIMEOUT_MS = 12_000;
+export const POST_TIMEOUT_MS = 8_000;
+
+// What the posting phase can cost end to end, plus a margin for the outcome
+// write that must follow it.
+//
+// This does NOT fit alongside UPSTREAM_DEADLINE_BUDGET_MS inside the worker's
+// 50s, and pretending otherwise would be the dangerous kind of arithmetic: the
+// worst case is 32s upstream plus 28s here, and the cron function itself dies at
+// 60s (maxDuration), so there is no timeout large enough to make the sum safe.
+//
+// So the handler does not rely on the sum fitting. It checks the clock before
+// starting the post and declines the day if too little time remains -- see
+// canStartPostPhase(). A day skipped because the upstream ran slow is cheap; a
+// post that lands while the job is being killed, leaving a public post with no
+// outcome on the log, is not.
+export const POST_WRITE_MARGIN_MS = 3_000;
+export const POST_PHASE_BUDGET_MS =
+  IMAGE_FETCH_TIMEOUT_MS + MEDIA_UPLOAD_TIMEOUT_MS + POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS;
+
+// True when enough of the job's budget is left to run the whole posting phase
+// AND record the outcome. `elapsedMs` is measured from the handler's start.
+export function canStartPostPhase(elapsedMs: number): boolean {
+  return elapsedMs <= WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS;
+}
 
 // X's image ceiling is 5MB. Refuse locally rather than paying for an upload the
 // far side will reject.

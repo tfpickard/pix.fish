@@ -22,6 +22,11 @@ export const EVENT_TYPE = {
   // None of these are reduced into a projection and none are in the chronicle's
   // type allow-list: surfacing them in the feed is deliberately out of scope.
   DispatchClaimed: 'dispatch.claimed',
+  // Written immediately BEFORE the X call, live runs only. Its whole job is to
+  // burn the specimen durably ahead of the side effect: if the post succeeds and
+  // the dispatch.sent write then fails, this row is what stops the same specimen
+  // going out again on a later day.
+  DispatchAttempted: 'dispatch.attempted',
   DispatchSent: 'dispatch.sent',
   DispatchSkipped: 'dispatch.skipped'
 } as const;
@@ -32,6 +37,7 @@ export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
 // history at once (/admin/dispatch).
 export const DISPATCH_EVENT_TYPES = [
   EVENT_TYPE.DispatchClaimed,
+  EVENT_TYPE.DispatchAttempted,
   EVENT_TYPE.DispatchSent,
   EVENT_TYPE.DispatchSkipped
 ] as const;
@@ -130,6 +136,14 @@ export type DispatchClaimedPayload = {
   trigger: 'cron' | 'manual';
 };
 
+// The specimen a live run is about to post, recorded before the call so the
+// commitment survives a failure of the outcome write.
+export type DispatchAttemptedPayload = {
+  trigger: 'cron' | 'manual';
+  imageId: number;
+  slug: string;
+};
+
 // A dispatch that produced a post (live) or a complete would-be post (dry run).
 // Everything needed to review the decision after the fact is on the event: the
 // specimen, the caption as posted, the trend it rode, and the safety verdict
@@ -219,5 +233,8 @@ export const dedupeKey = {
     suffix ? `x.dispatch:${dateKey}:${suffix}` : `x.dispatch:${dateKey}`,
   // Outcomes are keyed off the same slot id so one claim yields at most one
   // outcome even if a handler somehow ran twice against the same claim.
-  dispatchOutcome: (slotKey: string) => `x.dispatch.outcome:${slotKey}`
+  dispatchOutcome: (slotKey: string) => `x.dispatch.outcome:${slotKey}`,
+  // The pre-post attempt marker, keyed off the same slot so a handler that
+  // somehow ran twice against one claim cannot file two attempts.
+  dispatchAttempt: (slotKey: string) => `x.dispatch.attempt:${slotKey}`
 };

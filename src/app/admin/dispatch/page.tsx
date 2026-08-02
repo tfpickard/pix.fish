@@ -87,7 +87,10 @@ function SentCard({ row }: { row: Row }) {
   return (
     <div className="rounded border border-ink-800 p-3 font-mono text-xs">
       <div className="flex flex-wrap items-center gap-2 text-ink-500">
-        <span className="text-secondary">would post</span>
+        {/* The label has to follow the row, not the page: a log holds dry-run
+            drafts and real posts side by side, and calling a post that exists
+            "would post" is the audit surface contradicting the account. */}
+        <span className="text-secondary">{p.postId ? 'posted' : 'would post'}</span>
         <span>{row.dateKey}</span>
         <span>/</span>
         <span>{p.mode}</span>
@@ -262,7 +265,10 @@ export default function AdminDispatchPage() {
 
       <div className="flex flex-wrap items-center gap-3">
         <p className="font-mono text-xs text-ink-500">
-          outbound X dispatch. one per day, dry run only.
+          outbound X dispatch. one per day.{' '}
+          {data?.liveEnvEnabled && data?.liveCredentialsPresent
+            ? 'LIVE -- runs post to X.'
+            : 'dry run only.'}
         </p>
         <button
           type="button"

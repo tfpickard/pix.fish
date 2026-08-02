@@ -7,6 +7,7 @@ import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { EVENT_TYPE, SUBJECT_TYPE, dedupeKey } from '@/lib/universe/events';
 import type {
+  DispatchAttemptedPayload,
   DispatchClaimedPayload,
   DispatchSentPayload,
   DispatchSkippedPayload
@@ -21,6 +22,8 @@ import {
   WIDE_BAND_MIN_DISTANCE,
   IMAGE_FETCH_TIMEOUT_MS,
   LIVE_ALLOW_NSFW,
+  POST_PHASE_BUDGET_MS,
+  canStartPostPhase,
   captionCharBudget,
   dispatchLiveEnabled,
   madeWithAiFlag
@@ -58,6 +61,9 @@ type DispatchPayload = {
 export async function xDispatchHandler(job: Job): Promise<void> {
   const payload = (job.payload ?? {}) as DispatchPayload;
   const now = new Date();
+  // Measured from the handler's first instruction so the pre-post clock check
+  // accounts for everything the job has already spent, not just the stage it is in.
+  const startedAt = Date.now();
   const trigger = payload.trigger === 'manual' ? 'manual' : 'cron';
 
   // Claim the EXECUTION date, not the date stamped at enqueue. A job queued at
@@ -118,7 +124,7 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   // transient DB read in the candidate queries or in getPromptByKey, a missing
   // OWNER_GITHUB_ID, a provider that cannot embed.
   try {
-    await runDispatch({ dateKey, seedKey, slotKey, mode, trigger, liveConfigured, skip });
+    await runDispatch({ dateKey, seedKey, slotKey, mode, trigger, liveConfigured, startedAt, skip });
   } catch (err) {
     // Fail closed, but audibly. If the skip write ALSO throws we genuinely
     // cannot record anything, and that is the one case where letting the job
@@ -138,9 +144,10 @@ async function runDispatch(ctx: {
   mode: 'dry-run' | 'live';
   trigger: 'cron' | 'manual';
   liveConfigured: boolean;
+  startedAt: number;
   skip: (reason: SkipReason, detail: string, trendTopic?: string | null) => Promise<void>;
 }): Promise<void> {
-  const { dateKey, seedKey, slotKey, mode, trigger, liveConfigured, skip } = ctx;
+  const { dateKey, seedKey, slotKey, mode, trigger, liveConfigured, startedAt, skip } = ctx;
   const now = new Date();
 
   // ---- 1. trend acquisition -------------------------------------------------
@@ -221,8 +228,16 @@ async function runDispatch(ctx: {
     limit: MAX_POOL_CANDIDATES,
     excludeImageIds
   });
+  // Live mode drops NSFW rows (see below). The widening decision has to be made
+  // on what is actually SELECTABLE, not on the raw count -- a narrow band holding
+  // three NSFW rows is empty for a live run, and testing the raw count there
+  // skipped the widening pass and reported no_specimen while usable specimens sat
+  // in the wide band.
+  const selectable = (rows: SpecimenCandidate[]) =>
+    liveConfigured && !LIVE_ALLOW_NSFW ? rows.filter((c) => !c.isNsfw) : rows;
+
   // One widening pass. Two would be a loop dressed as a policy.
-  if (candidates.length === 0) {
+  if (selectable(candidates).length === 0) {
     candidates = await listDispatchCandidates({
       vec,
       embedProvider: embedder.name,
@@ -241,8 +256,7 @@ async function runDispatch(ctx: {
   // unflagged NSFW post would put the account itself at risk. Filtering here
   // rather than at the post call means the day picks another specimen instead of
   // being spent on a skip.
-  const eligible =
-    liveConfigured && !LIVE_ALLOW_NSFW ? candidates.filter((c) => !c.isNsfw) : candidates;
+  const eligible = selectable(candidates);
   const specimen = pickSpecimen(eligible, { seed: `${seedKey}:${chosen.trend.topic}`, now });
   if (!specimen) {
     // Say which of the two emptied the pool. "Nothing in the band" and "the band
@@ -286,6 +300,39 @@ async function runDispatch(ctx: {
   let postId: string | null = null;
   let postUrl: string | null = null;
   if (liveConfigured) {
+    // Do not START a post there is not time to finish AND record. The worst case
+    // upstream (32s) plus this phase (31s) exceeds the worker's 50s timeout, and
+    // the cron function itself dies at 60s, so no timeout value makes the sum
+    // safe. Checking the clock does: a day skipped because the upstream ran slow
+    // costs one post, whereas a post landing as the job is killed leaves a public
+    // post with no outcome on the log.
+    const elapsed = Date.now() - startedAt;
+    if (!canStartPostPhase(elapsed)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `not enough job budget left to post safely: ${elapsed}ms elapsed, ${POST_PHASE_BUDGET_MS}ms needed`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Burn the specimen BEFORE the side effect. If the post succeeds and the
+    // dispatch.sent write below then fails, the handler records an internal_error
+    // and the post is public with no outcome row -- at which point only this
+    // attempt row stops the same specimen going out again on a later day.
+    // listDispatchedImageIds() counts attempts for exactly that reason.
+    await appendEvent({
+      type: EVENT_TYPE.DispatchAttempted,
+      subjectType: SUBJECT_TYPE.Dispatch,
+      subjectId: dateKey,
+      payload: {
+        trigger,
+        imageId: specimen.imageId,
+        slug: specimen.slug
+      } satisfies DispatchAttemptedPayload,
+      dedupeKey: dedupeKey.dispatchAttempt(slotKey)
+    });
+
     const posted = await postToX({ specimen, caption: caption.caption });
     if (!posted.ok) {
       // A failed post is a skip, never a retry. The day is already claimed, so
