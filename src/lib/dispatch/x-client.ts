@@ -162,6 +162,25 @@ export async function uploadMedia(
 
 
 /**
+ * Whether an HTTP error status leaves the post's existence unknown.
+ *
+ * A readable response is not automatically a definite answer. A 4xx is: the
+ * request was refused on the way in -- bad auth, bad media id, duplicate content
+ * -- so nothing became public and the log can say "no post" truthfully. A 5xx is
+ * not. It says the far side broke, and says nothing about whether it broke
+ * before or after creating the post; X publishes no side-effect-free guarantee
+ * for its own errors.
+ *
+ * The asymmetry is what decides this. Calling a 5xx definite releases the
+ * specimen in listDispatchedImageIds() and lets the same image go out a second
+ * time -- the exact duplicate this path exists to prevent. Calling it
+ * indeterminate costs one specimen and one honest warning on the review page.
+ */
+export function statusIsIndeterminate(status: number): boolean {
+  return status >= 500;
+}
+
+/**
  * Create the post. JSON body, so again nothing but the oauth_* params is signed.
  *
  * There is no `possibly_sensitive` field on POST /2/tweets -- it existed on the
@@ -196,10 +215,14 @@ export async function createPost(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(POST_TIMEOUT_MS)
     });
-    // A response we can read is a definite answer: X rejected it, nothing is
-    // public, and the log can say so.
     if (!res.ok) {
-      return { ok: false, reason: `post rejected: ${await errorDetail(res)}`, indeterminate: false };
+      const detail = await errorDetail(res);
+      const unknown = statusIsIndeterminate(res.status);
+      return {
+        ok: false,
+        reason: unknown ? `post outcome unknown (server error): ${detail}` : `post rejected: ${detail}`,
+        indeterminate: unknown
+      };
     }
 
     let json: { data?: { id?: string } };

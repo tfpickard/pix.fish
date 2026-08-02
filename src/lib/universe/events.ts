@@ -139,6 +139,12 @@ export type DispatchClaimedPayload = {
 // The specimen a live run is about to post, recorded before the call so the
 // commitment survives a failure of the outcome write.
 export type DispatchAttemptedPayload = {
+  // Which claim slot this belongs to. subjectId is only the UTC date, and manual
+  // runs are unlimited, so a single date can carry many independent runs -- an
+  // attempt can only be paired with ITS outcome by the slot. Correlating on the
+  // date instead lets an unrelated run's outcome vouch for an attempt that never
+  // completed, which is the one thing this event exists to make visible.
+  slotKey: string;
   trigger: 'cron' | 'manual';
   imageId: number;
   slug: string;
@@ -149,6 +155,8 @@ export type DispatchAttemptedPayload = {
 // specimen, the caption as posted, the trend it rode, and the safety verdict
 // that cleared it.
 export type DispatchSentPayload = {
+  // Pairs this outcome with its dispatch.attempted. See the note there.
+  slotKey: string;
   mode: 'dry-run' | 'live';
   // How this outcome came about. The claim event already records it, but nothing
   // associates a claim with its outcome at read time -- /admin/dispatch lists
@@ -181,6 +189,9 @@ export type DispatchSentPayload = {
 // A day that ended without a post. `reason` is one of the SKIP_REASON codes in
 // src/lib/dispatch/types.ts; `detail` is free text for the admin page.
 export type DispatchSkippedPayload = {
+  // Pairs this outcome with its dispatch.attempted. A post_indeterminate skip is
+  // an outcome for an attempt just as much as a sent is.
+  slotKey: string;
   mode: 'dry-run' | 'live';
   trigger: 'cron' | 'manual';
   reason: string;

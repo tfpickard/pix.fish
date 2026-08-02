@@ -17,11 +17,15 @@ import {
   LIVE_ALLOW_NSFW,
   MAX_MEDIA_BYTES,
   POST_PHASE_BUDGET_MS,
+  POST_ONLY_BUDGET_MS,
+  POST_TIMEOUT_MS,
+  POST_WRITE_MARGIN_MS,
+  canFinishPostPhase,
   canStartPostPhase,
   liveEligible,
   madeWithAiFlag
 } from '../src/lib/dispatch/config';
-import { mediaCategoryFor } from '../src/lib/dispatch/x-client';
+import { mediaCategoryFor, statusIsIndeterminate } from '../src/lib/dispatch/x-client';
 import {
   authorizationHeader,
   normalizeParams,
@@ -465,6 +469,28 @@ describe('one dispatch per day is structural', () => {
     expect(dedupeKey.dispatchDay('2026-07-26', 'manual:123')).not.toBe(
       dedupeKey.dispatchDay('2026-07-26')
     );
+  });
+
+  test('manual runs are unlimited: every one claims a distinct slot', () => {
+    // The cap is on the SCHEDULER, not the account. Manual runs -- live or dry --
+    // take a `manual:<ms>` slot, so two on the same day never collide with each
+    // other or with cron's. This is what lets an admin post as often as they like
+    // while the automatic dispatch stays daily.
+    const day = '2026-07-26';
+    const first = dedupeKey.dispatchDay(day, 'manual:1');
+    const second = dedupeKey.dispatchDay(day, 'manual:2');
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(dedupeKey.dispatchDay(day));
+    expect(second).not.toBe(dedupeKey.dispatchDay(day));
+  });
+
+  test('each manual run gets its own outcome slot', () => {
+    // Outcomes are keyed off the claim slot, so unlimited manual runs must not
+    // collapse into one outcome row -- otherwise the second post of the day would
+    // be silently unrecorded.
+    const a = dedupeKey.dispatchOutcome(dedupeKey.dispatchDay('2026-07-26', 'manual:1'));
+    const b = dedupeKey.dispatchOutcome(dedupeKey.dispatchDay('2026-07-26', 'manual:2'));
+    expect(a).not.toBe(b);
   });
 
   test('one claim yields at most one outcome', () => {
@@ -1074,6 +1100,48 @@ describe('the post phase never starts without time to finish and record', () => 
     expect(UPSTREAM_DEADLINE_BUDGET_MS).toBeLessThan(
       WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS + SAFETY_TIMEOUT_MS + CAPTION_TIMEOUT_MS
     );
+  });
+
+  test('the post-upload gate charges only for the work that remains', () => {
+    // The gate after the upload must be STRICTLY cheaper than the one before it.
+    // Re-charging for the fetch and upload already paid for would decline runs
+    // with plenty of time for the create call -- silently costing posts, which is
+    // the failure mode that looks like nothing at all.
+    expect(POST_ONLY_BUDGET_MS).toBe(POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS);
+    expect(POST_ONLY_BUDGET_MS).toBeLessThan(POST_PHASE_BUDGET_MS);
+
+    const now = 1_000_000;
+    // Mid-run: too little for the whole phase, ample for what is left.
+    const deadline = now + POST_ONLY_BUDGET_MS + 1_000;
+    expect(canStartPostPhase(deadline, now)).toBe(false);
+    expect(canFinishPostPhase(deadline, now)).toBe(true);
+  });
+
+  test('the post-upload gate still refuses when the write could not land', () => {
+    // The other direction stays closed: a post landing as the function is killed
+    // leaves something public with no outcome row.
+    const now = 1_000_000;
+    expect(canFinishPostPhase(now + POST_ONLY_BUDGET_MS, now)).toBe(true);
+    expect(canFinishPostPhase(now + POST_ONLY_BUDGET_MS - 1, now)).toBe(false);
+    expect(canFinishPostPhase(now, now)).toBe(false);
+  });
+});
+
+describe('a failed post is only called definite when it is', () => {
+  // Getting this wrong duplicates a post: listDispatchedImageIds() releases a
+  // specimen whose attempt ended in a DEFINITE failure, so a 5xx misfiled as
+  // definite puts the same image back in the pool after X may already have
+  // published it.
+  test('client rejections are definite -- nothing was published', () => {
+    for (const status of [400, 401, 403, 404, 429]) {
+      expect(statusIsIndeterminate(status)).toBe(false);
+    }
+  });
+
+  test('server errors are indeterminate -- the post may exist', () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect(statusIsIndeterminate(status)).toBe(true);
+    }
   });
 });
 

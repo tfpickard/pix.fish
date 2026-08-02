@@ -185,6 +185,26 @@ export function canStartPostPhase(deadlineAt: number, now = Date.now()): boolean
   return now + POST_PHASE_BUDGET_MS <= deadlineAt;
 }
 
+// What the post phase still needs once the media is uploaded: the create call and
+// the outcome write, nothing else.
+export const POST_ONLY_BUDGET_MS = POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS;
+
+// The same gate, re-asked after the fetch and upload have already happened.
+//
+// It has to be a SMALLER requirement than canStartPostPhase, because the two are
+// asking different questions. The first is "is there room for all of this?"; the
+// second is "is there room for what is left?". Re-asking the first would charge
+// the run again for the 20s of fetch and upload it has already spent, so a run
+// 20s into a 55s budget would decline with 35s in hand and 11s of work to do --
+// refusing viable dispatches in the name of a deadline it was going to meet.
+//
+// Both directions are wrong here and neither is symmetric: too strict silently
+// costs posts, too loose leaves a public post with no outcome row. Charging for
+// exactly the remaining work is what keeps both closed.
+export function canFinishPostPhase(deadlineAt: number, now = Date.now()): boolean {
+  return now + POST_ONLY_BUDGET_MS <= deadlineAt;
+}
+
 // X's image ceiling is 5MB. Refuse locally rather than paying for an upload the
 // far side will reject.
 export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;

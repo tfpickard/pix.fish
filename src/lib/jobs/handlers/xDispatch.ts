@@ -29,7 +29,9 @@ import {
   LIVE_ALLOW_NSFW,
   liveEligible,
   POST_PHASE_BUDGET_MS,
+  POST_ONLY_BUDGET_MS,
   WORKER_JOB_TIMEOUT_MS,
+  canFinishPostPhase,
   canStartPostPhase,
   captionCharBudget,
   dispatchLiveEnabled,
@@ -43,9 +45,17 @@ import { generateCaption } from '@/lib/dispatch/caption';
 import { driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
 import { SKIP_REASON, type SkipReason, type SpecimenCandidate, type Trend } from '@/lib/dispatch/types';
 
-// The daily outbound dispatch, start to finish. Runs at most once per UTC day and
-// never retries: the cron enqueues it with maxAttempts 1, and the day-claim event
-// makes a second run structurally impossible even if something else enqueues one.
+// The outbound dispatch, start to finish. Never retries: every enqueue uses
+// maxAttempts 1, and the day-claim event makes a second run on the same slot
+// structurally impossible even if something else enqueues one.
+//
+// "At most once per UTC day" binds the SCHEDULED dispatch specifically. Cron
+// enqueues with no claimSuffix, so every scheduled run competes for the one
+// `x.dispatch:<date>` slot. Manual runs from /admin/dispatch pass a
+// `manual:<ms>` suffix and are therefore uncapped by design -- an admin posting
+// several times in a day is a decision, whereas a scheduler doing it is a bug.
+// A manual LIVE post additionally cancels that day's scheduled run, which the
+// cron route enforces by looking for the attempt event.
 //
 // Every failure path is a logged skip, not a thrown error. The handler only
 // throws when it cannot log at all (a dead database), because that is the one
@@ -118,7 +128,14 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
       type: EVENT_TYPE.DispatchSkipped,
       subjectType: SUBJECT_TYPE.Dispatch,
       subjectId: dateKey,
-      payload: { mode, trigger, reason, detail: detail.slice(0, 500), trendTopic } satisfies DispatchSkippedPayload,
+      payload: {
+        slotKey,
+        mode,
+        trigger,
+        reason,
+        detail: detail.slice(0, 500),
+        trendTopic
+      } satisfies DispatchSkippedPayload,
       dedupeKey: dedupeKey.dispatchOutcome(slotKey)
     });
   };
@@ -316,8 +333,7 @@ async function runDispatch(ctx: {
     // safe. Checking the clock does: a day skipped because the upstream ran slow
     // costs one post, whereas a post landing as the job is killed leaves a public
     // post with no outcome on the log.
-    const budgetLeft = () => canStartPostPhase(postDeadlineAt);
-    if (!budgetLeft()) {
+    if (!canStartPostPhase(postDeadlineAt)) {
       await skip(
         SKIP_REASON.PostFailed,
         `not enough budget left to post safely: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_PHASE_BUDGET_MS}ms needed`,
@@ -339,10 +355,14 @@ async function runDispatch(ctx: {
     // upload, and (below) a database write, none of which are instant; a stale
     // "yes" is exactly how a post lands after the worker has already given up on
     // the job.
-    if (!budgetLeft()) {
+    //
+    // canFinishPostPhase, not canStartPostPhase: the fetch and upload are done,
+    // so requiring their budget again would decline runs that have ample time for
+    // the work that actually remains.
+    if (!canFinishPostPhase(postDeadlineAt)) {
       await skip(
         SKIP_REASON.PostFailed,
-        `budget exhausted after media upload: ${postDeadlineAt - Date.now()}ms to deadline`,
+        `budget exhausted after media upload: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_ONLY_BUDGET_MS}ms needed`,
         chosen.trend.topic
       );
       return;
@@ -366,6 +386,25 @@ async function runDispatch(ctx: {
       return;
     }
 
+    // A run that started before midnight can arrive here after it. The claim was
+    // written against the date at START, so posting now would publish into a day
+    // this run never claimed -- and that day's own scheduled dispatch will still
+    // fire hours later, putting two automatic posts inside one UTC day. The
+    // guarantee is about the day the post LANDS in, and this is the last moment
+    // that day is still knowable.
+    //
+    // Scheduled runs only. Manual dispatches are deliberately uncapped, so a
+    // manual run crossing midnight breaks nothing: there is no per-day budget for
+    // it to overspend.
+    if (trigger === 'cron' && utcDateKey(new Date()) !== dateKey) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `crossed into ${utcDateKey(new Date())} while preparing ${dateKey}'s dispatch; that day gets its own run`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
     // Burn the specimen immediately before the ONE call that can make something
     // public. If the post succeeds and the dispatch.sent write below then fails,
     // the handler records an internal_error and the post is public with no
@@ -376,6 +415,7 @@ async function runDispatch(ctx: {
       subjectType: SUBJECT_TYPE.Dispatch,
       subjectId: dateKey,
       payload: {
+        slotKey,
         trigger,
         imageId: specimen.imageId,
         slug: specimen.slug
@@ -410,6 +450,7 @@ async function runDispatch(ctx: {
   }
 
   const sent: DispatchSentPayload = {
+    slotKey,
     mode,
     trigger,
     imageId: specimen.imageId,

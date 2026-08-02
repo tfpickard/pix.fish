@@ -68,16 +68,63 @@ export async function GET(req: Request) {
   });
 }
 
-// A review run. It claims a suffixed slot rather than the real day's slot, so
-// generating samples for review never consumes the day's single dispatch -- and
-// never blocks the scheduled one. Always forced to dry run.
-export async function POST() {
+// Two kinds of manual run: a REVIEW run (dry, the default) and a LIVE run
+// (`{ live: true }`, really posts). Both claim a `manual:<ms>` suffixed slot, and
+// neither is capped.
+//
+// The once-per-day rule constrains the AUTOMATIC dispatch only. That is the thing
+// worth rate-limiting: an account posting itself twice in a day because a cron
+// fired twice is a bug, whereas an admin deciding to post four times today is a
+// decision. So the suffixed slot -- originally there to stop a dry review from
+// consuming the day -- is what also makes manual posting unlimited, since a slot
+// that never collides is a slot that never runs out.
+//
+// A manual LIVE post does suppress the day's automatic one (see the cron route):
+// having posted by hand, the operator should not be surprised by a second post
+// from the scheduler hours later.
+//
+// Repeated manual posts do not repeat themselves: listDispatchedImageIds()
+// excludes every already-dispatched specimen, so each run picks a new one and
+// eventually skips with no_specimen rather than reposting.
+export async function POST(req: Request) {
   if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
+
+  // Body is optional -- a bare POST is still a review run, which is what the
+  // existing button sends.
+  const body = (await req.json().catch(() => ({}))) as { live?: unknown };
+  const wantsLive = body.live === true;
+
+  if (wantsLive) {
+    // Refuse rather than silently degrading to a dry run. Everywhere else in this
+    // feature, "not configured" means fall back to dry -- correct there, because
+    // nothing asked to post. Here something did, explicitly, and a dry run
+    // reported as success is how an operator concludes the linkage works when it
+    // does not. That is the exact confusion this endpoint exists to end.
+    if (!dispatchLiveEnabled()) {
+      return NextResponse.json(
+        { enqueued: false, reason: 'X_DISPATCH_LIVE is not "true" in this environment' },
+        { status: 409 }
+      );
+    }
+    const missing = missingXCredentialNames();
+    if (missing.length > 0) {
+      return NextResponse.json(
+        { enqueued: false, reason: `missing credentials: ${missing.join(', ')}` },
+        { status: 409 }
+      );
+    }
+  }
+
+  // Not a daily cap -- a concurrency guard, and it applies to manual runs too.
+  // Two dispatches running at once would each read listDispatchedImageIds()
+  // before either wrote its attempt, so both could select the SAME specimen and
+  // post it twice. Serializing costs at most the drain interval.
   if (await hasInFlightJobOfType('x.dispatch')) {
     return NextResponse.json({ enqueued: false, reason: 'dispatch already in flight' });
   }
+
   const now = new Date();
   const job = await enqueueJob({
     type: 'x.dispatch',
@@ -85,9 +132,9 @@ export async function POST() {
       dateKey: utcDateKey(now),
       trigger: 'manual',
       claimSuffix: `manual:${now.getTime()}`,
-      dryRun: true
+      dryRun: !wantsLive
     },
     maxAttempts: 1
   });
-  return NextResponse.json({ enqueued: 'x.dispatch', jobId: job.id });
+  return NextResponse.json({ enqueued: 'x.dispatch', jobId: job.id, live: wantsLive });
 }

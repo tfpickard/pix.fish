@@ -41,9 +41,20 @@ type SkippedPayload = {
 
 // A review sample and the day's scheduled artifact are both drafts for the same
 // date; without this they read as duplicates on the page.
-function TriggerBadge({ trigger }: { trigger?: string }) {
+//
+// Manual no longer implies dry. Now that an admin can post live by hand, calling
+// every manual row a "review run" would label real published posts as samples --
+// so the badge reads the mode, not just the trigger.
+function TriggerBadge({ trigger, mode }: { trigger?: string; mode?: string }) {
   if (trigger !== 'manual') return null;
-  return <span className="rounded border border-ink-700 px-1 text-ink-400">review run</span>;
+  const live = mode === 'live';
+  return (
+    <span
+      className={`rounded border px-1 ${live ? 'border-accent text-accent' : 'border-ink-700 text-ink-400'}`}
+    >
+      {live ? 'manual post' : 'review run'}
+    </span>
+  );
 }
 
 type Row = {
@@ -95,7 +106,7 @@ function SentCard({ row }: { row: Row }) {
         <span>{row.dateKey}</span>
         <span>/</span>
         <span>{p.mode}</span>
-        <TriggerBadge trigger={p.trigger} />
+        <TriggerBadge trigger={p.trigger} mode={p.mode} />
         {p.drift ? <span className="text-secondary">drift variant</span> : null}
         {p.isNsfw ? <span className="text-destructive">nsfw specimen</span> : null}
       </div>
@@ -175,7 +186,7 @@ function SkippedCard({ row }: { row: Row }) {
         )}
         <span className="text-ink-500">{row.dateKey}</span>
         <span className="text-destructive">{p.reason}</span>
-        <TriggerBadge trigger={p.trigger} />
+        <TriggerBadge trigger={p.trigger} mode={p.mode} />
         {p.trendTopic ? <span className="text-ink-500">/ {p.trendTopic}</span> : null}
       </div>
       {p.detail ? <p className="mt-1 text-ink-500">{p.detail}</p> : null}
@@ -232,16 +243,33 @@ export default function AdminDispatchPage() {
     }
   }, [rows.length]);
 
-  async function runNow() {
+  async function runNow(live = false) {
+    // Manual posting is unlimited, so this confirm is the only thing between a
+    // misclick and a public post. Worth saying out loud: it cannot be undone, and
+    // it stands down today's scheduled post.
+    if (
+      live &&
+      !window.confirm(
+        'Post to X for real, right now?\n\nThis publishes to the account immediately and cancels today\'s scheduled post. It cannot be undone.'
+      )
+    ) {
+      return;
+    }
     setRunning(true);
     setNotice(null);
     try {
-      const res = await fetch('/api/admin/dispatch', { method: 'POST' });
+      const res = await fetch('/api/admin/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ live })
+      });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error ?? `run failed (${res.status})`);
+      // A refused live run answers 409 with a reason, not an error -- surface the
+      // reason, which names the specific thing that is not configured.
+      if (!res.ok && !body.reason) throw new Error(body.error ?? `run failed (${res.status})`);
       setNotice(
         body.enqueued
-          ? `queued review run (job ${body.jobId}); drains within a minute`
+          ? `queued ${body.live ? 'LIVE' : 'review'} run (job ${body.jobId}); drains within a minute`
           : (body.reason ?? 'not queued')
       );
       load();
@@ -264,13 +292,30 @@ export default function AdminDispatchPage() {
 
   const sent = rows.filter((e) => e.type === 'dispatch.sent');
   const skipped = rows.filter((e) => e.type === 'dispatch.skipped');
-  // An attempt is written immediately before the X call. One with no dispatch.sent
-  // for the same day means a post was started and never confirmed -- the post may
-  // well be public. This is the only surviving trace when the outcome write itself
-  // fails, so it is surfaced rather than filtered out.
-  const sentDays = new Set(sent.map((e) => e.dateKey));
+  // An attempt is written immediately before the X call. One with no outcome of
+  // its own means a post was started and never confirmed -- the post may well be
+  // public. This is the only surviving trace when the outcome write itself fails,
+  // so it is surfaced rather than filtered out.
+  //
+  // Correlated by SLOT, not by date. Manual runs are unlimited, so one date can
+  // hold many independent runs, and matching on the date would let any one of
+  // them vouch for all the others -- a dry review run's sent event silently
+  // clearing a scheduled live attempt that never came back. The slot is the only
+  // identifier that belongs to exactly one run.
+  //
+  // A skip resolves an attempt too: post_indeterminate is precisely the case
+  // where the code knows it attempted and could not confirm, and it has already
+  // said so on its own row.
+  const resolvedSlots = new Set(
+    [...sent, ...skipped]
+      .map((e) => e.payload.slotKey)
+      .filter((k): k is string => typeof k === 'string')
+  );
   const unconfirmed = rows.filter(
-    (e) => e.type === 'dispatch.attempted' && !sentDays.has(e.dateKey)
+    (e) =>
+      e.type === 'dispatch.attempted' &&
+      typeof e.payload.slotKey === 'string' &&
+      !resolvedSlots.has(e.payload.slotKey)
   );
   const total = data?.totalOutcomes ?? 0;
   const hasMore = rows.length < total;
@@ -279,21 +324,65 @@ export default function AdminDispatchPage() {
     <div className="max-w-3xl space-y-6">
       <h1 className="font-display text-3xl text-ink-100">dispatch</h1>
 
+      {/*
+        Loudest thing on the page, and first. Every other row describes something
+        that definitely happened or definitely did not; these describe a post that
+        may be live on the account with nothing recording it. That is the only
+        state here a human has to go and reconcile by hand.
+      */}
+      {unconfirmed.length > 0 ? (
+        <section className="rounded border border-accent p-3 font-mono text-xs text-accent">
+          <p className="font-bold">
+            {unconfirmed.length} unconfirmed attempt{unconfirmed.length === 1 ? '' : 's'} -- check
+            the account
+          </p>
+          <p className="mt-1 text-ink-400">
+            A post was started and no outcome was ever recorded for it. The post may be public.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {unconfirmed.map((e) => (
+              <li key={e.id}>
+                {e.dateKey} -- {String(e.payload.slug ?? `image ${e.payload.imageId}`)}{' '}
+                <span className="text-ink-500">
+                  ({String(e.payload.trigger ?? 'cron')}, slot {String(e.payload.slotKey)})
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-3">
         <p className="font-mono text-xs text-ink-500">
-          outbound X dispatch. one per day.{' '}
+          outbound X dispatch. scheduled: one per day. manual: unlimited.{' '}
           {data?.liveEnvEnabled && data?.liveCredentialsPresent
             ? 'LIVE -- runs post to X.'
             : 'dry run only.'}
         </p>
         <button
           type="button"
-          onClick={runNow}
+          onClick={() => runNow(false)}
           disabled={running}
           className="rounded border border-ink-700 px-2 py-1 font-mono text-xs text-ink-300 hover:bg-ink-800 disabled:opacity-50"
         >
           {running ? 'queueing...' : 'run a review dispatch'}
         </button>
+        {/*
+          Only offered when the deployment could actually post. Rendering it
+          otherwise would invite the click that produced nothing and explained
+          nothing -- the review button already covers the dry-run case, and a
+          second button that silently does the same thing is worse than no button.
+        */}
+        {data?.liveEnvEnabled && data?.liveCredentialsPresent ? (
+          <button
+            type="button"
+            onClick={() => runNow(true)}
+            disabled={running}
+            className="rounded border border-accent px-2 py-1 font-mono text-xs text-accent hover:bg-ink-800 disabled:opacity-50"
+          >
+            {running ? 'queueing...' : 'post live now'}
+          </button>
+        ) : null}
         {notice ? <span className="font-mono text-xs text-secondary">{notice}</span> : null}
       </div>
 

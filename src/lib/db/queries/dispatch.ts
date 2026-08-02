@@ -276,6 +276,29 @@ export async function dispatchOutcomeForDate(dateKey: string): Promise<UniverseE
   return row ?? null;
 }
 
+// Whether a LIVE post was already attempted on a given UTC date, by any trigger.
+//
+// dispatch.attempted is written only on the live path, immediately before the one
+// call that can publish, so its presence is exactly "something was posted, or may
+// have been" -- which is the question the cron needs answered. A dispatch.sent
+// always follows an attempt, so checking attempts alone covers both.
+//
+// This backs the rule that a manual post suppresses the day's automatic one. It
+// is advisory: the structural cron-vs-cron cap is still the day-claim's unique
+// dedupe key. A manual run racing the cron tick could in principle let both
+// through, which is within tolerance -- manual posting is deliberately unlimited,
+// so the failure mode is one extra post on a day the operator was posting by hand
+// anyway.
+export async function livePostAttemptedOnDate(dateKey: string): Promise<boolean> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM events
+    WHERE subject_type = 'dispatch'
+      AND subject_id = ${dateKey}
+      AND type = ${EVENT_TYPE.DispatchAttempted}
+  `);
+  return Number(res.rows?.[0]?.n ?? 0) > 0;
+}
+
 export async function countDispatchEventsOfType(type: string): Promise<number> {
   const res = await db.execute<{ n: number }>(
     sql`SELECT count(*)::int AS n FROM events WHERE type = ${type}`
