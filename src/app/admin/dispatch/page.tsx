@@ -264,6 +264,14 @@ export default function AdminDispatchPage() {
 
   const sent = rows.filter((e) => e.type === 'dispatch.sent');
   const skipped = rows.filter((e) => e.type === 'dispatch.skipped');
+  // An attempt is written immediately before the X call. One with no dispatch.sent
+  // for the same day means a post was started and never confirmed -- the post may
+  // well be public. This is the only surviving trace when the outcome write itself
+  // fails, so it is surfaced rather than filtered out.
+  const sentDays = new Set(sent.map((e) => e.dateKey));
+  const unconfirmed = rows.filter(
+    (e) => e.type === 'dispatch.attempted' && !sentDays.has(e.dateKey)
+  );
   const total = data?.totalOutcomes ?? 0;
   const hasMore = rows.length < total;
 

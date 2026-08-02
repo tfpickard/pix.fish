@@ -234,7 +234,18 @@ export async function listRecentDispatchEvents(
   return db
     .select()
     .from(events)
-    .where(inArray(events.type, [EVENT_TYPE.DispatchSent, EVENT_TYPE.DispatchSkipped]))
+    // Attempts are included alongside outcomes. They are written before the X
+    // call on live runs, so an attempt with no matching sent is the only trace
+    // left when a post succeeds and its outcome write dies -- exactly the case an
+    // operator most needs to see, and the case the page could not previously show
+    // at all.
+    .where(
+      inArray(events.type, [
+        EVENT_TYPE.DispatchAttempted,
+        EVENT_TYPE.DispatchSent,
+        EVENT_TYPE.DispatchSkipped
+      ])
+    )
     .orderBy(desc(events.id))
     .limit(lim)
     .offset(off);
@@ -245,7 +256,7 @@ export async function listRecentDispatchEvents(
 export async function countDispatchOutcomes(): Promise<number> {
   const res = await db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM events
-    WHERE type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+    WHERE type IN (${EVENT_TYPE.DispatchAttempted}, ${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
   `);
   return Number(res.rows?.[0]?.n ?? 0);
 }

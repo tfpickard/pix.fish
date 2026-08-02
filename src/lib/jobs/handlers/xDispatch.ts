@@ -431,13 +431,32 @@ async function runDispatch(ctx: {
     postId,
     postUrl
   };
-  await appendEvent({
-    type: EVENT_TYPE.DispatchSent,
-    subjectType: SUBJECT_TYPE.Dispatch,
-    subjectId: dateKey,
-    payload: { ...sent, liveConfigured },
-    dedupeKey: dedupeKey.dispatchOutcome(slotKey)
-  });
+  try {
+    await appendEvent({
+      type: EVENT_TYPE.DispatchSent,
+      subjectType: SUBJECT_TYPE.Dispatch,
+      subjectId: dateKey,
+      payload: { ...sent, liveConfigured },
+      dedupeKey: dedupeKey.dispatchOutcome(slotKey)
+    });
+  } catch (err) {
+    // The post is already public and we cannot record it. Falling through to the
+    // outer catch would file an internal_error, which the review page renders as
+    // "no post" -- the audit surface flatly denying something that exists. Try
+    // once to file the honest outcome instead, carrying the post id so the
+    // account can be reconciled. If THIS write fails too the database is gone and
+    // the outer catch is the right place to end up; the attempt row written
+    // before the post is then the only trace, which is why the page shows those.
+    if (postId) {
+      await skip(
+        SKIP_REASON.PostIndeterminate,
+        `posted ${postId} but recording it failed: ${errText(err)}`,
+        chosen.trend.topic
+      );
+      return;
+    }
+    throw err;
+  }
 }
 
 function errText(err: unknown): string {
