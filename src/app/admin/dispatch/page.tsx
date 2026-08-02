@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { weightedLength } from '@/lib/dispatch/weighted-length';
 
 // Review surface for the outbound X dispatch. In dry run the assembled post is
@@ -246,9 +246,34 @@ export default function AdminDispatchPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
 
+  // Image ids of every unpublished draft currently on screen, sent with each
+  // request so the server can answer eligibility for all of them rather than
+  // only the page it returns.
+  //
+  // A ref, not state: `load` runs on a 10s interval and must keep a stable
+  // identity, and this is read at fetch time rather than rendered. Kept current
+  // by the effect below, which is also why the poll picks up drafts paged in
+  // since it was created.
+  const draftImageIds = useRef<number[]>([]);
+  useEffect(() => {
+    draftImageIds.current = [
+      ...new Set(
+        rows
+          .filter((r) => r.type === 'dispatch.sent')
+          .map((r) => r.payload as unknown as SentPayload)
+          .filter((p) => !p.postId)
+          .map((p) => Number(p.imageId))
+          .filter((n) => Number.isFinite(n))
+      )
+    ];
+  }, [rows]);
+
+  const draftsParam = () =>
+    draftImageIds.current.length > 0 ? `&drafts=${draftImageIds.current.join(',')}` : '';
+
   // Refreshes the newest page only. Anything already paged in stays put.
   const load = useCallback(() => {
-    fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}`)
+    fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}${draftsParam()}`)
       .then(async (r) => {
         if (r.status === 403) {
           setForbidden(true);
@@ -272,11 +297,32 @@ export default function AdminDispatchPage() {
   const loadMore = useCallback(async () => {
     setLoadingMore(true);
     try {
-      const res = await fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}&offset=${rows.length}`);
+      const res = await fetch(
+        `/api/admin/dispatch?limit=${PAGE_SIZE}&offset=${rows.length}${draftsParam()}`
+      );
       if (!res.ok) return;
       const d: Data = await res.json();
       setRows((prev) => mergeRows(prev, d.events));
-      setData((prev) => (prev ? { ...prev, totalOutcomes: d.totalOutcomes } : d));
+      // Eligibility is merged, not dropped. This response is the only one that
+      // ever answers for the drafts it just delivered -- the next poll asks about
+      // them too (they are in the ref by then), but until it lands these cards
+      // would otherwise render an approve button the route can only reject.
+      // Union rather than replace: `d` answers for this page's drafts plus the
+      // ones already on screen, and taking the union costs nothing while a
+      // replace would drop anything this response happened not to cover.
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              totalOutcomes: d.totalOutcomes,
+              publishedDrafts: [...new Set([...prev.publishedDrafts, ...d.publishedDrafts])],
+              rejectedDrafts: [...new Set([...prev.rejectedDrafts, ...d.rejectedDrafts])],
+              unapprovableImageIds: [
+                ...new Set([...prev.unapprovableImageIds, ...d.unapprovableImageIds])
+              ]
+            }
+          : d
+      );
     } catch {
       // A failed page is not worth an error state; the button stays available.
     } finally {

@@ -616,14 +616,34 @@ export async function unpostableImageIds(): Promise<number[]> {
 // Read from the outcome events rather than a separate table: they already record
 // every topic the account has attached itself to, drafts included, and a draft
 // that was reviewed and discarded still means the operator has seen that topic.
+// Returns NORMALIZED topics -- lowercased, punctuation collapsed -- because the
+// dedupe below has to happen in SQL and the caller must see the same keys the
+// query grouped on.
+//
+// The limit counts DISTINCT topics, not rows, and that is the whole correction
+// here. One topic routinely occupies several rows: a draft and its approved
+// publication both carry it, as does every skip that named it. Truncating rows
+// first meant eight rows could hold four topics, so the memory quietly ran at
+// half its configured depth exactly when the account was most active -- which is
+// when repeating a topic is most visible.
 export async function recentTrendTopics(limit = 12): Promise<string[]> {
   const res = await db.execute<{ topic: string }>(sql`
-    SELECT payload->>'trendTopic' AS topic
-    FROM events
-    WHERE subject_type = 'dispatch'
-      AND type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
-      AND payload->>'trendTopic' IS NOT NULL
-    ORDER BY id DESC
+    SELECT topic
+    FROM (
+      SELECT
+        -- Must stay in step with normalizeTopic() in xDispatch.ts. Two spellings
+        -- of one rule, but the alternative is fetching the whole log and
+        -- grouping in TS to keep a "recent" window honest.
+        btrim(regexp_replace(lower(payload->>'trendTopic'), '[^a-z0-9]+', ' ', 'g')) AS topic,
+        id
+      FROM events
+      WHERE subject_type = 'dispatch'
+        AND type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+        AND payload->>'trendTopic' IS NOT NULL
+    ) t
+    WHERE topic <> ''
+    GROUP BY topic
+    ORDER BY max(id) DESC
     LIMIT ${Math.min(Math.max(Math.trunc(limit), 1), 200)}
   `);
   return res.rows.map((r) => r.topic).filter((t): t is string => Boolean(t));

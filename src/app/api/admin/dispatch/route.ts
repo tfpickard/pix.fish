@@ -78,19 +78,33 @@ export async function GET(req: Request) {
   ]);
 
   // Specimens that stopped being publishable AFTER their draft was written --
-  // archived, basemented, reclassified, deleted. Asked only about the drafts on
-  // this page, since those are the only rows that can render a button.
+  // archived, basemented, reclassified, deleted.
+  //
+  // Asked about this page's drafts PLUS any the caller says it still has on
+  // screen. The page accumulates rows across load-more and then polls page 0, so
+  // a page-scoped answer covered only the newest 60 events: an older card kept
+  // offering a button the approve route could only reject, and the poll would
+  // have discarded the older page's answer seconds later anyway. Reading the
+  // caller's list is what makes the answer track what is actually rendered.
   //
   // Read after the page rather than alongside it: the ids are not known until
   // the events come back. One extra round trip on an admin surface, in exchange
   // for the button disappearing when the answer is already determined instead of
   // after a job has run to discover it.
-  const staleIds = await liveIneligibleImageIds(
-    events
+  const claimedDraftIds = (params.get("drafts") ?? "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    // Bounded so a hand-made request cannot turn one GET into an unbounded IN
+    // list. Well past what any amount of paging produces.
+    .slice(0, 500);
+  const staleIds = await liveIneligibleImageIds([
+    ...events
       .filter((e) => e.type === EVENT_TYPE.DispatchSent && !e.payload?.postId)
       .map((e) => Number((e.payload as { imageId?: unknown })?.imageId))
       .filter((n) => Number.isFinite(n)),
-  );
+    ...claimedDraftIds,
+  ]);
   return NextResponse.json({
     // How the deployment is configured. Posting needs BOTH the switch and
     // credentials; either alone means dry run.
