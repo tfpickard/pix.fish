@@ -245,9 +245,18 @@ async function runDispatch(ctx: {
     liveConfigured && !LIVE_ALLOW_NSFW ? candidates.filter((c) => !c.isNsfw) : candidates;
   const specimen = pickSpecimen(eligible, { seed: `${seedKey}:${chosen.trend.topic}`, now });
   if (!specimen) {
+    // Say which of the two emptied the pool. "Nothing in the band" and "the band
+    // held only NSFW rows on a live day" call for completely different responses
+    // -- widen the band, or reconsider LIVE_ALLOW_NSFW -- and the event log is
+    // the only place that distinction survives. Reporting the band for an
+    // NSFW-filtered day would send a reader after a corpus problem that is not
+    // there, on precisely the days this filter is doing something.
+    const filteredOut = candidates.length - eligible.length;
     await skip(
       SKIP_REASON.NoSpecimen,
-      'no embedded specimen fell in the similarity band',
+      eligible.length === 0 && filteredOut > 0
+        ? `all ${filteredOut} specimen(s) in the band are NSFW and live posting excludes them`
+        : 'no embedded specimen fell in the similarity band',
       chosen.trend.topic
     );
     return;

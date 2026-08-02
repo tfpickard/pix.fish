@@ -38,10 +38,20 @@ export function percentEncode(value: string): string {
 // Parameters are sorted by encoded key, ties broken by encoded value, then
 // joined k=v with &. Sorting the raw strings instead would order them wrongly
 // wherever encoding changes the collation.
+//
+// The comparator returns 0 for fully-equal entries rather than falling through
+// to 1. Object keys are unique so equal pairs cannot actually arise here, but a
+// comparator that never reports equality violates the sort contract, and an
+// engine is free to do anything with an inconsistent one. That is not a risk
+// worth carrying in the code that decides whether a request authenticates.
 export function normalizeParams(params: Record<string, string>): string {
   return Object.entries(params)
     .map(([k, v]) => [percentEncode(k), percentEncode(v)] as const)
-    .sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1))
+    .sort((a, b) => {
+      if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+      if (a[1] !== b[1]) return a[1] < b[1] ? -1 : 1;
+      return 0;
+    })
     .map(([k, v]) => `${k}=${v}`)
     .join('&');
 }
