@@ -19,9 +19,11 @@ import {
   MAX_MEDIA_BYTES,
   POST_PHASE_BUDGET_MS,
   POST_ONLY_BUDGET_MS,
+  PIPELINE_BUDGET_MS,
   POST_TIMEOUT_MS,
   POST_WRITE_MARGIN_MS,
   canFinishPostPhase,
+  canStartPipeline,
   canStartPostPhase,
   liveEligible,
   madeWithAiFlag
@@ -491,6 +493,23 @@ describe('one dispatch per day is structural', () => {
     expect(first).not.toBe(second);
     expect(first).not.toBe(dedupeKey.dispatchDay(day));
     expect(second).not.toBe(dedupeKey.dispatchDay(day));
+  });
+
+  test('the attempt key locks the SPECIMEN, so concurrent runs cannot both post it', () => {
+    // The real mutual exclusion. Per-slot selection seeding only makes a
+    // collision unlikely -- with one eligible candidate both runs must draw the
+    // same row -- so the lock has to be keyed on the image, not the slot.
+    const a = dedupeKey.dispatchAttempt(42, 0);
+    const b = dedupeKey.dispatchAttempt(42, 0);
+    expect(a).toBe(b);
+    expect(dedupeKey.dispatchAttempt(43, 0)).not.toBe(a);
+  });
+
+  test('a definite rejection releases the specimen via the generation counter', () => {
+    // Keying on the image alone would retire a specimen on its first attempt,
+    // so a 403 from a read-only token would eat one good image per run. The
+    // generation bump is what lets a released specimen be tried again.
+    expect(dedupeKey.dispatchAttempt(42, 1)).not.toBe(dedupeKey.dispatchAttempt(42, 0));
   });
 
   test('each manual run gets its own outcome slot', () => {
@@ -1109,6 +1128,21 @@ describe('the post phase never starts without time to finish and record', () => 
     expect(UPSTREAM_DEADLINE_BUDGET_MS).toBeLessThan(
       WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS + SAFETY_TIMEOUT_MS + CAPTION_TIMEOUT_MS
     );
+  });
+
+  test('the claim is gated too, not just the post', () => {
+    // A claim written with no time to reach an outcome is UNRECOVERABLE: the day
+    // stays claimed and the cron will not re-enqueue it, so it silently never
+    // posts. The post-phase gates are far too late for that -- they guard the
+    // side effect, and a dry run never reaches them at all.
+    expect(PIPELINE_BUDGET_MS).toBeGreaterThan(UPSTREAM_DEADLINE_BUDGET_MS);
+
+    const now = 1_000_000;
+    expect(canStartPipeline(now + PIPELINE_BUDGET_MS, now)).toBe(true);
+    expect(canStartPipeline(now + PIPELINE_BUDGET_MS - 1, now)).toBe(false);
+    // The case that motivates it: a drain invocation nearly spent, while the
+    // handler's own clock still looks fresh.
+    expect(canStartPipeline(now + 5_000, now)).toBe(false);
   });
 
   test('the post-upload gate charges only for the work that remains', () => {

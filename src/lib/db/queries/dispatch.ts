@@ -320,6 +320,34 @@ export async function livePostAttemptedOnDate(dateKey: string): Promise<boolean>
   return Number(res.rows?.[0]?.n ?? 0) > 0;
 }
 
+// How many times this specimen has been attempted and DEFINITELY rejected --
+// a readable 4xx from X, where nothing was published.
+//
+// This is the generation counter behind dedupeKey.dispatchAttempt. It has to be
+// derived rather than stored: two concurrent runs must compute the SAME value so
+// their attempt keys collide and only one proceeds, and any value derived from
+// the same committed history satisfies that. A per-run counter would not.
+//
+// post_indeterminate deliberately does not count. A specimen whose post may be
+// public must never come back, so its generation stays put and its key stays
+// taken.
+export async function definiteFailureGeneration(imageId: number): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n
+    FROM events a
+    WHERE a.type = ${EVENT_TYPE.DispatchAttempted}
+      AND (a.payload->>'imageId')::int = ${imageId}
+      AND EXISTS (
+        SELECT 1 FROM events o
+        WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+          AND o.subject_type = 'dispatch'
+          AND o.payload->>'slotKey' = a.payload->>'slotKey'
+          AND o.payload->>'reason' = 'post_failed'
+      )
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
 export async function countDispatchEventsOfType(type: string): Promise<number> {
   const res = await db.execute<{ n: number }>(
     sql`SELECT count(*)::int AS n FROM events WHERE type = ${type}`

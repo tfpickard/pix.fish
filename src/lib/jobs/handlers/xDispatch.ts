@@ -3,6 +3,7 @@ import type { JobContext } from '@/lib/jobs/worker';
 import { appendEvent } from '@/lib/db/queries/events';
 import {
   currentPostState,
+  definiteFailureGeneration,
   listDispatchCandidates,
   listDispatchedImageIds
 } from '@/lib/db/queries/dispatch';
@@ -30,8 +31,10 @@ import {
   liveEligible,
   POST_PHASE_BUDGET_MS,
   POST_ONLY_BUDGET_MS,
+  PIPELINE_BUDGET_MS,
   WORKER_JOB_TIMEOUT_MS,
   canFinishPostPhase,
+  canStartPipeline,
   canStartPostPhase,
   captionCharBudget,
   dispatchLiveEnabled,
@@ -105,18 +108,17 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
   const seedKey = payload.dateKey ?? dateKey;
   const slotKey = dedupeKey.dispatchDay(dateKey, payload.claimSuffix);
 
-  // Selection is seeded per SLOT, not per day. Two runs sharing a date and a
-  // trend would otherwise draw the same specimen deterministically -- so any
-  // moment two dispatches overlap, the collision is not a tail risk, it is the
-  // guaranteed outcome. The enqueue guards make overlap rare but they are
-  // check-then-act and cannot make it impossible; a concurrent pair of admin
-  // POSTs can still slip between the check and the insert.
+  // Selection is seeded per SLOT, not per day. Seeding on the date alone meant
+  // two runs sharing a date and a trend drew the same specimen deterministically
+  // -- every overlap a duplicate, by construction rather than by bad luck.
   //
-  // Seeding on the slot removes the harm rather than the race. Two manual posts
-  // in a day are by design; two posts of the SAME IMAGE are the actual defect,
-  // and distinct seeds mean concurrent runs diverge on their first draw. It also
-  // makes repeated manual runs naturally varied instead of walking the corpus in
-  // a fixed order.
+  // This is a mitigation, NOT the safety property, and the distinction matters:
+  // distinct seeds make a collision unlikely, not impossible. Weighted draws over
+  // a large pool can still coincide, and when the eligible pool holds exactly one
+  // row both seeds must return it -- precisely the case where the pool is tight
+  // and the stakes are highest. The actual mutual exclusion is the attempt event
+  // further down, whose dedupe key is the specimen; this only keeps runs from
+  // walking the corpus in lockstep, and makes repeated manual runs varied.
   //
   // The drift predicate deliberately keeps using seedKey: drift is a property of
   // the day, not of the run, and a replay of a given date must reproduce it.
@@ -129,6 +131,31 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
   const liveConfigured =
     dispatchLiveEnabled() && payload.dryRun !== true && getXCredentials() !== null;
   const mode: 'dry-run' | 'live' = liveConfigured ? 'live' : 'dry-run';
+
+  // Do not CLAIM a day this invocation has no time to finish.
+  //
+  // The claim is what makes a day un-runnable a second time, and the cron
+  // declines to re-enqueue a claimed day. So a handler that claims and is then
+  // terminated before writing an outcome leaves that day permanently claimed
+  // with nothing on the log -- the silent no-post day this design exists to
+  // prevent, reached without a single thing going wrong except starting late.
+  // The drain runs jobs sequentially inside one 60s function, so starting with
+  // most of it already spent is ordinary, not exceptional.
+  //
+  // The existing budget checks all sit in the POST phase, which is far too late:
+  // they protect the side effect, not the claim, and a dry run never reaches
+  // them at all. Declining BEFORE the claim is what keeps the day recoverable --
+  // it stays unclaimed, so the next tick simply runs it.
+  //
+  // Throwing rather than returning quietly: the day is intact either way, but a
+  // failed job row is visible at /admin/jobs, and "the invocation had no room
+  // for me" is exactly what a failed job should mean. maxAttempts is 1, so this
+  // does not retry.
+  if (!canStartPipeline(postDeadlineAt)) {
+    throw new Error(
+      `declined before claiming ${dateKey}: ${postDeadlineAt - Date.now()}ms left in the invocation, ${PIPELINE_BUDGET_MS}ms needed to reach an outcome`
+    );
+  }
 
   // ---- the day-claim. This, not the cron schedule, is the once-per-day cap.
   const claim = await appendEvent({
@@ -442,12 +469,21 @@ async function runDispatch(ctx: {
       return;
     }
 
-    // Burn the specimen immediately before the ONE call that can make something
-    // public. If the post succeeds and the dispatch.sent write below then fails,
-    // the handler records an internal_error and the post is public with no
-    // outcome row -- at which point only this attempt row stops the same specimen
-    // going out again. listDispatchedImageIds() counts attempts for that reason.
-    await appendEvent({
+    // Claim the specimen immediately before the ONE call that can make something
+    // public. This marker does two jobs, and the second is the load-bearing one.
+    //
+    // First: if the post succeeds and the dispatch.sent write below then fails,
+    // only this row stops the same specimen going out again.
+    //
+    // Second, and the reason it is keyed on the image rather than the slot: it is
+    // the mutual exclusion for concurrent runs. Everything upstream -- the
+    // enqueue guards, the per-slot selection seed -- makes a collision unlikely
+    // without making it impossible, and with a single eligible candidate the seed
+    // cannot help at all, since both runs must draw the one row. The unique index
+    // on dedupe_key is the only true lock here, so whoever inserts wins and the
+    // loser stops before posting.
+    const generation = await definiteFailureGeneration(specimen.imageId);
+    const attempt = await appendEvent({
       type: EVENT_TYPE.DispatchAttempted,
       subjectType: SUBJECT_TYPE.Dispatch,
       subjectId: dateKey,
@@ -457,8 +493,19 @@ async function runDispatch(ctx: {
         imageId: specimen.imageId,
         slug: specimen.slug
       } satisfies DispatchAttemptedPayload,
-      dedupeKey: dedupeKey.dispatchAttempt(slotKey)
+      dedupeKey: dedupeKey.dispatchAttempt(specimen.imageId, generation)
     });
+    if (!attempt.inserted) {
+      // Another run holds this specimen. Stop here rather than posting: it may
+      // already be public, and a duplicate is the one outcome worse than a
+      // skipped day.
+      await skip(
+        SKIP_REASON.PostFailed,
+        `specimen ${specimen.imageId} was claimed by a concurrent dispatch`,
+        chosen.trend.topic
+      );
+      return;
+    }
 
     const creds = getXCredentials();
     if (!creds) {

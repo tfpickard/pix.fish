@@ -212,6 +212,21 @@ export function canStartPostPhase(deadlineAt: number, now = Date.now()): boolean
   return now + POST_PHASE_BUDGET_MS <= deadlineAt;
 }
 
+// What a run needs before it may CLAIM a day: the whole pre-post pipeline plus
+// the outcome write. Everything from the trend fetch to the caption, which is
+// what every run does regardless of mode -- a dry run reaches an outcome having
+// spent exactly this and nothing more.
+//
+// This gate protects the CLAIM, which is a different thing from the post-phase
+// gates below. A claim with no outcome is unrecoverable (the cron will not
+// re-enqueue a claimed day); a post with no outcome is worse but rarer. Both
+// need guarding, at different moments, against the same clock.
+export const PIPELINE_BUDGET_MS = UPSTREAM_DEADLINE_BUDGET_MS + POST_WRITE_MARGIN_MS;
+
+export function canStartPipeline(deadlineAt: number, now = Date.now()): boolean {
+  return now + PIPELINE_BUDGET_MS <= deadlineAt;
+}
+
 // What the post phase still needs once the media is uploaded: the create call and
 // the outcome write, nothing else.
 export const POST_ONLY_BUDGET_MS = POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS;

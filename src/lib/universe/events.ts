@@ -245,7 +245,25 @@ export const dedupeKey = {
   // Outcomes are keyed off the same slot id so one claim yields at most one
   // outcome even if a handler somehow ran twice against the same claim.
   dispatchOutcome: (slotKey: string) => `x.dispatch.outcome:${slotKey}`,
-  // The pre-post attempt marker, keyed off the same slot so a handler that
-  // somehow ran twice against one claim cannot file two attempts.
-  dispatchAttempt: (slotKey: string) => `x.dispatch.attempt:${slotKey}`
+  // The pre-post attempt marker, keyed off the SPECIMEN rather than the slot.
+  //
+  // This is mutual exclusion, and it has to be, because nothing upstream of it
+  // is. The enqueue guards are check-then-act; per-slot seeding only makes two
+  // concurrent runs UNLIKELY to draw the same image, and with a single eligible
+  // candidate it does not even do that -- both seeds necessarily pick the one
+  // row. The unique index on dedupe_key is the only real lock available, so the
+  // attempt marker is where the specimen gets claimed: whoever inserts first
+  // posts, and any concurrent run gets inserted=false and stops before its own
+  // side effect.
+  //
+  // `generation` is what keeps that lock from being permanent. Keying on the
+  // image alone would retire a specimen forever on its first attempt, defeating
+  // the rule that a DEFINITE rejection (a readable 4xx, nothing published)
+  // releases it -- a 403 from a read-only token would otherwise consume one good
+  // specimen per run with nothing to show. Generation is the count of definite
+  // failures this image has already recorded, so a released specimen gets a
+  // fresh key while two concurrent runs, computing the same count, still collide
+  // on the same one.
+  dispatchAttempt: (imageId: number, generation: number) =>
+    `x.dispatch.attempt:${imageId}:${generation}`
 };
