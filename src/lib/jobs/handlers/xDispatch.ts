@@ -581,6 +581,33 @@ async function runDispatch(ctx: {
       return;
     }
 
+    // Has a human already posted today by hand?
+    //
+    // The rule is that a manual live post stands down the day's automatic one,
+    // and until now the only place that was enforced was /api/cron/dispatch, at
+    // ENQUEUE time. That is check-then-act across two processes: an approval and
+    // a cron tick can pass their separate guards, and the approval can publish
+    // while this job is still generating a caption. The specimen lock does not
+    // help -- the two runs hold DIFFERENT specimens, which is exactly the case it
+    // is designed to permit -- so nothing downstream would have caught it and the
+    // account gets two posts in a day.
+    //
+    // Read here, immediately before the claim, because it is the last point where
+    // the answer is still fresh. Definite failures do not count (see the query):
+    // a manual attempt X rejected published nothing and must not cost the day its
+    // scheduled post.
+    //
+    // Scheduled runs only, and only on the live path. Manual dispatches are
+    // uncapped by product decision, and a dry run posts nothing to collide with.
+    if (trigger === 'cron' && (await livePostAttemptedOnDate(dateKey))) {
+      await skip(
+        SKIP_REASON.AlreadyDispatched,
+        `a live post already went out on ${dateKey}; the scheduled dispatch stands down`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
     // Claim the specimen immediately before the ONE call that can make something
     // public. This marker does two jobs, and the second is the load-bearing one.
     //
