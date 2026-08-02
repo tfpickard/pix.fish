@@ -14,12 +14,20 @@ export type AssemblyEdge = {
   dstId: number;
   value: number; // decayed traffic weight
   lifetime: number; // monotonic traversal count
+  // Wall-clock of this edge's last real traversal. Optional so the pure tests
+  // (and any caller that doesn't care) can omit it.
+  lastUpdatedAt?: Date;
 };
 
 export type AssembledRoute = {
   nodeIds: number[]; // ordered image ids, head -> tail
   strength: number; // min edge value along the chain (weakest link)
   lifetime: number; // min edge lifetime along the chain
+  // MOST RECENT traversal across the chain's edges (max, not min): the corridor
+  // was "walked" whenever any part of it was. Null when no edge carried a
+  // timestamp. Strength/lifetime stay weakest-link -- a chain is only as worn
+  // as its thinnest segment -- but recency is a max by the same logic.
+  lastWalkedAt: Date | null;
 };
 
 export type AssembleOptions = {
@@ -100,6 +108,12 @@ export function assembleRoutes(
     used.add(seedKey);
     let minVal = seed.value;
     let minLife = seed.lifetime;
+    let lastWalked = seed.lastUpdatedAt ?? null;
+    // Recency is a max across the chain (see AssembledRoute): the corridor
+    // counts as walked whenever any of its segments was.
+    const noteWalk = (at: Date | undefined) => {
+      if (at && (!lastWalked || at > lastWalked)) lastWalked = at;
+    };
 
     // Extend forward from the tail.
     while (nodes.length < maxNodes) {
@@ -111,6 +125,7 @@ export function assembleRoutes(
       inRoute.add(e.dstId);
       minVal = Math.min(minVal, e.value);
       minLife = Math.min(minLife, e.lifetime);
+      noteWalk(e.lastUpdatedAt);
     }
 
     // Extend backward from the head.
@@ -123,10 +138,16 @@ export function assembleRoutes(
       inRoute.add(e.srcId);
       minVal = Math.min(minVal, e.value);
       minLife = Math.min(minLife, e.lifetime);
+      noteWalk(e.lastUpdatedAt);
     }
 
     if (nodes.length >= minNodes) {
-      routes.push({ nodeIds: nodes, strength: minVal, lifetime: minLife });
+      routes.push({
+        nodeIds: nodes,
+        strength: minVal,
+        lifetime: minLife,
+        lastWalkedAt: lastWalked
+      });
     }
   }
 

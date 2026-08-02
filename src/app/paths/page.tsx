@@ -15,13 +15,22 @@ export const metadata: Metadata = {
   robots: { index: false, follow: true }
 };
 
+// How many complete cards the page aims to show, and how deep into the
+// strength-ordered list we look to find them (listDesirePaths caps at 500).
+const CARDS_SHOWN = 100;
+const CANDIDATE_POOL = 400;
+
 export default async function DesirePathsIndex() {
   const nsfwMode = await readNsfwMode();
-  const paths = await listDesirePaths({ limit: 100 });
 
-  // One hydration pass over the union of every route's stops, then each route
-  // reads its nodes back from the shared map -- one query set for the whole
-  // page instead of one per route.
+  // Over-fetch the candidate pool, then select the strongest CARDS_SHOWN that
+  // are fully visible. Fetching exactly the top 100 and filtering afterwards
+  // meant a visitor whose NSFW mode hid those routes saw a short page -- or an
+  // empty "no desire paths yet" -- while perfectly visible weaker corridors sat
+  // just past the cutoff. Hydration is one batched query regardless of pool
+  // size, so the wider pool costs a single larger IN(...) rather than N queries.
+  const paths = await listDesirePaths({ limit: CANDIDATE_POOL });
+
   const allIds = [...new Set(paths.flatMap((p) => p.nodeIds as number[]))];
   const nodeMap = await hydrateVisibleNodeMap(allIds, nsfwMode);
 
@@ -34,7 +43,8 @@ export default async function DesirePathsIndex() {
       const nodes = ids.map((id) => nodeMap.get(id)).filter((n): n is PathNode => !!n);
       return { path: p, nodes, complete: nodes.length === ids.length && nodes.length >= 2 };
     })
-    .filter((c) => c.complete);
+    .filter((c) => c.complete)
+    .slice(0, CARDS_SHOWN);
 
   return (
     <div className="space-y-8 pt-8">

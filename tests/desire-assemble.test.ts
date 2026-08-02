@@ -75,6 +75,29 @@ test('caps corridor length at maxNodes', () => {
   expect(routes[0]!.nodeIds.length).toBe(5);
 });
 
+test('lastWalkedAt is the MOST RECENT traversal across the chain', () => {
+  // Recency is a max (the corridor was walked whenever any segment was), unlike
+  // strength/lifetime which are weakest-link minimums.
+  const older = new Date('2026-07-01T00:00:00Z');
+  const newer = new Date('2026-07-18T00:00:00Z');
+  const routes = assembleRoutes(
+    [
+      { srcId: 1, dstId: 2, value: 5, lifetime: 5, lastUpdatedAt: older },
+      { srcId: 2, dstId: 3, value: 4, lifetime: 4, lastUpdatedAt: newer }
+    ],
+    { minNodes: 3 }
+  );
+  expect(routes).toHaveLength(1);
+  expect(routes[0]!.lastWalkedAt?.toISOString()).toBe(newer.toISOString());
+  // Weakest-link semantics are unchanged.
+  expect(routes[0]!.strength).toBe(4);
+});
+
+test('lastWalkedAt is null when no edge carries a timestamp', () => {
+  const routes = assembleRoutes([e(1, 2, 5), e(2, 3, 4)], { minNodes: 3 });
+  expect(routes[0]!.lastWalkedAt).toBeNull();
+});
+
 test('empty / all-sub-threshold input yields no routes', () => {
   expect(assembleRoutes([])).toEqual([]);
   expect(assembleRoutes([e(1, 2, 0.1)], { minEdgeValue: 1 })).toEqual([]);

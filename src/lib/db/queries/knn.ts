@@ -10,6 +10,50 @@ import { images, knnEdges } from '../schema';
 
 export type KnnNeighbor = { dstId: number; dist: number };
 
+// Which of the given nodes are genuinely adjacent in the kNN graph. Returns a
+// Set of "min:max" pair keys (order-normalized) for every image-to-image edge
+// found among `nodeIds`, so callers can ask "is this traversal backed by a real
+// graph edge?" with a single round-trip and O(1) lookups.
+//
+// Used by desire.promote to gate promotion on graph-backed traffic: /api/traffic
+// accepts client-supplied walks, so without this an unauthenticated caller could
+// post arbitrary real image ids and manufacture a public desire path between
+// images that were never actually walkable. Every legitimate walk comes from a
+// completed /connect journey, which findPath built out of these very edges, so
+// requiring kNN backing drops no real traffic.
+//
+// Keys are order-normalized because the graph is written symmetrically (see
+// above); normalizing means a corridor is accepted whenever the pair is
+// adjacent, without depending on which direction a given rebuild happened to
+// leave behind. It does not weaken the check -- an attacker still cannot invent
+// a pair that is not semantically adjacent.
+export function knnPairKey(a: number, b: number): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+export async function getKnnPairsAmong(nodeIds: number[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  const unique = [...new Set(nodeIds)];
+  if (unique.length === 0) return out;
+
+  const rows = await db
+    .select({ srcId: knnEdges.srcId, dstId: knnEdges.dstId })
+    .from(knnEdges)
+    .where(
+      and(
+        inArray(knnEdges.srcId, unique),
+        inArray(knnEdges.dstId, unique),
+        // 'lore' nodes share the id space with images; a desire path is a
+        // corridor of images, so only image-to-image adjacency counts.
+        eq(knnEdges.srcType, 'image'),
+        eq(knnEdges.dstType, 'image')
+      )
+    );
+
+  for (const r of rows) out.add(knnPairKey(r.srcId, r.dstId));
+  return out;
+}
+
 // Load all outgoing edges for a set of node ids in one round-trip. Returns
 // a Map keyed by srcId so the pathfinder avoids a separate lookup per node
 // when expanding the frontier.

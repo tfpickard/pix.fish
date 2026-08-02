@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { desirePaths, type DesirePath } from '../schema';
 
@@ -45,6 +45,101 @@ export async function refreshDesirePath(
       retiredAt: null
     })
     .where(eq(desirePaths.edgeSig, edgeSig));
+}
+
+// Batched existence lookup for a run's candidate signatures. The promote job
+// checks every qualifying corridor, which at scale is hundreds of round-trips
+// if done one-by-one (a nightly run has to finish inside the worker budget), so
+// it asks once and reads the answers out of the returned Map.
+export async function getDesirePathsBySigs(sigs: string[]): Promise<Map<string, DesirePath>> {
+  const out = new Map<string, DesirePath>();
+  const unique = [...new Set(sigs)];
+  if (unique.length === 0) return out;
+
+  // Chunked so a very large qualifying set can't blow past parameter limits.
+  for (let i = 0; i < unique.length; i += SIG_CHUNK) {
+    const chunk = unique.slice(i, i + SIG_CHUNK);
+    const rows = await db.select().from(desirePaths).where(inArray(desirePaths.edgeSig, chunk));
+    for (const r of rows) out.set(r.edgeSig, r);
+  }
+  return out;
+}
+
+const SIG_CHUNK = 200;
+
+// Bulk metric refresh. Same semantics as refreshDesirePath (un-retires a
+// corridor worn again) but folded into one statement per chunk via a VALUES
+// join, so refreshing every qualifying route costs a handful of round-trips
+// instead of one per route.
+export async function refreshDesirePathsBulk(
+  updates: { edgeSig: string; strength: number; lifetime: number; lastWalkedAt: Date | null }[]
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  let touched = 0;
+
+  for (let i = 0; i < updates.length; i += SIG_CHUNK) {
+    const chunk = updates.slice(i, i + SIG_CHUNK);
+    const values = sql.join(
+      chunk.map(
+        (u) =>
+          sql`(${u.edgeSig}, ${u.strength}::real, ${u.lifetime}::real, ${
+            u.lastWalkedAt ? sql`${u.lastWalkedAt.toISOString()}::timestamptz` : sql`null::timestamptz`
+          })`
+      ),
+      sql`, `
+    );
+    const res = await db.execute(sql`
+      UPDATE desire_paths AS d
+      SET strength = v.strength,
+          lifetime = v.lifetime,
+          last_walked_at = v.last_walked_at,
+          retired_at = NULL
+      FROM (VALUES ${values}) AS v(edge_sig, strength, lifetime, last_walked_at)
+      WHERE d.edge_sig = v.edge_sig
+    `);
+    touched += res.rowCount ?? chunk.length;
+  }
+  return touched;
+}
+
+// Name a route that was filed without one (its first captioning attempt failed
+// or ran out of the per-run budget). Only fills a NULL caption, so a later run
+// can never overwrite a name that already stuck.
+export async function setDesirePathCaptionIfNull(
+  edgeSig: string,
+  caption: string,
+  provider: string | null,
+  model: string | null
+): Promise<void> {
+  await db
+    .update(desirePaths)
+    .set({ caption, provider, model })
+    .where(and(eq(desirePaths.edgeSig, edgeSig), isNull(desirePaths.caption)));
+}
+
+// Every active route, for lifecycle checks that must consider routes the
+// current traffic sample didn't surface (see edge-verified retirement).
+export async function listActiveDesirePaths(): Promise<DesirePath[]> {
+  return db.select().from(desirePaths).where(isNull(desirePaths.retiredAt));
+}
+
+// Retire an explicit set of routes. Used by edge-verified retirement, which
+// decides per-route whether a corridor's own edges have actually decayed --
+// rather than inferring death from absence in one greedy partition.
+export async function retireDesirePathsBySigs(sigs: string[], now: Date): Promise<number> {
+  const unique = [...new Set(sigs)];
+  if (unique.length === 0) return 0;
+  let retired = 0;
+  for (let i = 0; i < unique.length; i += SIG_CHUNK) {
+    const chunk = unique.slice(i, i + SIG_CHUNK);
+    const rows = await db
+      .update(desirePaths)
+      .set({ retiredAt: now })
+      .where(and(isNull(desirePaths.retiredAt), inArray(desirePaths.edgeSig, chunk)))
+      .returning({ id: desirePaths.id });
+    retired += rows.length;
+  }
+  return retired;
 }
 
 // Retire (hide, never delete) every active route not re-promoted this run --
