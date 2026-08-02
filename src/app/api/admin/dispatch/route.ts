@@ -4,7 +4,8 @@ import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import {
   countDispatchOutcomes,
   listRecentDispatchEvents,
-  listUnresolvedAttempts
+  listUnresolvedAttempts,
+  publishedDraftIds
 } from '@/lib/db/queries/dispatch';
 import { dispatchMinuteForDate, driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
 import { DRIFT_ENABLED, captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
@@ -30,13 +31,17 @@ export async function GET(req: Request) {
   const rawOffset = Number(params.get('offset') ?? 0);
   const limit = Number.isFinite(rawLimit) ? rawLimit : 60;
   const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
-  const [events, totalOutcomes, unresolvedAttempts] = await Promise.all([
+  const [events, totalOutcomes, unresolvedAttempts, publishedDrafts] = await Promise.all([
     listRecentDispatchEvents(limit, offset),
     countDispatchOutcomes(),
     // Fetched independently of the page. An attempt with no outcome means a post
     // may exist with nothing recording it, and that warning must not depend on
     // how far back the operator happens to have scrolled.
-    listUnresolvedAttempts()
+    listUnresolvedAttempts(),
+    // Which drafts already went out. Derived from the log rather than the draft
+    // row, which keeps postId=null forever because publication appends a new
+    // event instead of mutating the draft.
+    publishedDraftIds()
   ]);
   return NextResponse.json({
     // How the deployment is configured. Posting needs BOTH the switch and
@@ -62,6 +67,7 @@ export async function GET(req: Request) {
       driftVariant: DRIFT_ENABLED && driftForDate(dateKey)
     },
     totalOutcomes,
+    publishedDrafts,
     // Complete, not a slice of `events` -- see listUnresolvedAttempts.
     unresolvedAttempts: unresolvedAttempts.map((e) => ({
       id: e.id,

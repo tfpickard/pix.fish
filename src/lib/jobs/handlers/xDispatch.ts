@@ -4,6 +4,7 @@ import { appendEvent } from '@/lib/db/queries/events';
 import {
   currentPostState,
   definiteFailureGeneration,
+  recentTrendTopics,
   listDispatchCandidates,
   listDispatchedImageIds
 } from '@/lib/db/queries/dispatch';
@@ -24,6 +25,7 @@ import {
   DRIFT_ENABLED,
   EMBED_TIMEOUT_MS,
   MAX_POOL_CANDIDATES,
+  RECENT_TREND_MEMORY,
   WIDE_BAND_MAX_DISTANCE,
   WIDE_BAND_MIN_DISTANCE,
   IMAGE_FETCH_TIMEOUT_MS,
@@ -45,6 +47,7 @@ import { createPost, fetchSpecimenImage, getXCredentials, uploadMedia } from '@/
 import { googleTrendsSource, trendText } from '@/lib/dispatch/trends';
 import { screenTrends } from '@/lib/dispatch/safety';
 import { pickSpecimen } from '@/lib/dispatch/select';
+import { mulberry32, seedFromString } from '@/lib/sort/reorder';
 import { generateCaption } from '@/lib/dispatch/caption';
 import { driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
 import { SKIP_REASON, type SkipReason, type SpecimenCandidate, type Trend } from '@/lib/dispatch/types';
@@ -289,9 +292,25 @@ async function runDispatch(ctx: {
     return;
   }
 
-  // Prefer the most confidently dumb trend: the gate already rejected everything
-  // else, so this is a ranking among safe options, not a second safety decision.
-  const chosen = screened.cleared[0]!;
+  // Which cleared trend to ride. Every candidate here already passed the gate, so
+  // this is a variety decision and never a second safety decision.
+  //
+  // Taking cleared[0] made the account monotonous. The feed is not a stream of
+  // novelty -- Google Trends carries perennials, "stock market news today" and
+  // its relatives turn up most days -- and the gate clears them *reliably*
+  // precisely because they are low-stakes, so a fixed index rides the same topic
+  // run after run. Several consecutive posts under one hashtag reads as a bot
+  // with a single subject.
+  //
+  // Two changes, in order. Drop topics the account has used recently, and then
+  // pick from what remains on the run's own seed rather than by rank.
+  const recent = new Set((await recentTrendTopics(RECENT_TREND_MEMORY)).map(normalizeTopic));
+  const unused = screened.cleared.filter((c) => !recent.has(normalizeTopic(c.trend.topic)));
+  // Falling back to the full cleared list matters: on a quiet day every safe
+  // trend may be one already ridden, and a repeat is a far better outcome than a
+  // skipped day. Novelty is a preference, posting is the job.
+  const pool = unused.length > 0 ? unused : screened.cleared;
+  const chosen = pool[Math.floor(mulberry32(seedFromString(selectionSeed))() * pool.length)]!;
 
   // ---- 3. specimen selection ------------------------------------------------
   const cfg = await loadAiConfig();
@@ -629,6 +648,13 @@ async function runDispatch(ctx: {
     }
     throw err;
   }
+}
+
+// Topics are compared loosely. The feed reworks the same subject across days --
+// "Stock Market News Today" and "stock market news  today" are the same story --
+// so an exact string match would let a trivial rewording defeat the check.
+function normalizeTopic(topic: string): string {
+  return topic.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 function errText(err: unknown): string {

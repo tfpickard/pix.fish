@@ -103,6 +103,12 @@ export const TREND_FETCH_TIMEOUT_MS = 6_000;
 // How many feed items to consider. The feed returns ~20; classifying more than
 // this buys nothing and costs tokens.
 export const MAX_TREND_CANDIDATES = 12;
+// How far back to look when avoiding a topic the account has already ridden.
+// Sized against the feed, not the calendar: the classifier sees at most
+// MAX_TREND_CANDIDATES a run, so remembering more than a couple of runs' worth
+// would exhaust the safe pool on a quiet day and force the fallback every time,
+// which is the same monotony by another route.
+export const RECENT_TREND_MEMORY = 8;
 // Headlines carried into the classifier and the caption prompt per trend. Two is
 // enough to disambiguate what a topic is actually about.
 export const MAX_HEADLINES_PER_TREND = 3;

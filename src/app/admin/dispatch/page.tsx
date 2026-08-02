@@ -75,6 +75,9 @@ type Data = {
   totalOutcomes: number;
   // Complete set, independent of pagination -- see the note where it is used.
   unresolvedAttempts: Row[];
+  // Draft event ids already published (or possibly published). Their approve
+  // button is withdrawn -- clicking it could only no-op.
+  publishedDrafts: number[];
   offset: number;
   hasMore: boolean;
   events: Row[];
@@ -452,7 +455,11 @@ export default function AdminDispatchPage() {
             <SentCard
               key={row.id}
               row={row}
-              canApprove={Boolean(data?.liveEnvEnabled && data?.liveCredentialsPresent)}
+              canApprove={Boolean(
+                data?.liveEnvEnabled &&
+                  data?.liveCredentialsPresent &&
+                  !data?.publishedDrafts?.includes(row.id)
+              )}
               onApprove={approve}
               busy={approving === row.id}
             />

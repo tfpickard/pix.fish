@@ -206,6 +206,10 @@ export type DispatchSkippedPayload = {
   // Pairs this outcome with its dispatch.attempted. A post_indeterminate skip is
   // an outcome for an attempt just as much as a sent is.
   slotKey: string;
+  // Set only on the approval-publication path: which draft this attempt was
+  // publishing. Counting these is how a definitely-failed publication releases
+  // its approval for a retry.
+  draftEventId?: number;
   mode: 'dry-run' | 'live';
   trigger: 'cron' | 'manual';
   reason: string;
@@ -283,5 +287,13 @@ export const dedupeKey = {
   // One approval per draft. The publish job's first act, so a double-clicked
   // button, a re-enqueued job, or two admins looking at the same page collapse
   // to a single publication of that draft.
-  dispatchApproval: (draftEventId: number) => `x.dispatch.approve:${draftEventId}`
+  // `generation` counts publish attempts for this draft that ended definitely --
+  // nothing published. Without it a single pre-post failure (a stale credential,
+  // a blob 404, a spent budget) made approval permanent: the claim was already
+  // committed, so every later click enqueued a job that returned immediately and
+  // the draft could never be published by anyone. Same shape as the specimen
+  // lock, same reason: the lock must survive a success and yield to a definite
+  // failure.
+  dispatchApproval: (draftEventId: number, generation: number) =>
+    `x.dispatch.approve:${draftEventId}:${generation}`
 };

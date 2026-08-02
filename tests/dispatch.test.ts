@@ -517,13 +517,20 @@ describe('one dispatch per day is structural', () => {
     expect(dedupeKey.dispatchAttempt(42, 1)).not.toBe(dedupeKey.dispatchAttempt(42, 0));
   });
 
-  test('a draft can be approved exactly once', () => {
-    // The approval claim is keyed on the DRAFT, so a double-clicked button, a
-    // re-enqueued job, or two admins on the same page collapse to one
-    // publication. Keying it on anything shared -- the date, the slot -- would
-    // let a second draft's approval be swallowed by the first.
-    expect(dedupeKey.dispatchApproval(9355)).toBe(dedupeKey.dispatchApproval(9355));
-    expect(dedupeKey.dispatchApproval(9355)).not.toBe(dedupeKey.dispatchApproval(9356));
+  test('one approval publishes once', () => {
+    // A double-clicked button, a re-enqueued job, or two admins on the same page
+    // must collapse to a single publication of that draft.
+    expect(dedupeKey.dispatchApproval(9355, 0)).toBe(dedupeKey.dispatchApproval(9355, 0));
+    expect(dedupeKey.dispatchApproval(9355, 0)).not.toBe(dedupeKey.dispatchApproval(9356, 0));
+  });
+
+  test('a definitely-failed publication releases the approval for a retry', () => {
+    // Keying approval on the draft alone made one failure permanent: the claim
+    // stayed committed, so every later click enqueued a job that returned
+    // immediately and the draft could never be published by anyone. The
+    // generation is what distinguishes "already published" from "tried and
+    // definitely did not publish".
+    expect(dedupeKey.dispatchApproval(9355, 1)).not.toBe(dedupeKey.dispatchApproval(9355, 0));
   });
 
   test('each manual run gets its own outcome slot', () => {

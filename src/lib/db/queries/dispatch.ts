@@ -380,6 +380,77 @@ export async function listUnresolvedAttempts(limit = 50): Promise<UniverseEvent[
     .limit(limit);
 }
 
+// How many publish attempts for this draft have already ended DEFINITELY -- a
+// failure where nothing was published.
+//
+// This is the generation behind the approval key, and it is what makes approval
+// retryable without making it repeatable. Keying approval on the draft alone
+// made a single failure permanent: a run that declined for a stale credential,
+// a blob 404, or a spent budget still left the approval committed, so every
+// later click enqueued a job that returned immediately. The button stayed, the
+// draft stayed unpublished, and nothing an operator could do would change that.
+//
+// post_indeterminate deliberately does not count. If the post MAY be public,
+// re-approving must stay blocked.
+export async function publishAttemptGeneration(draftEventId: number): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM events
+    WHERE type = ${EVENT_TYPE.DispatchSkipped}
+      AND subject_type = 'dispatch'
+      AND (payload->>'draftEventId')::int = ${draftEventId}
+      AND payload->>'reason' <> 'post_indeterminate'
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
+// Draft ids that have already been published, or whose publication may have
+// happened. The review page uses this to stop offering an approve button that
+// can only no-op, and the approve route to refuse before enqueueing.
+//
+// The draft row itself cannot answer this: the log is append-only, so publishing
+// writes a NEW dispatch.sent and the draft keeps postId=null forever. Reading
+// the draft alone is exactly why the button persisted after a successful post.
+export async function publishedDraftIds(): Promise<number[]> {
+  const res = await db.execute<{ id: number }>(sql`
+    SELECT DISTINCT (payload->>'approvedFromDraft')::int AS id
+    FROM events
+    WHERE subject_type = 'dispatch'
+      AND payload->>'approvedFromDraft' IS NOT NULL
+    UNION
+    SELECT DISTINCT (payload->>'draftEventId')::int AS id
+    FROM events
+    WHERE type = ${EVENT_TYPE.DispatchSkipped}
+      AND subject_type = 'dispatch'
+      AND payload->>'reason' = 'post_indeterminate'
+      AND payload->>'draftEventId' IS NOT NULL
+  `);
+  return res.rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
+}
+
+// Trend topics this account has already ridden recently, newest first.
+//
+// The feed is not a stream of novelty. Google Trends carries perennials --
+// "stock market news today" and its relatives are there most days -- and the
+// safety gate reliably clears them precisely because they are low-stakes, so a
+// deterministic pick lands on the same topic run after run. That reads as a bot
+// with one subject, which is worse than a bot with no subject.
+//
+// Read from the outcome events rather than a separate table: they already record
+// every topic the account has attached itself to, drafts included, and a draft
+// that was reviewed and discarded still means the operator has seen that topic.
+export async function recentTrendTopics(limit = 12): Promise<string[]> {
+  const res = await db.execute<{ topic: string }>(sql`
+    SELECT payload->>'trendTopic' AS topic
+    FROM events
+    WHERE subject_type = 'dispatch'
+      AND type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+      AND payload->>'trendTopic' IS NOT NULL
+    ORDER BY id DESC
+    LIMIT ${Math.min(Math.max(Math.trunc(limit), 1), 200)}
+  `);
+  return res.rows.map((r) => r.topic).filter((t): t is string => Boolean(t));
+}
+
 // How many times this specimen has been attempted and DEFINITELY rejected --
 // a readable 4xx from X, where nothing was published.
 //

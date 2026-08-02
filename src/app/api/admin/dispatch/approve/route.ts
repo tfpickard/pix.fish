@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import { getEvent } from '@/lib/db/queries/events';
+import { publishedDraftIds } from '@/lib/db/queries/dispatch';
 import { EVENT_TYPE } from '@/lib/universe/events';
 import type { DispatchSentPayload } from '@/lib/universe/events';
 import { dispatchLiveEnabled } from '@/lib/dispatch/config';
@@ -55,6 +56,13 @@ export async function POST(req: Request) {
   const payload = draft.payload as unknown as DispatchSentPayload;
   if (payload.postId) {
     return NextResponse.json({ approved: false, reason: 'this draft was already posted' });
+  }
+  // The draft row cannot answer "was this published?". The log is append-only, so
+  // publishing writes a NEW dispatch.sent and the draft keeps postId=null
+  // forever -- which is why the approve button used to survive a successful post
+  // and report a queued publication on every click while the job no-opped.
+  if ((await publishedDraftIds()).includes(eventId)) {
+    return NextResponse.json({ approved: false, reason: 'this draft has already been published' });
   }
 
   // Advisory. The publish job re-checks the specimen and takes the specimen lock;

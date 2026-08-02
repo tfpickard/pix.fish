@@ -15,6 +15,14 @@ function backoffMs(attempt: number): number {
 // locally turns a hang into a normal retry-or-fail transition.
 // Kept under the cron drain's WALL_BUDGET_MS (55s) so a timeout doesn't
 // itself overrun the tick budget.
+// Exported so xDispatchPublish can bound itself by the timeout that will
+// actually kill it. Hardcoding 50s there (the x.dispatch value) let the post
+// phase start with 40s already spent -- the wrapper does not cancel the handler,
+// so createPost could finish after the job was marked failed, leaving a public
+// post with no outcome row. A handler that measures against another job's budget
+// is measuring against nothing.
+export const PUBLISH_JOB_TIMEOUT_MS = 40_000;
+
 const JOB_TIMEOUT_MS: Record<string, number> = {
   'webhook.deliver': 25_000, // fetch itself aborts at 10s; leave slack for slow DNS
   'reprocess.image': 50_000, // 3 parallel vision calls; Anthropic can run long
@@ -39,7 +47,9 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   // this is the outer bound that keeps a hung dispatch inside the tick budget.
   'x.dispatch': 50_000,
   // Same posting phase as x.dispatch, minus the trend/safety/caption calls.
-  'x.dispatch.publish': 40_000,
+  // Exported below so the handler can measure against ITS OWN budget rather than
+  // assuming the dispatch one.
+  'x.dispatch.publish': PUBLISH_JOB_TIMEOUT_MS,
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;
