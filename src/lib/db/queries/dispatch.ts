@@ -446,6 +446,33 @@ export async function publishedDraftIds(): Promise<number[]> {
   return res.rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
 }
 
+// Specimens that are actually PUBLIC, or may be -- a post carrying an id, or an
+// attempt written immediately before the X call.
+//
+// Deliberately NOT listDispatchedImageIds(). That set answers a different
+// question -- "has selection already used this?" -- and counts dry-run drafts,
+// which is right for selection (a specimen already drafted should not be drawn
+// again) and wrong for approval: a scheduled draft carries trigger 'cron' with a
+// null postId, so the draft's OWN event marked its specimen spent and the
+// approve route rejected the very draft it was asked about. One query answering
+// two questions that only looked alike.
+//
+// A draft can never appear here: it has no post id and no attempt. That is what
+// makes this safe to use without excluding the draft under consideration.
+export async function publiclyPostedImageIds(): Promise<number[]> {
+  const res = await db.execute<{ image_id: number }>(sql`
+    SELECT DISTINCT (payload->>'imageId')::int AS image_id
+    FROM events
+    WHERE subject_type = 'dispatch'
+      AND payload->>'imageId' IS NOT NULL
+      AND (
+        (type = ${EVENT_TYPE.DispatchSent} AND payload->>'postId' IS NOT NULL)
+        OR type = ${EVENT_TYPE.DispatchAttempted}
+      )
+  `);
+  return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
+}
+
 // Images ruled permanently unpostable. Excluded from selection outright: the
 // verdict is about the object (its bytes are not a postable still, or it is over
 // the size ceiling), so re-testing it tomorrow can only reach the same answer

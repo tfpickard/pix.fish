@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { enqueueJob, hasInFlightPostingDispatch } from '@/lib/db/queries/jobs';
 import { getEvent } from '@/lib/db/queries/events';
-import { listDispatchedImageIds, publishedDraftIds } from '@/lib/db/queries/dispatch';
+import {
+  publiclyPostedImageIds,
+  publishedDraftIds,
+  unpostableImageIds
+} from '@/lib/db/queries/dispatch';
 import { EVENT_TYPE } from '@/lib/universe/events';
 import type { DispatchSentPayload } from '@/lib/universe/events';
 import { dispatchLiveEnabled } from '@/lib/dispatch/config';
@@ -71,10 +75,26 @@ export async function POST(req: Request) {
   // button would survive and every click would queue another job that can never
   // publish. Checking the draft id alone cannot see this: the draft is untouched,
   // it is the image underneath it that is spent.
-  if ((await listDispatchedImageIds()).includes(payload.imageId)) {
+  //
+  // publiclyPostedImageIds, NOT listDispatchedImageIds: the latter counts dry-run
+  // drafts, so a SCHEDULED draft (trigger 'cron', null postId) had its own event
+  // mark its specimen spent, and this route rejected the draft it was asked
+  // about. Two questions that only looked alike.
+  if ((await publiclyPostedImageIds()).includes(payload.imageId)) {
     return NextResponse.json({
       approved: false,
-      reason: `specimen ${payload.imageId} has already been dispatched; generate a new draft`
+      reason: `specimen ${payload.imageId} has already been posted; generate a new draft`
+    });
+  }
+
+  // Quarantined specimens fail deterministically. The publish job would write
+  // dispatch.unpostable and a definite post_failed -- neither of which lands in
+  // the published or posted sets, so the button survived and every click
+  // repeated the identical failure on the identical bytes.
+  if ((await unpostableImageIds()).includes(payload.imageId)) {
+    return NextResponse.json({
+      approved: false,
+      reason: `specimen ${payload.imageId} cannot be posted (bad or oversized media); generate a new draft`
     });
   }
 

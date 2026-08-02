@@ -4,9 +4,10 @@ import { enqueueJob, hasInFlightJobOfType } from "@/lib/db/queries/jobs";
 import {
   countDispatchOutcomes,
   listRecentDispatchEvents,
-  listDispatchedImageIds,
   listUnresolvedAttempts,
+  publiclyPostedImageIds,
   publishedDraftIds,
+  unpostableImageIds,
 } from "@/lib/db/queries/dispatch";
 import {
   dispatchMinuteForDate,
@@ -48,7 +49,8 @@ export async function GET(req: Request) {
     totalOutcomes,
     unresolvedAttempts,
     publishedDrafts,
-    dispatchedImageIds,
+    postedIds,
+    badIds,
   ] = await Promise.all([
     listRecentDispatchEvents(limit, offset),
     countDispatchOutcomes(),
@@ -60,10 +62,12 @@ export async function GET(req: Request) {
     // row, which keeps postId=null forever because publication appends a new
     // event instead of mutating the draft.
     publishedDraftIds(),
-    // Specimens already spent. A draft whose image went out under another draft
-    // can never publish, so its button is withdrawn rather than left to queue
-    // jobs that only ever collide on the specimen lock.
-    listDispatchedImageIds(),
+    // Specimens already public (or possibly so), and specimens ruled permanently
+    // unpostable. A draft on either can never publish, so its button is withdrawn
+    // rather than left to queue jobs that only ever fail. Drafts appear in
+    // neither set, so a draft never disqualifies itself.
+    publiclyPostedImageIds(),
+    unpostableImageIds(),
   ]);
   return NextResponse.json({
     // How the deployment is configured. Posting needs BOTH the switch and
@@ -90,7 +94,7 @@ export async function GET(req: Request) {
     },
     totalOutcomes,
     publishedDrafts,
-    dispatchedImageIds,
+    unapprovableImageIds: [...new Set([...postedIds, ...badIds])],
     // Complete, not a slice of `events` -- see listUnresolvedAttempts.
     unresolvedAttempts: unresolvedAttempts.map((e) => ({
       id: e.id,

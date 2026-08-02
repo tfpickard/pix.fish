@@ -78,8 +78,10 @@ type Data = {
   // Draft event ids already published (or possibly published). Their approve
   // button is withdrawn -- clicking it could only no-op.
   publishedDrafts: number[];
-  // Specimens already dispatched. A draft on one of these cannot publish.
-  dispatchedImageIds: number[];
+  // Specimens a draft can no longer publish: already public (or possibly so), or
+  // ruled permanently unpostable. Drafts appear in neither, so a draft never
+  // disqualifies itself.
+  unapprovableImageIds: number[];
   offset: number;
   hasMore: boolean;
   events: Row[];
@@ -461,7 +463,7 @@ export default function AdminDispatchPage() {
                 data?.liveEnvEnabled &&
                   data?.liveCredentialsPresent &&
                   !data?.publishedDrafts?.includes(row.id) &&
-                  !data?.dispatchedImageIds?.includes(
+                  !data?.unapprovableImageIds?.includes(
                     (row.payload as unknown as SentPayload).imageId
                   )
               )}
