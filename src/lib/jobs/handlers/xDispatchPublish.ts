@@ -152,13 +152,16 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
     });
   };
 
-  // Set the moment createPost returns success, and read by the OUTER catch.
-  // Without it, a post that succeeded and then failed BOTH outcome writes fell
-  // through to the outer handler and was filed internal_error -- a reason the
-  // generation counter treats as definite. That released the approval, left the
-  // draft unblocked, showed "no post" on the page, and let a retry publish the
-  // same thing a second time. Knowing a post exists is the one fact that must
-  // survive every failure below it.
+  // "A post may be public" -- the fact that must survive every failure below.
+  //
+  // The first version of this tracked only a SUCCESSFUL post id, which fixed the
+  // narrower half of the problem and left the wider one: an indeterminate create
+  // (a timeout, a 5xx) is precisely the case where a post may exist, and it
+  // carries no id to record. So a triple failure on that branch still fell
+  // through to internal_error, which the generation counter reads as definite.
+  // The question the outer catch has to answer is not "did we post?" but "can we
+  // rule out having posted?", and only a definite 4xx answers yes.
+  let postMayExist = false;
   let publishedPostId: string | null = null;
 
   try {
@@ -257,6 +260,8 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       mediaId: media.mediaId,
       madeWithAi: madeWithAiFlag()
     });
+    // Set BEFORE the outcome write, because the write is what can fail.
+    postMayExist = posted.ok || posted.indeterminate;
     if (!posted.ok) {
       await skip(
         posted.indeterminate ? SKIP_REASON.PostIndeterminate : SKIP_REASON.PostFailed,
@@ -302,15 +307,18 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
     // Relabelling it internal_error would be the audit surface asserting "no
     // post" about something public, and worse, it would free the draft to be
     // published again.
-    if (publishedPostId) {
+    if (postMayExist) {
       await skip(
         SKIP_REASON.PostIndeterminate,
-        `posted ${publishedPostId} but recording it failed twice: ${errText(err)}`
+        publishedPostId
+          ? `posted ${publishedPostId} but recording it failed twice: ${errText(err)}`
+          : `the post may exist and recording the outcome failed twice: ${errText(err)}`
       );
       return;
     }
-    // Nothing was posted, so internal_error is accurate AND safely definite --
-    // which is exactly why the branch above has to exist for the other case.
+    // Only reached when the request was definitely refused or never made, so
+    // internal_error is accurate AND safely definite -- which is exactly why the
+    // branch above has to exist for every other case.
     await skip(SKIP_REASON.InternalError, `unhandled failure: ${errText(err)}`);
   }
 }

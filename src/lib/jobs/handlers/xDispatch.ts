@@ -578,6 +578,21 @@ async function runDispatch(ctx: {
       await skip(SKIP_REASON.PostFailed, 'X credentials disappeared mid-run', chosen.trend.topic);
       return;
     }
+    // Last look at the DATE, for the same reason as the clock below: the earlier
+    // midnight check now sits in front of the generation read, the attempt insert
+    // and the re-read. A scheduled run crossing midnight in that window would
+    // publish into a day it never claimed, and that day's own dispatch still
+    // fires later. Manual runs stay exempt -- they have no per-day budget to
+    // overspend.
+    if (trigger === 'cron' && utcDateKey(new Date()) !== dateKey) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `crossed into ${utcDateKey(new Date())} while locking ${dateKey}'s specimen; that day gets its own run`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
     // Last look at the clock, after the generation read, the attempt insert and
     // the authoritative re-read -- three round trips that POST_ONLY_BUDGET_MS
     // does not account for, because it budgets the POST, not the queries in front
