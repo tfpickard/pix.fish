@@ -10,11 +10,22 @@ export const SITE_URL: string = (process.env.NEXT_PUBLIC_SITE_URL ?? FALLBACK_OR
 
 export const SITE_NAME = 'pix.fish';
 
-// ~155 chars -- the upper bound Google typically shows in SERP snippets. The
-// framing intentionally says "photography" and "AI-captioned" so the default
-// description actually carries keywords instead of restating the domain.
+// ~155 chars -- the upper bound Google typically shows in SERP snippets. This
+// is the single most-repeated sentence on the site: it is the SERP snippet, the
+// feed description, and the fallback share card, so it is worth writing rather
+// than inventorying.
+//
+// The previous version ("a single-owner photography gallery with AI-captioned
+// images, semantic search, color palettes, and a tag taxonomy") described the
+// plumbing, and by now described it wrongly: the gallery is multi-user, and the
+// work is surrealist illustration, not photography. It also sold a distinctive
+// voice as generic infrastructure -- for an art project the moat is the voice.
+//
+// This one speaks in the archive's own register (see CLERK_ROSTER and the
+// character/dossier prompts: specimens are catalogued and cross-referenced by
+// clerks who openly disagree) while still carrying the terms worth ranking on.
 export const DEFAULT_DESCRIPTION =
-  'pix.fish is a single-owner photography gallery with AI-captioned images, semantic search, color palettes, and a tag taxonomy for discovering photos.';
+  'An unreliable bureaucratic archive of surreal images. Every specimen is catalogued, captioned and cross-referenced by clerks who disagree on what it is.';
 
 export function absoluteUrl(path: string): string {
   if (!path) return SITE_URL;
