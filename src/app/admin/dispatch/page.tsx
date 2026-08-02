@@ -96,15 +96,28 @@ function utcMinuteLabel(m: number): string {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')} UTC`;
 }
 
-function SentCard({ row }: { row: Row }) {
+function SentCard({
+  row,
+  canApprove,
+  onApprove,
+  busy
+}: {
+  row: Row;
+  canApprove: boolean;
+  onApprove: (id: number) => void;
+  busy: boolean;
+}) {
   const p = row.payload as unknown as SentPayload;
+  // An unposted draft is a proposal awaiting sign-off. Approval publishes THIS
+  // text, so the card the admin reads is exactly what goes out.
+  const awaitingApproval = !p.postId;
   return (
     <div className="rounded border border-ink-800 p-3 font-mono text-xs">
       <div className="flex flex-wrap items-center gap-2 text-ink-500">
-        {/* The label has to follow the row, not the page: a log holds dry-run
-            drafts and real posts side by side, and calling a post that exists
-            "would post" is the audit surface contradicting the account. */}
-        <span className="text-secondary">{p.postId ? 'posted' : 'would post'}</span>
+        {/* The label has to follow the row, not the page: a log holds drafts and
+            real posts side by side, and calling a post that exists "would post"
+            is the audit surface contradicting the account. */}
+        <span className="text-secondary">{p.postId ? 'posted' : 'draft'}</span>
         <span>{row.dateKey}</span>
         <span>/</span>
         <span>{p.mode}</span>
@@ -150,6 +163,19 @@ function SentCard({ row }: { row: Row }) {
             </a>{' '}
             / cosine {p.distance.toFixed(3)} / {p.model}
           </p>
+          {/* Only offered when the deployment could actually post. Elsewhere a
+              draft is just a draft, and a button that refuses is worse than no
+              button -- that lesson is what produced this whole approval flow. */}
+          {awaitingApproval && canApprove ? (
+            <button
+              type="button"
+              onClick={() => onApprove(row.id)}
+              disabled={busy}
+              className="rounded border border-accent px-2 py-1 font-mono text-xs text-accent hover:bg-ink-800 disabled:opacity-50"
+            >
+              {busy ? 'publishing...' : 'approve and post this'}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -204,6 +230,8 @@ export default function AdminDispatchPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [running, setRunning] = useState(false);
+  // Event id of the draft currently being published, so only its button spins.
+  const [approving, setApproving] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
 
@@ -245,33 +273,23 @@ export default function AdminDispatchPage() {
     }
   }, [rows.length]);
 
-  async function runNow(live = false) {
-    // Manual posting is unlimited, so this confirm is the only thing between a
-    // misclick and a public post. Worth saying out loud: it cannot be undone, and
-    // it stands down today's scheduled post.
-    if (
-      live &&
-      !window.confirm(
-        'Post to X for real, right now?\n\nThis publishes to the account immediately and cancels today\'s scheduled post. It cannot be undone.'
-      )
-    ) {
-      return;
-    }
+  async function runNow() {
     setRunning(true);
     setNotice(null);
     try {
+      // A manual run never posts, so there is nothing here to confirm. The
+      // confirmation moved to approval, which is where something irreversible
+      // actually happens and where the operator has read what it will publish.
       const res = await fetch('/api/admin/dispatch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ live })
+        body: JSON.stringify({})
       });
       const body = await res.json().catch(() => ({}));
-      // A refused live run answers 409 with a reason, not an error -- surface the
-      // reason, which names the specific thing that is not configured.
       if (!res.ok && !body.reason) throw new Error(body.error ?? `run failed (${res.status})`);
       setNotice(
         body.enqueued
-          ? `queued ${body.live ? 'LIVE' : 'review'} run (job ${body.jobId}); drains within a minute`
+          ? `queued a draft (job ${body.jobId}); drains within a minute, then approve it below`
           : (body.reason ?? 'not queued')
       );
       load();
@@ -279,6 +297,39 @@ export default function AdminDispatchPage() {
       setNotice(err instanceof Error ? err.message : 'run failed');
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function approve(eventId: number) {
+    // The one irreversible action on this page, so it is the one that asks.
+    if (
+      !window.confirm(
+        'Publish this draft to X?\n\nThe caption above is posted exactly as written. This cannot be undone.'
+      )
+    ) {
+      return;
+    }
+    setApproving(eventId);
+    setNotice(null);
+    try {
+      const res = await fetch('/api/admin/dispatch/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId })
+      });
+      const body = await res.json().catch(() => ({}));
+      // A refusal answers 409 with a reason naming what is not configured.
+      if (!res.ok && !body.reason) throw new Error(body.error ?? `approve failed (${res.status})`);
+      setNotice(
+        body.approved
+          ? `queued publication (job ${body.jobId}); drains within a minute`
+          : (body.reason ?? 'not approved')
+      );
+      load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'approve failed');
+    } finally {
+      setApproving(null);
     }
   }
 
@@ -344,35 +395,23 @@ export default function AdminDispatchPage() {
 
       <div className="flex flex-wrap items-center gap-3">
         <p className="font-mono text-xs text-ink-500">
-          outbound X dispatch. scheduled: one per day. manual: unlimited.{' '}
+          outbound X dispatch. scheduled posts once a day on its own; manual
+          drafts are unlimited and post only when approved.{' '}
           {data?.liveEnvEnabled && data?.liveCredentialsPresent
-            ? 'LIVE -- runs post to X.'
-            : 'dry run only.'}
+            ? 'LIVE -- approving a draft posts it to X.'
+            : 'dry run only -- drafts cannot be published.'}
         </p>
+        {/* One button, because a manual run has one behaviour now: it drafts.
+            Publishing lives on the draft itself, where the caption being
+            published is on screen next to the button that publishes it. */}
         <button
           type="button"
-          onClick={() => runNow(false)}
+          onClick={() => runNow()}
           disabled={running}
           className="rounded border border-ink-700 px-2 py-1 font-mono text-xs text-ink-300 hover:bg-ink-800 disabled:opacity-50"
         >
-          {running ? 'queueing...' : 'run a review dispatch'}
+          {running ? 'queueing...' : 'generate a draft'}
         </button>
-        {/*
-          Only offered when the deployment could actually post. Rendering it
-          otherwise would invite the click that produced nothing and explained
-          nothing -- the review button already covers the dry-run case, and a
-          second button that silently does the same thing is worse than no button.
-        */}
-        {data?.liveEnvEnabled && data?.liveCredentialsPresent ? (
-          <button
-            type="button"
-            onClick={() => runNow(true)}
-            disabled={running}
-            className="rounded border border-accent px-2 py-1 font-mono text-xs text-accent hover:bg-ink-800 disabled:opacity-50"
-          >
-            {running ? 'queueing...' : 'post live now'}
-          </button>
-        ) : null}
         {notice ? <span className="font-mono text-xs text-secondary">{notice}</span> : null}
       </div>
 
@@ -409,7 +448,15 @@ export default function AdminDispatchPage() {
         ) : sent.length === 0 ? (
           <p className="font-mono text-xs text-ink-500">nothing dispatched yet</p>
         ) : (
-          sent.map((row) => <SentCard key={row.id} row={row} />)
+          sent.map((row) => (
+            <SentCard
+              key={row.id}
+              row={row}
+              canApprove={Boolean(data?.liveEnvEnabled && data?.liveCredentialsPresent)}
+              onApprove={approve}
+              busy={approving === row.id}
+            />
+          ))
         )}
       </section>
 

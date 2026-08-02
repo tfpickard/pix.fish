@@ -84,9 +84,24 @@ export async function GET(req: Request) {
   });
 }
 
-// Two kinds of manual run: a REVIEW run (dry, the default) and a LIVE run
-// (`{ live: true }`, really posts). Both claim a `manual:<ms>` suffixed slot, and
-// neither is capped.
+// A manual run produces a DRAFT. It never posts.
+//
+// Manual dispatches go out through review and approval instead: this generates
+// the artifact and writes it to the log, an admin reads it at /admin/dispatch,
+// and POST /api/admin/dispatch/approve publishes that exact draft. The two-step
+// exists because a caption is generated, not chosen -- the run that writes it is
+// the first time anyone sees it, so "post now" meant publishing something
+// unread. Approval is the point at which a human has actually looked.
+//
+// `{ live: true }` is still accepted and still validates the switch and the
+// credentials, because an operator asking to post deserves to be told when the
+// deployment cannot. It just no longer skips the reading.
+//
+// The SCHEDULED dispatch is deliberately unaffected and still posts without
+// approval: it fires at a randomized minute with nobody watching, and a daily
+// post that waits for a human is a daily post that does not happen.
+//
+// Every manual run claims a `manual:<ms>` suffixed slot, and none is capped.
 //
 // The once-per-day rule constrains the AUTOMATIC dispatch only. That is the thing
 // worth rate-limiting: an account posting itself twice in a day because a cron
@@ -148,12 +163,18 @@ export async function POST(req: Request) {
       dateKey: utcDateKey(now),
       trigger: 'manual',
       claimSuffix: `manual:${now.getTime()}`,
-      dryRun: !wantsLive,
-      // Carried so the handler refuses rather than silently filing a draft if the
-      // switch or the credentials change between this response and the drain.
-      requestedLive: wantsLive
+      // Always a draft. A manual run's output is reviewed and approved before it
+      // reaches X, so the run itself has nothing to post.
+      dryRun: true
     },
     maxAttempts: 1
   });
-  return NextResponse.json({ enqueued: 'x.dispatch', jobId: job.id, live: wantsLive });
+  return NextResponse.json({
+    enqueued: 'x.dispatch',
+    jobId: job.id,
+    // Echoed so the UI can say "draft, then approve" rather than implying a post
+    // is on its way.
+    awaitingApproval: true,
+    liveChecked: wantsLive
+  });
 }

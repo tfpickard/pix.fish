@@ -28,7 +28,10 @@ export const EVENT_TYPE = {
   // going out again on a later day.
   DispatchAttempted: 'dispatch.attempted',
   DispatchSent: 'dispatch.sent',
-  DispatchSkipped: 'dispatch.skipped'
+  DispatchSkipped: 'dispatch.skipped',
+  // An admin signed off on a specific draft. Written before the publish job does
+  // anything, and deduped on the draft, so one draft can be approved once.
+  DispatchApproved: 'dispatch.approved'
 } as const;
 
 export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
@@ -154,6 +157,17 @@ export type DispatchAttemptedPayload = {
 // Everything needed to review the decision after the fact is on the event: the
 // specimen, the caption as posted, the trend it rode, and the safety verdict
 // that cleared it.
+// Recorded when an admin approves a draft for publication. Separate from the
+// publication itself: the approval is a human decision and survives even if the
+// post then fails, which is what makes the log answer "was this signed off?"
+// independently of "did it go out?".
+export type DispatchApprovedPayload = {
+  draftEventId: number;
+  slotKey: string;
+  imageId: number;
+  slug: string;
+};
+
 export type DispatchSentPayload = {
   // Pairs this outcome with its dispatch.attempted. See the note there.
   slotKey: string;
@@ -265,5 +279,9 @@ export const dedupeKey = {
   // fresh key while two concurrent runs, computing the same count, still collide
   // on the same one.
   dispatchAttempt: (imageId: number, generation: number) =>
-    `x.dispatch.attempt:${imageId}:${generation}`
+    `x.dispatch.attempt:${imageId}:${generation}`,
+  // One approval per draft. The publish job's first act, so a double-clicked
+  // button, a re-enqueued job, or two admins looking at the same page collapse
+  // to a single publication of that draft.
+  dispatchApproval: (draftEventId: number) => `x.dispatch.approve:${draftEventId}`
 };

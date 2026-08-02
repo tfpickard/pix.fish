@@ -517,6 +517,15 @@ describe('one dispatch per day is structural', () => {
     expect(dedupeKey.dispatchAttempt(42, 1)).not.toBe(dedupeKey.dispatchAttempt(42, 0));
   });
 
+  test('a draft can be approved exactly once', () => {
+    // The approval claim is keyed on the DRAFT, so a double-clicked button, a
+    // re-enqueued job, or two admins on the same page collapse to one
+    // publication. Keying it on anything shared -- the date, the slot -- would
+    // let a second draft's approval be swallowed by the first.
+    expect(dedupeKey.dispatchApproval(9355)).toBe(dedupeKey.dispatchApproval(9355));
+    expect(dedupeKey.dispatchApproval(9355)).not.toBe(dedupeKey.dispatchApproval(9356));
+  });
+
   test('each manual run gets its own outcome slot', () => {
     // Outcomes are keyed off the claim slot, so unlimited manual runs must not
     // collapse into one outcome row -- otherwise the second post of the day would

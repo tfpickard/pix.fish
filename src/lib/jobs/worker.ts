@@ -38,6 +38,8 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
   // upstream call carries its own tighter deadline (src/lib/dispatch/config.ts);
   // this is the outer bound that keeps a hung dispatch inside the tick budget.
   'x.dispatch': 50_000,
+  // Same posting phase as x.dispatch, minus the trend/safety/caption calls.
+  'x.dispatch.publish': 40_000,
   noop: 5_000
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;

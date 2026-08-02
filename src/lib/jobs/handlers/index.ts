@@ -20,6 +20,7 @@ import { charactersCensusHandler } from './charactersCensus';
 import { charactersBackfillVisualsHandler } from './charactersBackfillVisuals';
 import { desirePromoteHandler } from './desirePromote';
 import { xDispatchHandler } from './xDispatch';
+import { xDispatchPublishHandler } from './xDispatchPublish';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -80,5 +81,9 @@ export const handlers: Record<string, JobHandler> = {
   // Outbound X dispatch: one trend fetch, one safety classification, one
   // specimen pick, one caption. Enqueued once a day by /api/cron/dispatch with
   // maxAttempts 1; the day-claim event makes a second run impossible.
-  'x.dispatch': xDispatchHandler
+  'x.dispatch': xDispatchHandler,
+  // Publish a draft an admin approved. Posts the stored draft verbatim rather
+  // than re-running the pipeline: regenerating would produce a different caption
+  // and the approval would not be of the thing published.
+  'x.dispatch.publish': xDispatchPublishHandler
 };
