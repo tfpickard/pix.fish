@@ -172,10 +172,17 @@ export const POST_WRITE_MARGIN_MS = 3_000;
 export const POST_PHASE_BUDGET_MS =
   IMAGE_FETCH_TIMEOUT_MS + MEDIA_UPLOAD_TIMEOUT_MS + POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS;
 
-// True when enough of the job's budget is left to run the whole posting phase
-// AND record the outcome. `elapsedMs` is measured from the handler's start.
-export function canStartPostPhase(elapsedMs: number): boolean {
-  return elapsedMs <= WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS;
+// True when enough time remains before `deadlineAt` to run the whole posting
+// phase AND record the outcome.
+//
+// The caller must pass the EARLIEST deadline that can stop the work, which is
+// not the handler's own timeout: the cron drain runs several jobs sequentially
+// inside one 60s function, so a handler that starts 40s in has ~15s left however
+// fresh its own clock looks. Measuring against the handler alone would let a
+// post start with the invocation nearly spent -- reintroducing, one level up,
+// exactly the failure this gate exists to prevent.
+export function canStartPostPhase(deadlineAt: number, now = Date.now()): boolean {
+  return now + POST_PHASE_BUDGET_MS <= deadlineAt;
 }
 
 // X's image ceiling is 5MB. Refuse locally rather than paying for an upload the

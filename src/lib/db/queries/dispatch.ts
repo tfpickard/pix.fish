@@ -128,12 +128,34 @@ export async function listDispatchCandidates(params: {
 // the media upload -- tens of seconds during which an admin can archive the very
 // image about to go out. Archiving leaves the blob intact, so nothing downstream
 // would notice. Re-read immediately before the side effect.
-export async function isStillPostable(imageId: number): Promise<boolean> {
-  const res = await db.execute<{ ok: boolean }>(sql`
-    SELECT (archived_at IS NULL AND basement = false) AS ok
+// Returns the CURRENT publishability inputs, not a verdict: the caller applies
+// liveEligible() so one predicate governs both selection and this last look.
+// Returns null when the row has vanished.
+export async function currentPostState(imageId: number): Promise<{
+  gated: boolean;
+  isNsfw: boolean;
+  nsfwSource: string | null;
+  mime: string | null;
+} | null> {
+  const res = await db.execute<{
+    gated: boolean;
+    is_nsfw: boolean;
+    nsfw_source: string | null;
+    mime: string | null;
+  }>(sql`
+    SELECT
+      (archived_at IS NOT NULL OR basement = true) AS gated,
+      is_nsfw, nsfw_source, mime
     FROM images WHERE id = ${imageId}
   `);
-  return Boolean(res.rows?.[0]?.ok);
+  const row = res.rows?.[0];
+  if (!row) return null;
+  return {
+    gated: Boolean(row.gated),
+    isNsfw: Boolean(row.is_nsfw),
+    nsfwSource: row.nsfw_source,
+    mime: row.mime
+  };
 }
 
 // Image ids already spent on a dispatch. Read straight off the append-only log

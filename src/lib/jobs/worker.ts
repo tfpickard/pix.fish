@@ -61,7 +61,20 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-export async function runJob(job: Job): Promise<'done' | 'retry' | 'failed'> {
+// What the caller knows about the wall clock that the handler cannot work out
+// for itself. The cron drain runs up to BATCH jobs sequentially inside ONE 60s
+// Vercel function, so a handler measuring from its own start sees a fresh budget
+// even when the invocation is nearly spent. Any handler with an irreversible
+// side effect has to reason about the invocation, not about itself.
+export type JobContext = {
+  // Epoch ms after which the enclosing function may be terminated.
+  invocationDeadlineAt: number;
+};
+
+export async function runJob(
+  job: Job,
+  ctx: JobContext = { invocationDeadlineAt: Date.now() + JOB_TIMEOUT_DEFAULT_MS }
+): Promise<'done' | 'retry' | 'failed'> {
   const handler = handlers[job.type];
   if (!handler) {
     await markJobFailed(job.id, `no handler for job type "${job.type}"`);
@@ -69,7 +82,7 @@ export async function runJob(job: Job): Promise<'done' | 'retry' | 'failed'> {
   }
   try {
     const timeoutMs = JOB_TIMEOUT_MS[job.type] ?? JOB_TIMEOUT_DEFAULT_MS;
-    await withTimeout(handler(job), timeoutMs, `job ${job.id} (${job.type})`);
+    await withTimeout(handler(job, ctx), timeoutMs, `job ${job.id} (${job.type})`);
     await markJobDone(job.id);
     return 'done';
   } catch (err) {

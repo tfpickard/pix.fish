@@ -1048,11 +1048,24 @@ describe('the post phase never starts without time to finish and record', () => 
     expect(POST_PHASE_BUDGET_MS).toBeLessThan(WORKER_JOB_TIMEOUT_MS);
   });
 
-  test('a fresh job may post; one that already burned the budget may not', () => {
-    expect(canStartPostPhase(0)).toBe(true);
-    expect(canStartPostPhase(WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS)).toBe(true);
-    expect(canStartPostPhase(WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS + 1)).toBe(false);
-    expect(canStartPostPhase(WORKER_JOB_TIMEOUT_MS)).toBe(false);
+  test('posting needs the whole phase budget left before the deadline', () => {
+    const now = 1_000_000;
+    expect(canStartPostPhase(now + POST_PHASE_BUDGET_MS, now)).toBe(true);
+    expect(canStartPostPhase(now + POST_PHASE_BUDGET_MS + 1, now)).toBe(true);
+    expect(canStartPostPhase(now + POST_PHASE_BUDGET_MS - 1, now)).toBe(false);
+    expect(canStartPostPhase(now, now)).toBe(false);
+    expect(canStartPostPhase(now - 5_000, now)).toBe(false);
+  });
+
+  test('the deadline is absolute, so a nearly-spent invocation refuses', () => {
+    // The case that matters: the handler's own clock looks fresh, but the cron
+    // invocation it is running inside has almost no time left. Passing the
+    // invocation deadline is what makes that refusable at all.
+    const now = 1_000_000;
+    const handlerRelative = now + WORKER_JOB_TIMEOUT_MS;
+    const invocationNearlySpent = now + 5_000;
+    expect(canStartPostPhase(handlerRelative, now)).toBe(true);
+    expect(canStartPostPhase(Math.min(handlerRelative, invocationNearlySpent), now)).toBe(false);
   });
 
   test('the full upstream budget still leaves the gate reachable', () => {

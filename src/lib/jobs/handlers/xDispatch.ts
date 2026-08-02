@@ -1,7 +1,8 @@
 import type { Job } from '@/lib/db/schema';
+import type { JobContext } from '@/lib/jobs/worker';
 import { appendEvent } from '@/lib/db/queries/events';
 import {
-  isStillPostable,
+  currentPostState,
   listDispatchCandidates,
   listDispatchedImageIds
 } from '@/lib/db/queries/dispatch';
@@ -28,6 +29,7 @@ import {
   LIVE_ALLOW_NSFW,
   liveEligible,
   POST_PHASE_BUDGET_MS,
+  WORKER_JOB_TIMEOUT_MS,
   canStartPostPhase,
   captionCharBudget,
   dispatchLiveEnabled,
@@ -63,12 +65,15 @@ type DispatchPayload = {
   dryRun?: boolean;
 };
 
-export async function xDispatchHandler(job: Job): Promise<void> {
+export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void> {
   const payload = (job.payload ?? {}) as DispatchPayload;
   const now = new Date();
-  // Measured from the handler's first instruction so the pre-post clock check
-  // accounts for everything the job has already spent, not just the stage it is in.
-  const startedAt = Date.now();
+  // The earliest thing that can stop this work. Two clocks can: this handler's
+  // own per-job timeout, and the enclosing cron invocation -- which runs several
+  // jobs sequentially and may already be nearly spent. Taking the minimum is the
+  // whole point; measuring against the handler alone would let a post start with
+  // the function about to be terminated.
+  const postDeadlineAt = Math.min(Date.now() + WORKER_JOB_TIMEOUT_MS, ctx.invocationDeadlineAt);
   const trigger = payload.trigger === 'manual' ? 'manual' : 'cron';
 
   // Claim the EXECUTION date, not the date stamped at enqueue. A job queued at
@@ -129,7 +134,7 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   // transient DB read in the candidate queries or in getPromptByKey, a missing
   // OWNER_GITHUB_ID, a provider that cannot embed.
   try {
-    await runDispatch({ dateKey, seedKey, slotKey, mode, trigger, liveConfigured, startedAt, skip });
+    await runDispatch({ dateKey, seedKey, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip });
   } catch (err) {
     // Fail closed, but audibly. If the skip write ALSO throws we genuinely
     // cannot record anything, and that is the one case where letting the job
@@ -149,10 +154,10 @@ async function runDispatch(ctx: {
   mode: 'dry-run' | 'live';
   trigger: 'cron' | 'manual';
   liveConfigured: boolean;
-  startedAt: number;
+  postDeadlineAt: number;
   skip: (reason: SkipReason, detail: string, trendTopic?: string | null) => Promise<void>;
 }): Promise<void> {
-  const { dateKey, seedKey, slotKey, mode, trigger, liveConfigured, startedAt, skip } = ctx;
+  const { dateKey, seedKey, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip } = ctx;
   const now = new Date();
 
   // ---- 1. trend acquisition -------------------------------------------------
@@ -311,11 +316,11 @@ async function runDispatch(ctx: {
     // safe. Checking the clock does: a day skipped because the upstream ran slow
     // costs one post, whereas a post landing as the job is killed leaves a public
     // post with no outcome on the log.
-    const budgetLeft = () => canStartPostPhase(Date.now() - startedAt);
+    const budgetLeft = () => canStartPostPhase(postDeadlineAt);
     if (!budgetLeft()) {
       await skip(
         SKIP_REASON.PostFailed,
-        `not enough job budget left to post safely: ${Date.now() - startedAt}ms elapsed, ${POST_PHASE_BUDGET_MS}ms needed`,
+        `not enough budget left to post safely: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_PHASE_BUDGET_MS}ms needed`,
         chosen.trend.topic
       );
       return;
@@ -337,7 +342,7 @@ async function runDispatch(ctx: {
     if (!budgetLeft()) {
       await skip(
         SKIP_REASON.PostFailed,
-        `budget exhausted after media upload: ${Date.now() - startedAt}ms elapsed`,
+        `budget exhausted after media upload: ${postDeadlineAt - Date.now()}ms to deadline`,
         chosen.trend.topic
       );
       return;
@@ -349,10 +354,13 @@ async function runDispatch(ctx: {
     // so nothing else here would notice. The query layer treats archived and
     // basement rows as never-publishable, and that invariant has to hold at the
     // moment of publishing, not merely at the moment of choosing.
-    if (!(await isStillPostable(specimen.imageId))) {
+    const current = await currentPostState(specimen.imageId);
+    if (!current || current.gated || !liveEligible(current)) {
       await skip(
         SKIP_REASON.PostFailed,
-        `specimen ${specimen.imageId} was archived or gated after selection`,
+        !current
+          ? `specimen ${specimen.imageId} no longer exists`
+          : `specimen ${specimen.imageId} stopped being postable after selection (gated=${current.gated}, nsfw=${current.isNsfw}, source=${current.nsfwSource})`,
         chosen.trend.topic
       );
       return;

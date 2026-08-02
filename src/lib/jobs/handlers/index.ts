@@ -1,4 +1,5 @@
 import type { Job } from '@/lib/db/schema';
+import type { JobContext } from '../worker';
 import { webhookDeliverHandler } from './webhookDeliver';
 import { reprocessImageHandler } from './reprocessImage';
 import { enrichImageHandler } from './enrichImage';
@@ -33,7 +34,11 @@ import { xDispatchHandler } from './xDispatch';
 //   'manifold.recompute'-- feat/manifold: 3D umap projection
 //   'knn.rebuild'       -- feat/geodesics: kNN graph rebuild
 // (feat/stigmergy and feat/alive run inline/admin-triggered, no new job type.)
-export type JobHandler = (job: Job) => Promise<void>;
+// `ctx` is optional at the handler's end so the many handlers with no
+// irreversible side effect can keep ignoring it. Handlers that DO publish
+// something have to consult it: the drain runs several jobs inside one function
+// invocation, so a handler's own start time is not the deadline that matters.
+export type JobHandler = (job: Job, ctx: JobContext) => Promise<void>;
 
 export const handlers: Record<string, JobHandler> = {
   noop: async () => {
