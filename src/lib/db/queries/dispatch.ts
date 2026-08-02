@@ -2,6 +2,7 @@ import { desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { events, type UniverseEvent } from '../schema';
 import { EVENT_TYPE } from '@/lib/universe/events';
+import { LIVE_ALLOW_NSFW, LIVE_STILL_MIMES } from '@/lib/dispatch/config';
 import type { SpecimenCandidate } from '@/lib/dispatch/types';
 
 // Data layer for the outbound X dispatch. Query construction stays here, out of
@@ -50,18 +51,28 @@ export async function listDispatchCandidates(params: {
   // The widening pass cannot rescue that either -- it re-samples a superset with
   // the same seed, so the same rows stay in front.
   //
-  // Mirrors liveEligible() in src/lib/dispatch/config.ts, which still runs on the
-  // result and again at post time against currentPostState. Two expressions of
-  // one rule is a drift risk, taken deliberately: the predicate has to be in SQL
-  // to be correct here, and in TS to re-check an image that changed after
-  // selection. Change one, change the other.
+  // The predicate below is BUILT from the same constants liveEligible() uses, not
+  // written out again alongside it. It has to exist in SQL to be correct here and
+  // in TS to re-check an image that changed after selection, but sharing the
+  // constants means the policy has one home even though it has two call sites.
   liveOnly?: boolean;
 }): Promise<SpecimenCandidate[]> {
   const vecLiteral = `[${params.vec.join(',')}]`;
+  // Built FROM the policy constants rather than restating them. The previous
+  // version hardcoded the NSFW half, so flipping LIVE_ALLOW_NSFW -- a documented
+  // switch -- changed liveEligible() and left this query excluding the very rows
+  // the switch exists to admit. Two expressions of one rule had already drifted
+  // within a day of my writing a comment acknowledging the risk. Deriving both
+  // from the same constants is the actual fix; the comment was not.
+  const mimeList = sql.join(
+    [...LIVE_STILL_MIMES].map((m) => sql`${m}`),
+    sql`, `
+  );
+  const nsfwFilter = LIVE_ALLOW_NSFW
+    ? sql``
+    : sql`AND i.is_nsfw = false AND i.nsfw_source = 'auto'`;
   const liveFilter = params.liveOnly
-    ? sql`AND i.is_nsfw = false
-          AND i.nsfw_source = 'auto'
-          AND lower(i.mime) IN ('image/jpeg', 'image/png', 'image/webp')`
+    ? sql`${nsfwFilter} AND lower(i.mime) IN (${mimeList})`
     : sql``;
   const exclude =
     params.excludeImageIds.length > 0

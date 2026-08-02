@@ -675,11 +675,12 @@ async function prepareMedia(
   const image = await fetchSpecimenImage(specimen.blobUrl, IMAGE_FETCH_TIMEOUT_MS);
   if (!image.ok) return { ok: false, reason: image.reason };
 
-  // Trust the bytes over the row. images.mime is metadata recorded at upload and
-  // can be absent, stale, or simply wrong, whereas this is what the blob store
-  // just served. Selection filters on the column because that is all a query can
-  // see; this is the first point where the actual type is known, and it is still
-  // before anything is uploaded.
+  // fetchSpecimenImage identifies the format from the file signature, so this is
+  // the first point in the whole pipeline where the type is a fact rather than a
+  // claim. Both the images.mime column and the blob store's Content-Type trace
+  // back to the browser-supplied file.type at upload -- one unverified assertion
+  // reported in two places, which is why selection filtering on the column is
+  // necessary but not sufficient.
   if (!LIVE_STILL_MIMES.has(image.mime.toLowerCase())) {
     return {
       ok: false,

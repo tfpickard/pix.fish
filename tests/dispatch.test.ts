@@ -16,6 +16,7 @@ import {
   dispatchLiveEnabled,
   DRIFT_ENABLED,
   LIVE_ALLOW_NSFW,
+  LIVE_STILL_MIMES,
   MAX_MEDIA_BYTES,
   POST_PHASE_BUDGET_MS,
   POST_ONLY_BUDGET_MS,
@@ -28,7 +29,11 @@ import {
   liveEligible,
   madeWithAiFlag
 } from '../src/lib/dispatch/config';
-import { mediaCategoryFor, statusIsIndeterminate } from '../src/lib/dispatch/x-client';
+import {
+  mediaCategoryFor,
+  sniffImageMime,
+  statusIsIndeterminate
+} from '../src/lib/dispatch/x-client';
 import {
   authorizationHeader,
   normalizeParams,
@@ -1167,6 +1172,46 @@ describe('the post phase never starts without time to finish and record', () => 
     expect(canFinishPostPhase(now + POST_ONLY_BUDGET_MS, now)).toBe(true);
     expect(canFinishPostPhase(now + POST_ONLY_BUDGET_MS - 1, now)).toBe(false);
     expect(canFinishPostPhase(now, now)).toBe(false);
+  });
+});
+
+describe('image format is read from the bytes, not from a claim', () => {
+  // Both images.mime and the blob store's Content-Type trace back to the
+  // browser-supplied file.type at upload. A GIF uploaded declaring image/jpeg is
+  // called a JPEG by both, so the GIF exclusion could be defeated by the one
+  // party it exists to guard against. Signatures are the only source here that
+  // cannot be asserted.
+  const sig = (...bytes: number[]) => new Uint8Array(bytes);
+
+  test('identifies the postable stills', () => {
+    expect(sniffImageMime(sig(0xff, 0xd8, 0xff, 0xe0))).toBe('image/jpeg');
+    expect(sniffImageMime(sig(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))).toBe('image/png');
+    expect(
+      sniffImageMime(sig(0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50))
+    ).toBe('image/webp');
+  });
+
+  test('identifies a GIF regardless of what it claims to be', () => {
+    // 'GIF89a' and 'GIF87a'. This is the case that matters: the row and the
+    // header can both say image/jpeg, and this still returns image/gif.
+    expect(sniffImageMime(sig(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).toBe('image/gif');
+    expect(sniffImageMime(sig(0x47, 0x49, 0x46, 0x38, 0x37, 0x61))).toBe('image/gif');
+  });
+
+  test('unidentifiable bytes are null, never a guess', () => {
+    expect(sniffImageMime(sig())).toBeNull();
+    expect(sniffImageMime(sig(0x00, 0x01, 0x02, 0x03))).toBeNull();
+    // Truncated signatures must not partially match.
+    expect(sniffImageMime(sig(0xff, 0xd8))).toBeNull();
+    expect(sniffImageMime(sig(0x89, 0x50, 0x4e))).toBeNull();
+  });
+
+  test('what it identifies as postable matches the allowlist', () => {
+    // The sniffer and liveEligible have to agree, or one of them is decoration.
+    for (const m of LIVE_STILL_MIMES) {
+      expect(['image/jpeg', 'image/png', 'image/webp']).toContain(m);
+    }
+    expect(LIVE_STILL_MIMES.has('image/gif')).toBe(false);
   });
 });
 

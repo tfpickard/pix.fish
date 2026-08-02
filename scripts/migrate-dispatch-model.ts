@@ -61,10 +61,23 @@ async function main() {
     );
     console.log(`  ${apply ? 'updating' : 'would update'} to ${want.provider}/${want.model}`);
     if (apply) {
-      await db
+      // Compare-and-set on the value this run actually read, not just the key.
+      // Keying on the field alone would let an admin's edit -- made between the
+      // SELECT above and this UPDATE -- be overwritten by the migration target,
+      // which is the precise thing the script exists NOT to do. The window is
+      // small and the whole point of the script is that owner choices survive it.
+      const updated = await db
         .update(aiConfig)
         .set({ provider: want.provider, model: want.model, updatedAt: new Date() })
-        .where(sql`${aiConfig.field} = 'dispatch'`);
+        .where(
+          sql`${aiConfig.field} = 'dispatch'
+            AND ${aiConfig.provider} = ${FORMER_SHARED_DEFAULT.provider}
+            AND ${aiConfig.model} = ${FORMER_SHARED_DEFAULT.model}`
+        )
+        .returning();
+      if (updated.length === 0) {
+        console.log('  changed underneath this run -- left as it now stands.');
+      }
     }
   } else {
     console.log(

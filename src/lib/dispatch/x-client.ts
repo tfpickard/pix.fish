@@ -76,6 +76,70 @@ async function errorDetail(res: Response): Promise<string> {
 }
 
 /**
+ * Identify an image from its leading bytes.
+ *
+ * Every other signal available here is client-controlled. The upload route
+ * persists `file.type` as supplied by the browser, and the blob store echoes it
+ * back as Content-Type, so a GIF uploaded declaring image/jpeg is called a JPEG
+ * by the column AND by the response header -- one unverified claim reported
+ * twice, not two sources agreeing. That defeats the GIF exclusion precisely when
+ * it matters, since the excluded case is the one an uploader might disguise.
+ *
+ * File signatures are not a heuristic; they are how the formats define
+ * themselves, and a decoder would read the same bytes to reach the same answer.
+ * Returns null when the format cannot be established, which the caller treats as
+ * unpostable -- unknown means refused, the same rule the NSFW and MIME columns
+ * already follow.
+ */
+export function sniffImageMime(bytes: Uint8Array): string | null {
+  const at = (i: number) => bytes[i];
+  // JPEG: SOI marker FF D8, then FF for the first segment.
+  if (bytes.length >= 3 && at(0) === 0xff && at(1) === 0xd8 && at(2) === 0xff) return 'image/jpeg';
+  // PNG: the 8-byte signature.
+  if (
+    bytes.length >= 8 &&
+    at(0) === 0x89 &&
+    at(1) === 0x50 &&
+    at(2) === 0x4e &&
+    at(3) === 0x47 &&
+    at(4) === 0x0d &&
+    at(5) === 0x0a &&
+    at(6) === 0x1a &&
+    at(7) === 0x0a
+  ) {
+    return 'image/png';
+  }
+  // GIF: "GIF87a" or "GIF89a". Identified rather than ignored so the caller can
+  // say WHY it refused; a GIF is a legitimate image, just not a postable one here.
+  if (
+    bytes.length >= 6 &&
+    at(0) === 0x47 &&
+    at(1) === 0x49 &&
+    at(2) === 0x46 &&
+    at(3) === 0x38 &&
+    (at(4) === 0x37 || at(4) === 0x39) &&
+    at(5) === 0x61
+  ) {
+    return 'image/gif';
+  }
+  // WebP: RIFF container, "WEBP" at byte 8.
+  if (
+    bytes.length >= 12 &&
+    at(0) === 0x52 &&
+    at(1) === 0x49 &&
+    at(2) === 0x46 &&
+    at(3) === 0x46 &&
+    at(8) === 0x57 &&
+    at(9) === 0x45 &&
+    at(10) === 0x42 &&
+    at(11) === 0x50
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+/**
  * Read a response body, refusing as soon as it passes `cap` rather than after.
  *
  * The cancel() matters as much as the early return: without it the connection
@@ -155,8 +219,16 @@ export async function fetchSpecimenImage(
     const buf = read.bytes;
     if (buf.byteLength === 0) return { ok: false, reason: 'image is empty' };
 
-    const mime = res.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';
-    return { ok: true, bytes: buf, mime };
+    // The bytes decide. The Content-Type header here is the browser-supplied
+    // `file.type` from upload, round-tripped through the blob store -- reading it
+    // and calling that "what the store served" was wrong: it is the same
+    // unverified claim as images.mime, not an independent one. Defaulting a
+    // missing header to image/jpeg was worse still, inventing a fact.
+    const sniffed = sniffImageMime(buf);
+    if (!sniffed) {
+      return { ok: false, reason: 'could not identify the image format from its bytes' };
+    }
+    return { ok: true, bytes: buf, mime: sniffed };
   } catch (err) {
     return { ok: false, reason: `image fetch failed: ${errText(err)}` };
   }
