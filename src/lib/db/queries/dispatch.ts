@@ -61,7 +61,7 @@ export async function listDispatchCandidates(params: {
   const liveFilter = params.liveOnly
     ? sql`AND i.is_nsfw = false
           AND i.nsfw_source = 'auto'
-          AND COALESCE(lower(i.mime), '') <> 'image/gif'`
+          AND lower(i.mime) IN ('image/jpeg', 'image/png', 'image/webp')`
     : sql``;
   const exclude =
     params.excludeImageIds.length > 0

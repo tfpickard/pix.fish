@@ -31,6 +31,7 @@ ensure-pgvector.ts       # idempotent CREATE EXTENSION vector
 prepare-multiuser.ts     # pre-migration: stand up users table before db:push (bootstrap)
 backfill-multiuser.ts    # backfill owner_id on legacy single-owner rows to the admin user
 sync-dispatch-prompt.ts  # move the live dispatch_caption row to the checked-in default, skipping admin-edited rows (--apply to write)
+migrate-dispatch-model.ts # move the ai_config dispatch row off the former shared default and add dispatchSafety (--apply to write)
 ```
 
 Note the asymmetry there: `seed.ts` upserts and so **overwrites the template of every prompt key**, discarding admin edits made at `/admin/prompts`. That makes it the wrong tool for shipping a prompt change to a live install. `sync-dispatch-prompt.ts` is the right one -- it only advances a row whose content still hashes to a default this repo has shipped. Any new prompt-constant change needs the outgoing hash appended to `SHIPPED_DEFAULT_HASHES`, or the update will read as an admin edit and be skipped forever.

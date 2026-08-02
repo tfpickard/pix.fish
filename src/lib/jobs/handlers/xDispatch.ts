@@ -28,6 +28,7 @@ import {
   WIDE_BAND_MIN_DISTANCE,
   IMAGE_FETCH_TIMEOUT_MS,
   LIVE_ALLOW_NSFW,
+  LIVE_STILL_MIMES,
   liveEligible,
   POST_PHASE_BUDGET_MS,
   POST_ONLY_BUDGET_MS,
@@ -171,6 +172,18 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
     return;
   }
 
+  // The gate above was taken BEFORE the claim write, which is a database round
+  // trip of unknown duration. A run that passed with a slim margin can arrive
+  // here with the margin gone -- and now the day is committed, so returning
+  // quietly would leave exactly the claimed-with-no-outcome day the gate exists
+  // to prevent.
+  //
+  // Recording a skip is the recovery, not returning: the day is spent either way,
+  // and a spent day with a reason on the log is an operator's problem to read
+  // rather than a silent gap. The skip write is one insert, which is the smallest
+  // thing that can still be done here.
+  const budgetLostAfterClaim = !canStartPipeline(postDeadlineAt);
+
   const skip = async (reason: SkipReason, detail: string, trendTopic: string | null = null) => {
     await appendEvent({
       type: EVENT_TYPE.DispatchSkipped,
@@ -187,6 +200,14 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
       dedupeKey: dedupeKey.dispatchOutcome(slotKey)
     });
   };
+
+  if (budgetLostAfterClaim) {
+    await skip(
+      SKIP_REASON.InternalError,
+      `budget ran out while claiming ${dateKey}: ${postDeadlineAt - Date.now()}ms left, ${PIPELINE_BUDGET_MS}ms needed`
+    );
+    return;
+  }
 
   // An explicit live request that can no longer post is refused, not downgraded.
   // The admin endpoint validated the switch and the credentials before queuing,
@@ -509,6 +530,30 @@ async function runDispatch(ctx: {
       return;
     }
 
+    // Re-read the image one last time, AFTER the lock. The check above ran before
+    // two database round trips (the generation count and the attempt write), and
+    // an archive or an nsfw.scan landing inside that window would otherwise reach
+    // X: the earlier verdict is stale the moment anything blocking follows it.
+    //
+    // The lock is what makes this the authoritative check rather than a repeat of
+    // the first. Before the lock the answer could still change under us; after it,
+    // nothing else can take this specimen, so what we read here is what we post.
+    //
+    // Filed as post_failed, which is definite and therefore RELEASES the specimen
+    // -- correct, because nothing was published and the image is fine, it simply
+    // stopped being postable. The generation bump lets it be tried again later.
+    const atPost = await currentPostState(specimen.imageId);
+    if (!atPost || atPost.gated || !liveEligible(atPost)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        !atPost
+          ? `specimen ${specimen.imageId} was deleted between the lock and the post`
+          : `specimen ${specimen.imageId} stopped being postable between the lock and the post (gated=${atPost.gated}, nsfw=${atPost.isNsfw}, source=${atPost.nsfwSource}, mime=${atPost.mime})`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
     const creds = getXCredentials();
     if (!creds) {
       await skip(SKIP_REASON.PostFailed, 'X credentials disappeared mid-run', chosen.trend.topic);
@@ -629,6 +674,18 @@ async function prepareMedia(
 
   const image = await fetchSpecimenImage(specimen.blobUrl, IMAGE_FETCH_TIMEOUT_MS);
   if (!image.ok) return { ok: false, reason: image.reason };
+
+  // Trust the bytes over the row. images.mime is metadata recorded at upload and
+  // can be absent, stale, or simply wrong, whereas this is what the blob store
+  // just served. Selection filters on the column because that is all a query can
+  // see; this is the first point where the actual type is known, and it is still
+  // before anything is uploaded.
+  if (!LIVE_STILL_MIMES.has(image.mime.toLowerCase())) {
+    return {
+      ok: false,
+      reason: `specimen served ${image.mime}, which is not a postable still image`
+    };
+  }
 
   return uploadMedia(creds, image.bytes, image.mime);
 }

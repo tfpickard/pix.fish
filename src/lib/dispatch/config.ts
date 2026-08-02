@@ -305,6 +305,19 @@ export function liveEligible(c: {
     if (c.isNsfw) return false;
     if (c.nsfwSource !== 'auto') return false;
   }
-  if ((c.mime ?? '').toLowerCase() === 'image/gif') return false;
-  return true;
+  // An ALLOWLIST of still-image types, not a denylist of GIF. images.mime is
+  // nullable and legacy rows carry null, so "is not image/gif" admitted every
+  // unknown -- including an actual GIF whose type was simply never recorded. The
+  // NSFW guard three lines up already learned this lesson: a missing value is not
+  // a safe value, it is an absent one. Same mistake, same fix.
+  //
+  // Unknown means unpostable rather than presumed still. The cost is a legacy row
+  // sitting out until something records its type; the alternative is uploading a
+  // GIF as tweet_image and posting it before X has processed it.
+  return LIVE_STILL_MIMES.has((c.mime ?? '').toLowerCase());
 }
+
+// What X accepts as a still image, and what this feature is willing to post.
+// GIF is deliberately absent: a tweet_gif upload can return a media id while
+// processing is still pending, and nothing here polls for readiness.
+export const LIVE_STILL_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);

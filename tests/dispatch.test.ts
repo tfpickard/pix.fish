@@ -1236,4 +1236,21 @@ describe('live eligibility requires a verdict, not a default', () => {
     expect(liveEligible({ ...base, mime: 'image/gif' })).toBe(false);
     expect(liveEligible({ ...base, mime: 'IMAGE/GIF' })).toBe(false);
   });
+
+  // The same mistake the nsfwSource case above catches, in the other column.
+  // images.mime is nullable and legacy rows carry null, so a denylist of GIF
+  // admitted every unknown type -- including an actual GIF whose type was never
+  // recorded. A missing value is not a safe value.
+  test('an unknown mime is not treated as a still image', () => {
+    expect(liveEligible({ ...base, mime: null })).toBe(false);
+    expect(liveEligible({ ...base, mime: '' })).toBe(false);
+    expect(liveEligible({ ...base, mime: 'application/octet-stream' })).toBe(false);
+  });
+
+  test('the postable types are an allowlist', () => {
+    for (const mime of ['image/jpeg', 'image/png', 'image/webp']) {
+      expect(liveEligible({ ...base, mime })).toBe(true);
+      expect(liveEligible({ ...base, mime: mime.toUpperCase() })).toBe(true);
+    }
+  });
 });
