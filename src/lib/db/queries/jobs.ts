@@ -96,15 +96,30 @@ export async function hasInFlightJobOfType(type: string): Promise<boolean> {
 //
 // So dry review runs still pass (preserving the original fix) and live ones do
 // not.
+// Covers BOTH job types that can post: the dispatch itself and the publication
+// of an approved draft. Scoping it to one type let a cron tick and an approval
+// be queued together, each publishing a different specimen on the same day --
+// which defeats the rule that a manual publication stands down the automatic
+// one, since neither handler looks for the other's type.
+//
+// This is the shared guard; both enqueue routes call it, so "is something about
+// to post?" has a single answer rather than two partial ones.
 export async function hasInFlightPostingDispatch(): Promise<boolean> {
   const res = await db.execute<{ present: boolean }>(sql`
     SELECT EXISTS(
       SELECT 1 FROM jobs
-      WHERE type = 'x.dispatch'
-        AND status IN ('pending', 'processing')
+      WHERE status IN ('pending', 'processing')
         AND (
-          payload->>'claimSuffix' IS NULL
-          OR payload->>'dryRun' IS DISTINCT FROM 'true'
+          -- A scheduled dispatch, or a manual one not queued as a dry run.
+          (
+            type = 'x.dispatch'
+            AND (
+              payload->>'claimSuffix' IS NULL
+              OR payload->>'dryRun' IS DISTINCT FROM 'true'
+            )
+          )
+          -- Publishing an approved draft always posts.
+          OR type = 'x.dispatch.publish'
         )
     ) AS present
   `);

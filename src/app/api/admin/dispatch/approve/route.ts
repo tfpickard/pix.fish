@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { auth, isSiteAdmin } from '@/lib/auth';
-import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
+import { enqueueJob, hasInFlightPostingDispatch } from '@/lib/db/queries/jobs';
 import { getEvent } from '@/lib/db/queries/events';
 import { publishedDraftIds } from '@/lib/db/queries/dispatch';
 import { EVENT_TYPE } from '@/lib/universe/events';
@@ -65,10 +65,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ approved: false, reason: 'this draft has already been published' });
   }
 
-  // Advisory. The publish job re-checks the specimen and takes the specimen lock;
-  // this only avoids queueing work that is certain to skip.
-  if (await hasInFlightJobOfType('x.dispatch.publish')) {
-    return NextResponse.json({ approved: false, reason: 'a publish is already in flight' });
+  // The SHARED guard, covering scheduled dispatches as well as other
+  // publications. Checking only for another publish let an approval be queued
+  // alongside a pending cron run, each posting a different specimen on the same
+  // day -- neither handler looks for the other's job type, so nothing downstream
+  // would have caught it.
+  //
+  // Advisory, as ever: the publish job re-checks the specimen and takes the
+  // specimen lock. This only avoids queueing work certain to skip.
+  if (await hasInFlightPostingDispatch()) {
+    return NextResponse.json({ approved: false, reason: 'a dispatch is already in flight' });
   }
 
   const job = await enqueueJob({

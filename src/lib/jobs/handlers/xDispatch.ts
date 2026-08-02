@@ -238,8 +238,9 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
   // them precise reason codes. This is only the backstop for the unexpected: a
   // transient DB read in the candidate queries or in getPromptByKey, a missing
   // OWNER_GITHUB_ID, a provider that cannot embed.
+  const runState: RunState = { specimenLocked: false };
   try {
-    await runDispatch({ dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip });
+    await runDispatch({ dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip, runState });
   } catch (err) {
     // A post that may be public keeps its indeterminate label however the
     // recording failed. Filing internal_error here would have the review page
@@ -251,6 +252,17 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
         err.postId
           ? `posted ${err.postId} but recording it failed twice: ${errText(err.cause)}`
           : `the post may exist and recording the outcome failed twice: ${errText(err.cause)}`
+      );
+      return;
+    }
+    // Nothing was posted. If the specimen lock was already taken, this MUST be
+    // post_failed: that is the only reason listDispatchedImageIds accepts as
+    // releasing a specimen, so internal_error would leave an image that
+    // certainly never posted locked out of every future dispatch.
+    if (runState.specimenLocked) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `failed after locking the specimen, before posting: ${errText(err)}`
       );
       return;
     }
@@ -267,6 +279,11 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
 // record that. The handler-level catch reads it rather than filing
 // internal_error, which the page renders as "no post" -- the audit surface
 // denying something that exists.
+// What runDispatch has committed by the time an exception escapes it. The
+// handler-level catch is where the outcome gets written, and it cannot choose the
+// right reason without knowing whether the specimen lock was taken.
+type RunState = { specimenLocked: boolean };
+
 class PostMayExistError extends Error {
   constructor(readonly postId: string | null, readonly cause: unknown) {
     super('post may exist but the outcome could not be recorded');
@@ -286,8 +303,9 @@ async function runDispatch(ctx: {
   liveConfigured: boolean;
   postDeadlineAt: number;
   skip: (reason: SkipReason, detail: string, trendTopic?: string | null) => Promise<void>;
+  runState: RunState;
 }): Promise<void> {
-  const { dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip } = ctx;
+  const { dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip, runState } = ctx;
   const now = new Date();
 
   // ---- 1. trend acquisition -------------------------------------------------
@@ -597,6 +615,8 @@ async function runDispatch(ctx: {
       );
       return;
     }
+
+    runState.specimenLocked = true;
 
     // Re-read the image one last time, AFTER the lock. The check above ran before
     // two database round trips (the generation count and the attempt write), and
