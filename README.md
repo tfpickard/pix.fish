@@ -143,7 +143,7 @@ Idempotent; uses `onConflictDoUpdate` on `(image_id, kind='caption')`. You can a
 
 ## API surface
 
-Public reads are unauthenticated. Writes require a session (enforced by `middleware.ts` for `/api/images/*` and `/api/comments/:id`); per-resource ownership and site-admin gates are checked inside the handlers via `canEdit()` / `isSiteAdmin()`. Admin APIs under `/api/admin/*` self-gate with `isSiteAdmin`.
+Public reads are unauthenticated. Writes require a session (enforced by `src/middleware.ts` for `/api/images/*` and `/api/comments/:id`, minus the anonymous-public `POST /api/images/:slug/{reactions,comments}`); per-resource ownership and site-admin gates are checked inside the handlers via `canEdit()` / `isSiteAdmin()`. Admin APIs under `/api/admin/*` self-gate with `isSiteAdmin`.
 
 ### Public / signed-in
 
@@ -229,10 +229,11 @@ src/
     nsfw.ts               # show-NSFW cookie helper
     collections/          # shelf slug minting
     sort/                 # gallery sort/shuffle strategies
-    search/, seo/, about/, webhooks/, site.ts, hash.ts, rate-limit.ts, http-params.ts, ...
+    search/, seo/, about/, webhooks/, site.ts, hash.ts, rate-limit.ts, edge-rate-limit.ts, http-params.ts, ...
+  middleware.ts           # per-IP edge rate limit + "must be signed in" gate
+                          #   (must be under src/ -- Next.js ignores a root-level one here)
 scripts/                  # seed + backfill + migration helpers
 drizzle/                  # 0000_init.sql (enables pgvector) .. 0003
-middleware.ts             # "must be signed in" gate for /admin/*, /api/images writes, /api/comments writes
 vercel.json               # registers the /api/cron/jobs cron
 ```
 

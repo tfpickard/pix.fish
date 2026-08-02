@@ -47,7 +47,7 @@ The `dev.sh` wrapper (`./dev.sh start|stop|restart|status|logs`) launches `bun r
 - The bootstrap admin is whoever matches `OWNER_GITHUB_ID`; the JWT callback stamps their role `admin` and upserts the row on first sign-in (`auth.ts:57-99`). Role is set deterministically *before* the DB upsert so a transient DB failure can't lock the admin out.
 - URL shapes: canonical detail is `/u/<handle>/<slug>`; per-user gallery is `/u/<handle>`. The legacy bare `/<slug>` still resolves (and redirects) for back-compat. Slugs are unique **per owner** (`images_owner_slug_uniq`, `schema.ts:69`), so two users can both own `/u/*/sunset`.
 
-### Auth + three gates (`src/lib/auth.ts`, `middleware.ts`)
+### Auth + three gates (`src/lib/auth.ts`, `src/middleware.ts`)
 
 The old single `isOwner()` gate has been split. All three live in `auth.ts`:
 
@@ -55,7 +55,11 @@ The old single `isOwner()` gate has been split. All three live in `auth.ts`:
 - `isSiteAdmin(session)` (`auth.ts:130`) -- `session.user.role === 'admin'`. Use for platform-wide actions (taxonomy, prompts, ai_config, the global /about and landing config).
 - `canEdit(session, resourceOwnerId)` (`auth.ts:138`) -- per-resource ownership; site admins always pass so they can moderate/rescue any user's content. Use for image edit/delete and any per-user resource.
 
-`middleware.ts` now enforces only **"must be signed in"** for `/admin/*` (redirect) and writes to `/api/images/*` and `/api/comments/:id` (403). It deliberately does **not** check ownership -- that needs a DB read and is done inside handlers via `canEdit`/`isSiteAdmin`. Matcher: `['/admin/:path*', '/api/images/:path*', '/api/comments/:path*']`. Any admin API outside those matched paths relies entirely on its in-handler gate, so always add an explicit `isSiteAdmin`/`canEdit` check in new handlers. Non-admin users can reach `/admin/*` pages; each page self-gates.
+`src/middleware.ts` enforces only **"must be signed in"** for `/admin/*` (redirect) and writes to `/api/images/*` and `/api/comments/:id` (403). It deliberately does **not** check ownership -- that needs a DB read and is done inside handlers via `canEdit`/`isSiteAdmin`. Any admin API the auth gate doesn't cover relies entirely on its in-handler gate, so always add an explicit `isSiteAdmin`/`canEdit` check in new handlers. Non-admin users can reach `/admin/*` pages; each page self-gates. `POST /api/images/:slug/{reactions,comments}` are carved out of the write gate: both are anonymous-public by design.
+
+**The file must live at `src/middleware.ts`.** This project has a `src` directory, so Next.js only picks up middleware from inside it; the copy that sat at the repo root through phase F compiled to nothing and never ran a single request. Anything that looks like it should be enforced at the edge needs a `.next/server/middleware-manifest.json` check before you believe it.
+
+The matcher is now a catch-all (everything except `_next/*` and static asset extensions) because the same file also carries the per-IP edge rate limiter (`src/lib/edge-rate-limit.ts`). Widening it did not widen the auth gate -- `needsAuthGate()` still restricts that to the original three prefixes, and everything else only passes through the limiter. See `docs/rate-limiting.md` for how the three limiter layers relate.
 
 ### AI provider abstraction (`src/lib/ai/`)
 
