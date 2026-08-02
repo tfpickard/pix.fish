@@ -4,7 +4,7 @@ import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import { countDispatchOutcomes, listRecentDispatchEvents } from '@/lib/db/queries/dispatch';
 import { dispatchMinuteForDate, driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
 import { DRIFT_ENABLED, captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
-import { getXCredentials } from '@/lib/dispatch/x-client';
+import { getXCredentials, missingXCredentialNames } from '@/lib/dispatch/x-client';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,6 +39,9 @@ export async function GET(req: Request) {
     // is not enough -- without credentials the handler degrades to a dry run, and
     // the review page should say so rather than implying posts are going out.
     liveCredentialsPresent: getXCredentials() !== null,
+    // Names of the absent variables, so the page can say WHICH one rather than
+    // leaving an operator to guess across four. Never values.
+    missingXCredentials: missingXCredentialNames(),
     charBudget: captionCharBudget(),
     today: {
       dateKey,

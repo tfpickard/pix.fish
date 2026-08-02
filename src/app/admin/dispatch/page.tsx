@@ -58,6 +58,7 @@ type Data = {
   liveEnvEnabled: boolean;
   livePostingImplemented: boolean;
   liveCredentialsPresent: boolean;
+  missingXCredentials: string[];
   charBudget: number;
   today: { dateKey: string; targetUtcMinute: number; driftVariant: boolean };
   totalOutcomes: number;
@@ -295,7 +296,11 @@ export default function AdminDispatchPage() {
             <span className="text-ink-300">
               {data.livePostingImplemented ? 'implemented' : 'not implemented'}
               {data.livePostingImplemented && !data.liveCredentialsPresent
-                ? ' (no X credentials -- runs stay dry)'
+                ? ` (runs stay dry -- missing: ${
+                    data.missingXCredentials?.length
+                      ? data.missingXCredentials.join(', ')
+                      : 'unknown'
+                  })`
                 : ''}
             </span>
             {' / '}X_DISPATCH_LIVE:{' '}

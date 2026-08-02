@@ -29,6 +29,22 @@ export type XPostResult =
   // post" truthfully and saying it when a post exists.
   | { ok: false; reason: string; indeterminate: boolean };
 
+// Which of the four credential names are absent from the environment. Names
+// only, never values -- but names are the whole diagnostic: "credentials
+// missing" is unactionable when four variables can each cause it, and the
+// difference between a typo, a wrong scope and a missing var is exactly which
+// subset comes back.
+export const X_CREDENTIAL_NAMES = [
+  'X_API_KEY',
+  'X_API_SECRET',
+  'X_ACCESS_TOKEN',
+  'X_ACCESS_TOKEN_SECRET'
+] as const;
+
+export function missingXCredentialNames(): string[] {
+  return X_CREDENTIAL_NAMES.filter((n) => !process.env[n]);
+}
+
 // Credentials come from the environment rather than provider_keys: these are the
 // SITE's posting identity, not a per-user BYO credential, and there is exactly
 // one account. Returning null (rather than throwing) keeps "not configured" a
