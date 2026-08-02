@@ -423,6 +423,25 @@ export async function publishedDraftIds(): Promise<number[]> {
       AND subject_type = 'dispatch'
       AND payload->>'reason' = 'post_indeterminate'
       AND payload->>'draftEventId' IS NOT NULL
+    UNION
+    -- Attempts with no outcome at all. The attempt is written immediately before
+    -- the X call, so one left unresolved means the post MAY be public and both
+    -- outcome writes failed. Omitting these left the worst case looking like the
+    -- safest: the draft kept its approve button, each click reported a queued
+    -- publication, and the job no-opped on the approval key -- an operator told
+    -- repeatedly that something was happening while a possibly-public post sat
+    -- unrecorded.
+    SELECT DISTINCT (a.payload->>'draftEventId')::int AS id
+    FROM events a
+    WHERE a.type = ${EVENT_TYPE.DispatchAttempted}
+      AND a.subject_type = 'dispatch'
+      AND a.payload->>'draftEventId' IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM events o
+        WHERE o.subject_type = 'dispatch'
+          AND o.type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+          AND o.payload->>'slotKey' = a.payload->>'slotKey'
+      )
   `);
   return res.rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
 }

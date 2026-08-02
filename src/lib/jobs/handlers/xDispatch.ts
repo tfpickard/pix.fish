@@ -578,6 +578,19 @@ async function runDispatch(ctx: {
       await skip(SKIP_REASON.PostFailed, 'X credentials disappeared mid-run', chosen.trend.topic);
       return;
     }
+    // Last look at the clock, after the generation read, the attempt insert and
+    // the authoritative re-read -- three round trips that POST_ONLY_BUDGET_MS
+    // does not account for, because it budgets the POST, not the queries in front
+    // of it. Every one of those gates was taken before work that can outlast it.
+    if (!canFinishPostPhase(postDeadlineAt)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `budget ran out between the lock and the post: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_ONLY_BUDGET_MS}ms needed`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
     const posted = await createPost(creds, {
       text: caption.caption,
       mediaId: media.mediaId,

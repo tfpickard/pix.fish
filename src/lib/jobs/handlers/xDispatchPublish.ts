@@ -95,6 +95,25 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
   const generation = await publishAttemptGeneration(draftEventId);
   const publishSlot = `${d.slotKey}:publish:${draftEventId}:${generation}`;
 
+  // Do not CLAIM an approval this invocation cannot see through.
+  //
+  // The claim is durable and the generation only advances when an outcome is
+  // WRITTEN, so a run that claims and is then terminated before recording
+  // anything leaves the draft frozen: every later approval collides with this
+  // same key and returns without publishing. That is precisely the freeze the
+  // generation counter exists to prevent, reached by claiming too early rather
+  // than by failing.
+  //
+  // Checked before the claim, and it throws rather than returning quietly: the
+  // draft is untouched either way, and a failed job row at /admin/jobs says the
+  // invocation had no room, which is what happened. Same reasoning as
+  // canStartPipeline guarding the day-claim.
+  if (!canStartPostPhase(postDeadlineAt)) {
+    throw new Error(
+      `declined before claiming approval of draft ${draftEventId}: ${postDeadlineAt - Date.now()}ms left, ${POST_PHASE_BUDGET_MS}ms needed`
+    );
+  }
+
   // ---- the approval claim. This, not the button, is what makes one approval
   // publish once: a double click, a retried enqueue, or two admins on the same
   // page all collapse here. Keyed WITH the generation so a definite failure
@@ -145,14 +164,6 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       return;
     }
 
-    if (!canStartPostPhase(postDeadlineAt)) {
-      await skip(
-        SKIP_REASON.PostFailed,
-        `not enough budget to publish draft ${draftEventId}: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_PHASE_BUDGET_MS}ms needed`
-      );
-      return;
-    }
-
     // The specimen may have been archived, reclassified, or deleted since the
     // draft was written -- drafts can sit for a while, which is the point of
     // them, so this window is wide rather than incidental.
@@ -191,6 +202,9 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       subjectId: dateKey,
       payload: {
         slotKey: publishSlot,
+        // So an attempt left with no outcome can still be traced to its draft --
+        // that draft may now be public and must stop offering an approve button.
+        draftEventId,
         trigger: 'manual',
         imageId: d.imageId,
         slug: d.slug
@@ -219,6 +233,16 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
     }
     // d.caption verbatim. Approving text and posting different text would make
     // the review meaningless, so nothing regenerates or re-validates it here.
+    // Same last look as the scheduled path: the gate above predates the
+    // generation read, the attempt insert and the re-read.
+    if (!canFinishPostPhase(postDeadlineAt)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `budget ran out between the lock and the post: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_ONLY_BUDGET_MS}ms needed`
+      );
+      return;
+    }
+
     const posted = await createPost(creds, {
       text: d.caption,
       mediaId: media.mediaId,

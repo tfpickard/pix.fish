@@ -148,6 +148,9 @@ export type DispatchAttemptedPayload = {
   // date instead lets an unrelated run's outcome vouch for an attempt that never
   // completed, which is the one thing this event exists to make visible.
   slotKey: string;
+  // Set only on the approval-publication path. An attempt with no outcome means
+  // the post may be public, and this is what ties that back to the draft.
+  draftEventId?: number;
   trigger: 'cron' | 'manual';
   imageId: number;
   slug: string;
