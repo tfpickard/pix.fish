@@ -152,6 +152,15 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
     });
   };
 
+  // Set the moment createPost returns success, and read by the OUTER catch.
+  // Without it, a post that succeeded and then failed BOTH outcome writes fell
+  // through to the outer handler and was filed internal_error -- a reason the
+  // generation counter treats as definite. That released the approval, left the
+  // draft unblocked, showed "no post" on the page, and let a retry publish the
+  // same thing a second time. Knowing a post exists is the one fact that must
+  // survive every failure below it.
+  let publishedPostId: string | null = null;
+
   try {
     // Live capability is checked HERE, not at approval time. The admin route
     // checks it too, but that answer is minutes stale by the time this drains
@@ -256,6 +265,8 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       return;
     }
 
+    publishedPostId = posted.postId;
+
     // The published record. A NEW event rather than a mutation of the draft --
     // the log is append-only, and the draft plus this pair reads as "proposed,
     // then published", which is the history worth keeping.
@@ -287,6 +298,19 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       );
     }
   } catch (err) {
+    // A post that exists stays indeterminate however the recording failed.
+    // Relabelling it internal_error would be the audit surface asserting "no
+    // post" about something public, and worse, it would free the draft to be
+    // published again.
+    if (publishedPostId) {
+      await skip(
+        SKIP_REASON.PostIndeterminate,
+        `posted ${publishedPostId} but recording it failed twice: ${errText(err)}`
+      );
+      return;
+    }
+    // Nothing was posted, so internal_error is accurate AND safely definite --
+    // which is exactly why the branch above has to exist for the other case.
     await skip(SKIP_REASON.InternalError, `unhandled failure: ${errText(err)}`);
   }
 }
