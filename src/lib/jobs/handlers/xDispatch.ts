@@ -7,6 +7,7 @@ import {
   recentTrendTopics,
   listDispatchCandidates,
   listDispatchedImageIds,
+  livePostAttemptedOnDate,
   unpostableImageIds
 } from '@/lib/db/queries/dispatch';
 import { getDispatchEmbedder } from '@/lib/ai/dispatch-embed';
