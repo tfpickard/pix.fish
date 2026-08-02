@@ -28,9 +28,24 @@ export const defaultAiConfig: AiConfigMap = {
   // Standalone NSFW rescan + Pisci chat widget -- previously hardcoded Haiku.
   nsfw: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL },
   chat: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL },
-  // Outbound X dispatch: trend safety classification + caption generation. Two
-  // short bounded calls a day at most, so the cheap tier is the right one. Note
-  // that src/lib/ai/dispatch-text.ts speaks Anthropic only -- repointing this
-  // row at another provider disables the dispatch rather than switching it.
-  dispatch: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL }
+  // Outbound X dispatch, split into its two calls because they want opposite
+  // things from a model.
+  //
+  // `dispatch` writes the CAPTION -- the whole creative deliverable, judged
+  // against a seven-rule tone contract that a cheap model does not reliably
+  // hold. A better tier is a legitimate choice here, including a thinking one.
+  //
+  // `dispatchSafety` is the trend classifier: a mechanical "is this topic
+  // grim?" over a batch, emitting fixed-shape JSON. Reasoning buys nothing and
+  // costs the one thing this call has least of -- it runs inside a per-call
+  // deadline that has to fit alongside everything else in a 50s job, so a slow
+  // model here does not produce a worse verdict, it produces no post at all.
+  // Haiku, and it should stay Haiku unless there is a reason.
+  //
+  // Keeping them on one row meant choosing a caption model silently dragged the
+  // classifier along with it. Both are Anthropic-only: src/lib/ai/dispatch-text.ts
+  // speaks no other provider, so repointing either disables that call rather
+  // than switching it.
+  dispatch: { provider: 'anthropic', model: ANTHROPIC_DEFAULT_MODEL },
+  dispatchSafety: { provider: 'anthropic', model: HAIKU_DEFAULT_MODEL }
 };

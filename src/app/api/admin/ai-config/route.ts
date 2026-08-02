@@ -39,6 +39,7 @@ const FIELDS = [
   'nsfw',
   'chat',
   'dispatch',
+  'dispatchSafety',
   'imagegen'
 ] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;
@@ -57,7 +58,8 @@ const putSchema = z
   .refine(
     (v) => {
       if (v.field === 'imagegen') return true;
-      if (v.field === 'chat' || v.field === 'dispatch') return v.provider === 'anthropic';
+      if (v.field === 'chat' || v.field === 'dispatch' || v.field === 'dispatchSafety')
+        return v.provider === 'anthropic';
       return v.provider === 'anthropic' || v.provider === 'openai';
     },
     {

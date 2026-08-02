@@ -5,7 +5,9 @@ import { formatTrendContext, hashtagFor, sanitizeTrendField } from './trends';
 import { weightedLength } from './weighted-length';
 import type { SpecimenCandidate, Trend } from './types';
 
-// Caption generation: the creative core. One bounded Haiku-class call, then a
+// Caption generation: the creative core. One bounded call routed through the
+// 'dispatch' ai_config row (a better tier than the classifier by default,
+// since this is the deliverable), then a
 // deterministic validation pass. There is no second call -- if the output cannot
 // be made to satisfy the contract by trimming, the day is skipped. Repairing by
 // re-prompting would be a retry loop, which the brief forbids.
@@ -420,7 +422,10 @@ export async function generateCaption(ctx: {
     raw = await dispatchText({
       prompt,
       maxTokens: CAPTION_MAX_TOKENS,
-      timeoutMs: CAPTION_TIMEOUT_MS
+      timeoutMs: CAPTION_TIMEOUT_MS,
+      // The caption row. This is the creative deliverable, so it is the call
+      // where paying for a better tier actually buys something.
+      field: 'dispatch'
     });
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };

@@ -24,9 +24,15 @@ export async function dispatchText(opts: {
   prompt: string;
   maxTokens: number;
   timeoutMs: number;
+  // Which ai_config row routes this call. 'dispatch' is the caption -- the
+  // creative deliverable, where a better tier earns its cost. 'dispatchSafety'
+  // is the trend classifier, which wants speed and a fixed JSON shape and gets
+  // nothing from reasoning. Defaults to the caption row so an unspecified call
+  // does not silently pick the cheap model for creative work.
+  field?: 'dispatch' | 'dispatchSafety';
 }): Promise<DispatchTextResult | null> {
   const cfg = await loadAiConfig();
-  const row = cfg.dispatch;
+  const row = cfg[opts.field ?? 'dispatch'];
   if (row.provider !== 'anthropic') return null;
 
   const keys = await loadUserProviderKeys(getSiteAdminId());
