@@ -71,10 +71,13 @@ export const SKIP_REASON = {
   // saying that about a day whose post may exist is the audit surface asserting
   // something it does not know. An operator seeing this should check the account.
   PostIndeterminate: 'post_indeterminate',
-  // X read the request and refused the ARTIFACT itself -- a 400, which for
-  // POST /2/tweets means this exact payload is not acceptable (a caption past
-  // the account's length limit is the likely one). Nothing was published, same
-  // as post_failed, but the difference is what a retry would do: post_failed is
+  // X read the request and refused the ARTIFACT itself -- a 400 whose detail
+  // names the text, a caption past the account's length limit being the case to
+  // expect. Narrower than "a 400": the request also carries a media id minted
+  // fresh on every attempt, so only an error naming the immutable half condemns
+  // the draft (see postRejectionIsPermanent, which puts the burden of proof on
+  // permanence). Nothing was published, same as post_failed, but the difference
+  // is what a retry would do: post_failed is
   // about the environment (a stale credential, a throttle, a spent budget) and
   // re-approving after fixing it can succeed, whereas this is about bytes that
   // are immutable by design -- the whole point of approval is that the caption

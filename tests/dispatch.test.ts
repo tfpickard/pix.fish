@@ -32,6 +32,7 @@ import {
 import {
   mediaCategoryFor,
   sniffImageMime,
+  postRejectionIsPermanent,
   statusIsIndeterminate
 } from '../src/lib/dispatch/x-client';
 import {
@@ -1307,6 +1308,45 @@ describe('a definite failure frees the specimen; only some free the draft', () =
   test('draft_rejected is its own code, distinct from post_failed', () => {
     expect(SKIP_REASON.DraftRejected).toBe('draft_rejected');
     expect(SKIP_REASON.DraftRejected).not.toBe(SKIP_REASON.PostFailed);
+  });
+});
+
+describe('only the immutable half of a request can condemn a draft', () => {
+  // createPost sends the approved caption AND a media id uploaded fresh on every
+  // attempt. Reading permanence off the status alone therefore retired drafts
+  // over a media id the next approval would have replaced -- and retiring is
+  // one-way, since it removes the button.
+  test('a text-scoped 400 retires the draft', () => {
+    expect(
+      postRejectionIsPermanent(400, 'HTTP 400: {"detail":"The text field must be shorter"}')
+    ).toBe(true);
+    expect(postRejectionIsPermanent(400, 'HTTP 400: Your Tweet text is too long')).toBe(true);
+  });
+
+  test('a media-scoped 400 does not -- the id is minted per attempt', () => {
+    expect(
+      postRejectionIsPermanent(400, 'HTTP 400: {"detail":"media_ids: invalid media id"}')
+    ).toBe(false);
+    // Media prose containing "text" must not read as a caption complaint, which
+    // is why media is tested first.
+    expect(
+      postRejectionIsPermanent(400, 'HTTP 400: media entity has no text alt attached')
+    ).toBe(false);
+  });
+
+  test('an unreadable 400 stays retryable', () => {
+    // The asymmetry made explicit: not knowing costs a wasted click, guessing
+    // permanence costs a reviewed caption.
+    expect(postRejectionIsPermanent(400, 'HTTP 400')).toBe(false);
+    expect(postRejectionIsPermanent(400, 'HTTP 400: (body unreadable)')).toBe(false);
+  });
+
+  test('environmental rejections never retire a draft, however they read', () => {
+    for (const status of [401, 403, 404, 409, 429]) {
+      expect(postRejectionIsPermanent(status, 'HTTP: the text is too long')).toBe(false);
+    }
+    // Nor does anything indeterminate: a 5xx may already have published.
+    expect(postRejectionIsPermanent(500, 'HTTP 500: text')).toBe(false);
   });
 });
 

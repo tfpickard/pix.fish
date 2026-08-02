@@ -342,6 +342,38 @@ export function statusIsIndeterminate(status: number): boolean {
  * is therefore not expressible here; see LIVE_ALLOW_NSFW in config.ts for how
  * that constrains which specimens may go out live.
  */
+// Does this definite rejection condemn the DRAFT, or only this attempt?
+//
+// Only the caption is immutable. The request also carries a media id that is
+// freshly uploaded on every publish, so a 400 is not evidence about the draft
+// until you know which half of the payload X objected to -- reading the status
+// alone retired good drafts over a media id that a re-upload would have
+// replaced, and retiring a draft is permanent while the button is gone.
+//
+// Hence: a 400 is retryable BY DEFAULT and only condemns the draft when the
+// detail names the text and does not name the media. The two misclassifications
+// are not symmetric. Calling a permanent failure retryable costs one wasted
+// click on a button that stays; calling a retryable failure permanent throws
+// away a reviewed caption that would have posted. So the burden of proof sits
+// on permanence, and an error this code cannot read stays retryable.
+//
+// 401/403/429 never qualify however they read. They are about the environment
+// rather than the artifact -- a token minted before write permission, a rotated
+// secret, a throttle -- all fixable, and none a reason to discard an approval. A
+// 403 for duplicate content is the awkward member, but a duplicate means an
+// earlier post succeeded, and publiclyPostedImageIds already refuses the
+// specimen on the strength of that post's own event.
+export function postRejectionIsPermanent(status: number, detail: string): boolean {
+  if (status !== 400) return false;
+  const d = detail.toLowerCase();
+  // Anything naming the media is request-scoped: the id is minted per attempt,
+  // so the next approval sends a different one. Checked FIRST, because a media
+  // error whose prose happens to contain "text" must not read as a caption
+  // problem.
+  if (d.includes('media')) return false;
+  return d.includes('text') || d.includes('too long') || d.includes('character');
+}
+
 export async function createPost(
   creds: XCredentials,
   opts: { text: string; mediaId: string; madeWithAi?: boolean }
@@ -376,19 +408,7 @@ export async function createPost(
         ok: false,
         reason: unknown ? `post outcome unknown (server error): ${detail}` : `post rejected: ${detail}`,
         indeterminate: unknown,
-        // 400 alone. For POST /2/tweets it means "this payload is not
-        // acceptable" -- a caption past the account's length limit being the
-        // one to expect -- and no amount of retrying changes a payload.
-        //
-        // 401/403/429 are deliberately excluded even though they are just as
-        // definite. They are about the environment, not the artifact: a token
-        // minted before write permission, a rotated secret, a throttle. Those
-        // are fixable, and retiring a reviewed draft over a fixable condition
-        // throws away the approval for no reason. A 403 for duplicate content
-        // is the awkward member of that set, but a duplicate means an earlier
-        // post succeeded, and publiclyPostedImageIds already refuses the
-        // specimen on the strength of that post's own event.
-        permanent: res.status === 400
+        permanent: postRejectionIsPermanent(res.status, detail)
       };
     }
 
