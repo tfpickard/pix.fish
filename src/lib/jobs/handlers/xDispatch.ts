@@ -6,7 +6,8 @@ import {
   definiteFailureGeneration,
   recentTrendTopics,
   listDispatchCandidates,
-  listDispatchedImageIds
+  listDispatchedImageIds,
+  unpostableImageIds
 } from '@/lib/db/queries/dispatch';
 import { getDispatchEmbedder } from '@/lib/ai/dispatch-embed';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
@@ -17,7 +18,8 @@ import type {
   DispatchAttemptedPayload,
   DispatchClaimedPayload,
   DispatchSentPayload,
-  DispatchSkippedPayload
+  DispatchSkippedPayload,
+  DispatchUnpostablePayload
 } from '@/lib/universe/events';
 import {
   BAND_MAX_DISTANCE,
@@ -239,6 +241,19 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
   try {
     await runDispatch({ dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip });
   } catch (err) {
+    // A post that may be public keeps its indeterminate label however the
+    // recording failed. Filing internal_error here would have the review page
+    // render "no post" for something on the account, and would resolve the
+    // attempt warning that is the only remaining trace.
+    if (err instanceof PostMayExistError) {
+      await skip(
+        SKIP_REASON.PostIndeterminate,
+        err.postId
+          ? `posted ${err.postId} but recording it failed twice: ${errText(err.cause)}`
+          : `the post may exist and recording the outcome failed twice: ${errText(err.cause)}`
+      );
+      return;
+    }
     // Fail closed, but audibly. If the skip write ALSO throws we genuinely
     // cannot record anything, and that is the one case where letting the job
     // fail is right -- the queue surfaces it at /admin/jobs.
@@ -248,6 +263,16 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
 
 // The pipeline proper. Split out so the handler above can wrap the whole thing in
 // one guard; `skip` is injected because it closes over the claim's slot key.
+// Thrown by runDispatch when a post may already be public and it could not
+// record that. The handler-level catch reads it rather than filing
+// internal_error, which the page renders as "no post" -- the audit surface
+// denying something that exists.
+class PostMayExistError extends Error {
+  constructor(readonly postId: string | null, readonly cause: unknown) {
+    super('post may exist but the outcome could not be recorded');
+  }
+}
+
 async function runDispatch(ctx: {
   dateKey: string;
   // Drives the drift variant and the selection seed; equals dateKey unless a
@@ -347,7 +372,10 @@ async function runDispatch(ctx: {
     return;
   }
 
-  const excludeImageIds = await listDispatchedImageIds();
+  // Already dispatched, plus anything ruled permanently unpostable. The second
+  // list matters most when the band is narrow: one bad row would otherwise be
+  // drawn every day forever.
+  const excludeImageIds = [...(await listDispatchedImageIds()), ...(await unpostableImageIds())];
   // Only rows embedded by the same provider/model are comparable to `vec`.
   let candidates = await listDispatchCandidates({
     vec,
@@ -432,6 +460,10 @@ async function runDispatch(ctx: {
   // records the resulting id alongside.
   let postId: string | null = null;
   let postUrl: string | null = null;
+  // "Cannot rule out a post" -- broader than postId, because an INDETERMINATE
+  // create (timeout, 5xx) is exactly the case where a post may exist and there
+  // is no id to record.
+  let postMayExist = false;
   if (liveConfigured) {
     // Do not START a post there is not time to finish AND record. The worst case
     // upstream (32s) plus this phase (31s) exceeds the worker's 50s timeout, and
@@ -453,6 +485,23 @@ async function runDispatch(ctx: {
     // for another day.
     const media = await prepareMedia(specimen);
     if (!media.ok) {
+      // A PERMANENT media failure is about the image, not about today. Without
+      // this the row stays eligible forever: in a narrow band it is drawn again
+      // every day and consumes dispatch after dispatch, each one failing at the
+      // same byte for the same reason, posting nothing.
+      if (media.permanent) {
+        await appendEvent({
+          type: EVENT_TYPE.DispatchUnpostable,
+          subjectType: SUBJECT_TYPE.Dispatch,
+          subjectId: dateKey,
+          payload: {
+            imageId: specimen.imageId,
+            slug: specimen.slug,
+            reason: media.reason
+          } satisfies DispatchUnpostablePayload,
+          dedupeKey: dedupeKey.dispatchUnpostable(specimen.imageId)
+        });
+      }
       await skip(SKIP_REASON.PostFailed, media.reason, chosen.trend.topic);
       return;
     }
@@ -611,6 +660,7 @@ async function runDispatch(ctx: {
       mediaId: media.mediaId,
       madeWithAi: madeWithAiFlag()
     });
+    postMayExist = posted.ok || posted.indeterminate;
     if (!posted.ok) {
       // Never a retry: a retry that succeeds after a timeout has already posted.
       // But do not claim "no post" when we do not know -- an indeterminate
@@ -666,13 +716,22 @@ async function runDispatch(ctx: {
     // account can be reconciled. If THIS write fails too the database is gone and
     // the outer catch is the right place to end up; the attempt row written
     // before the post is then the only trace, which is why the page shows those.
-    if (postId) {
-      await skip(
-        SKIP_REASON.PostIndeterminate,
-        `posted ${postId} but recording it failed: ${errText(err)}`,
-        chosen.trend.topic
-      );
-      return;
+    if (postId || postMayExist) {
+      try {
+        await skip(
+          SKIP_REASON.PostIndeterminate,
+          postId
+            ? `posted ${postId} but recording it failed: ${errText(err)}`
+            : `the post may exist and recording the outcome failed: ${errText(err)}`,
+          chosen.trend.topic
+        );
+        return;
+      } catch (inner) {
+        // Both writes failed. Hand the fact upward rather than letting the outer
+        // catch relabel it internal_error: the specimen stays burned either way,
+        // but the page would render "no post" for something that is public.
+        throw new PostMayExistError(postId, inner);
+      }
     }
     throw err;
   }
@@ -722,12 +781,14 @@ function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 // residency on the days that end in a skip before ever reaching here.
 async function prepareMedia(
   specimen: SpecimenCandidate
-): Promise<{ ok: true; mediaId: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; mediaId: string } | { ok: false; reason: string; permanent: boolean }> {
   const creds = getXCredentials();
-  if (!creds) return { ok: false, reason: 'X credentials are not configured' };
+  // Not permanent: credentials are a deployment problem, not a property of
+  // this image.
+  if (!creds) return { ok: false, reason: 'X credentials are not configured', permanent: false };
 
   const image = await fetchSpecimenImage(specimen.blobUrl, IMAGE_FETCH_TIMEOUT_MS);
-  if (!image.ok) return { ok: false, reason: image.reason };
+  if (!image.ok) return { ok: false, reason: image.reason, permanent: image.permanent };
 
   // fetchSpecimenImage identifies the format from the file signature, so this is
   // the first point in the whole pipeline where the type is a fact rather than a
@@ -738,9 +799,15 @@ async function prepareMedia(
   if (!LIVE_STILL_MIMES.has(image.mime.toLowerCase())) {
     return {
       ok: false,
-      reason: `specimen served ${image.mime}, which is not a postable still image`
+      reason: `specimen served ${image.mime}, which is not a postable still image`,
+      // A property of the bytes. Re-testing tomorrow reaches the same answer
+      // after spending another dispatch to get there.
+      permanent: true
     };
   }
 
-  return uploadMedia(creds, image.bytes, image.mime);
+  // An upload failure is about X or the network, never about the image being
+  // inherently unpostable -- the image already passed every local check.
+  const up = await uploadMedia(creds, image.bytes, image.mime);
+  return up.ok ? up : { ...up, permanent: false };
 }

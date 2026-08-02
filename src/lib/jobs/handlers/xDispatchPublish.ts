@@ -132,11 +132,17 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
   });
   if (!approval.inserted) return;
 
+  // Outcomes are filed under the date they HAPPEN, read at write time rather
+  // than at handler start. A publish that begins at 23:59 and posts after
+  // midnight belongs to the new day: the cron route asks
+  // livePostAttemptedOnDate(today), so filing under yesterday hides the manual
+  // post and lets the scheduler publish again the same day. Same defect the
+  // start-time fix addressed for OLD drafts, one scale down.
   const skip = async (reason: SkipReason, detail: string) => {
     await appendEvent({
       type: EVENT_TYPE.DispatchSkipped,
       subjectType: SUBJECT_TYPE.Dispatch,
-      subjectId: dateKey,
+      subjectId: utcDateKey(new Date()),
       payload: {
         slotKey: publishSlot,
         // Carried so publishAttemptGeneration can count this attempt and free
@@ -163,6 +169,12 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
   // rule out having posted?", and only a definite 4xx answers yes.
   let postMayExist = false;
   let publishedPostId: string | null = null;
+  // Whether this run holds the specimen lock. A failure AFTER taking it that
+  // never reached X must release it, and only post_failed does that --
+  // definiteFailureGeneration advances on nothing else. Filing internal_error
+  // there left the specimen's attempt key occupied forever while the approval
+  // generation happily allowed retries, so every retry collided before posting.
+  let specimenLocked = false;
 
   try {
     // Live capability is checked HERE, not at approval time. The admin route
@@ -207,11 +219,13 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
     // The same specimen lock the scheduled path uses, for the same reason: a
     // cron run and an approval can want the same image, and the unique index is
     // what decides. Approval does not exempt a draft from that.
+    // Read here, immediately before the attempt, for the reason above.
+    const postDateKey = utcDateKey(new Date());
     const specimenGeneration = await definiteFailureGeneration(d.imageId);
     const attempt = await appendEvent({
       type: EVENT_TYPE.DispatchAttempted,
       subjectType: SUBJECT_TYPE.Dispatch,
-      subjectId: dateKey,
+      subjectId: postDateKey,
       payload: {
         slotKey: publishSlot,
         // So an attempt left with no outcome can still be traced to its draft --
@@ -227,6 +241,7 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       await skip(SKIP_REASON.PostFailed, `specimen ${d.imageId} was claimed by another dispatch`);
       return;
     }
+    specimenLocked = true;
 
     // Authoritative re-read, after the lock. See the equivalent in xDispatch.ts.
     const atPost = await currentPostState(d.imageId);
@@ -292,7 +307,7 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       await appendEvent({
         type: EVENT_TYPE.DispatchSent,
         subjectType: SUBJECT_TYPE.Dispatch,
-        subjectId: dateKey,
+        subjectId: postDateKey,
         payload: { ...sent, approvedFromDraft: draftEventId, draftDateKey: draft.subjectId },
         dedupeKey: dedupeKey.dispatchOutcome(publishSlot)
       });
@@ -316,9 +331,18 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       );
       return;
     }
-    // Only reached when the request was definitely refused or never made, so
-    // internal_error is accurate AND safely definite -- which is exactly why the
-    // branch above has to exist for every other case.
+    // Nothing was posted. If the specimen lock was already taken, the outcome
+    // has to be post_failed rather than internal_error: post_failed is the ONLY
+    // reason definiteFailureGeneration counts, so anything else leaves the lock
+    // held forever and every retry collides before it can post.
+    if (specimenLocked) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `failed after locking specimen ${d.imageId}, before posting: ${errText(err)}`
+      );
+      return;
+    }
+    // No lock and no post, so internal_error is accurate and harmless.
     await skip(SKIP_REASON.InternalError, `unhandled failure: ${errText(err)}`);
   }
 }
@@ -329,16 +353,25 @@ function errText(err: unknown): string {
 
 async function prepareMedia(
   blobUrl: string
-): Promise<{ ok: true; mediaId: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; mediaId: string } | { ok: false; reason: string; permanent: boolean }> {
   const creds = getXCredentials();
-  if (!creds) return { ok: false, reason: 'X credentials are not configured' };
+  // Not permanent: credentials are a deployment problem, not a property of
+  // this image.
+  if (!creds) return { ok: false, reason: 'X credentials are not configured', permanent: false };
 
   const image = await fetchSpecimenImage(blobUrl, IMAGE_FETCH_TIMEOUT_MS);
-  if (!image.ok) return { ok: false, reason: image.reason };
+  if (!image.ok) return { ok: false, reason: image.reason, permanent: image.permanent };
   // Identified from the file signature, not from any header or column. Same
   // reasoning as the scheduled path.
   if (!LIVE_STILL_MIMES.has(image.mime.toLowerCase())) {
-    return { ok: false, reason: `specimen is ${image.mime}, which is not a postable still image` };
+    return {
+      ok: false,
+      reason: `specimen is ${image.mime}, which is not a postable still image`,
+      permanent: true
+    };
   }
-  return uploadMedia(creds, image.bytes, image.mime);
+  // An upload failure is about X or the network, never about the image being
+  // inherently unpostable -- the image already passed every local check.
+  const up = await uploadMedia(creds, image.bytes, image.mime);
+  return up.ok ? up : { ...up, permanent: false };
 }

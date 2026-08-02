@@ -446,6 +446,20 @@ export async function publishedDraftIds(): Promise<number[]> {
   return res.rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
 }
 
+// Images ruled permanently unpostable. Excluded from selection outright: the
+// verdict is about the object (its bytes are not a postable still, or it is over
+// the size ceiling), so re-testing it tomorrow can only reach the same answer
+// after spending another dispatch to get there.
+export async function unpostableImageIds(): Promise<number[]> {
+  const res = await db.execute<{ image_id: number }>(sql`
+    SELECT DISTINCT (payload->>'imageId')::int AS image_id
+    FROM events
+    WHERE type = ${EVENT_TYPE.DispatchUnpostable}
+      AND payload->>'imageId' IS NOT NULL
+  `);
+  return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
+}
+
 // Trend topics this account has already ridden recently, newest first.
 //
 // The feed is not a stream of novelty. Google Trends carries perennials --

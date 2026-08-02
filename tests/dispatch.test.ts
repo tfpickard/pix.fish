@@ -533,6 +533,15 @@ describe('one dispatch per day is structural', () => {
     expect(dedupeKey.dispatchApproval(9355, 1)).not.toBe(dedupeKey.dispatchApproval(9355, 0));
   });
 
+  test('an unpostable specimen is quarantined per image, not per day', () => {
+    // The verdict is about the object -- its bytes are not a postable still, or
+    // it is over the ceiling -- so the key is the image. Keying it per day would
+    // re-test the same bad row tomorrow and spend another dispatch reaching the
+    // same answer.
+    expect(dedupeKey.dispatchUnpostable(273)).toBe(dedupeKey.dispatchUnpostable(273));
+    expect(dedupeKey.dispatchUnpostable(273)).not.toBe(dedupeKey.dispatchUnpostable(274));
+  });
+
   test('each manual run gets its own outcome slot', () => {
     // Outcomes are keyed off the claim slot, so unlimited manual runs must not
     // collapse into one outcome row -- otherwise the second post of the day would

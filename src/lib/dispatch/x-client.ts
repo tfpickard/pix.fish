@@ -198,14 +198,28 @@ async function readCapped(
 export async function fetchSpecimenImage(
   blobUrl: string,
   timeoutMs: number
-): Promise<{ ok: true; bytes: Uint8Array; mime: string } | { ok: false; reason: string }> {
+): Promise<
+  { ok: true; bytes: Uint8Array; mime: string } | { ok: false; reason: string; permanent: boolean }
+> {
   try {
     const res = await fetch(blobUrl, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok) return { ok: false, reason: `image fetch failed: ${await errorDetail(res)}` };
+    // A 4xx from blob storage is about this object and will not change -- it is gone,
+    // or it is not ours. A 5xx is the store having a bad minute.
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: `image fetch failed: ${await errorDetail(res)}`,
+        permanent: res.status >= 400 && res.status < 500
+      };
+    }
 
     const declared = Number(res.headers.get('content-length') ?? '0');
     if (declared > MAX_MEDIA_BYTES) {
-      return { ok: false, reason: `image is ${declared} bytes, over the ${MAX_MEDIA_BYTES} limit` };
+      return {
+        ok: false,
+        reason: `image is ${declared} bytes, over the ${MAX_MEDIA_BYTES} limit`,
+        permanent: true
+      };
     }
     // Read incrementally and stop at the ceiling rather than calling
     // arrayBuffer(). content-length is a claim, not a guarantee -- it can be
@@ -215,9 +229,10 @@ export async function fetchSpecimenImage(
     // that exists to refuse the image runs only after the damage it was meant to
     // prevent: an OOM or a killed invocation instead of a clean post_failed.
     const read = await readCapped(res, MAX_MEDIA_BYTES);
-    if (!read.ok) return read;
+    // Over the ceiling is a property of the object, not of today.
+    if (!read.ok) return { ...read, permanent: true };
     const buf = read.bytes;
-    if (buf.byteLength === 0) return { ok: false, reason: 'image is empty' };
+    if (buf.byteLength === 0) return { ok: false, reason: 'image is empty', permanent: true };
 
     // The bytes decide. The Content-Type header here is the browser-supplied
     // `file.type` from upload, round-tripped through the blob store -- reading it
@@ -226,11 +241,16 @@ export async function fetchSpecimenImage(
     // missing header to image/jpeg was worse still, inventing a fact.
     const sniffed = sniffImageMime(buf);
     if (!sniffed) {
-      return { ok: false, reason: 'could not identify the image format from its bytes' };
+      return {
+        ok: false,
+        reason: 'could not identify the image format from its bytes',
+        permanent: true
+      };
     }
     return { ok: true, bytes: buf, mime: sniffed };
   } catch (err) {
-    return { ok: false, reason: `image fetch failed: ${errText(err)}` };
+    // A throw here is a timeout or a socket error: transient by nature.
+    return { ok: false, reason: `image fetch failed: ${errText(err)}`, permanent: false };
   }
 }
 

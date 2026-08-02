@@ -29,6 +29,12 @@ export const EVENT_TYPE = {
   DispatchAttempted: 'dispatch.attempted',
   DispatchSent: 'dispatch.sent',
   DispatchSkipped: 'dispatch.skipped',
+  // A specimen that can never pass the live media path -- its bytes are not a
+  // postable still, or it is over X's size ceiling. Written once per image and
+  // excluded from selection thereafter, because without it a single bad row in a
+  // narrow band is chosen again every day and consumes dispatch after dispatch
+  // while posting nothing.
+  DispatchUnpostable: 'dispatch.unpostable',
   // An admin signed off on a specific draft. Written before the publish job does
   // anything, and deduped on the draft, so one draft can be approved once.
   DispatchApproved: 'dispatch.approved'
@@ -164,6 +170,14 @@ export type DispatchAttemptedPayload = {
 // publication itself: the approval is a human decision and survives even if the
 // post then fails, which is what makes the log answer "was this signed off?"
 // independently of "did it go out?".
+// Why an image can never be posted. Recorded so the exclusion is explicable
+// rather than an image mysteriously never being chosen again.
+export type DispatchUnpostablePayload = {
+  imageId: number;
+  slug: string;
+  reason: string;
+};
+
 export type DispatchApprovedPayload = {
   draftEventId: number;
   slotKey: string;
@@ -297,6 +311,8 @@ export const dedupeKey = {
   // the draft could never be published by anyone. Same shape as the specimen
   // lock, same reason: the lock must survive a success and yield to a definite
   // failure.
+  // One row per image: the verdict is about the object, not about the day.
+  dispatchUnpostable: (imageId: number) => `x.dispatch.unpostable:${imageId}`,
   dispatchApproval: (draftEventId: number, generation: number) =>
     `x.dispatch.approve:${draftEventId}:${generation}`
 };
