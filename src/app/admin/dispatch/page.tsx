@@ -78,6 +78,8 @@ type Data = {
   // Draft event ids already published (or possibly published). Their approve
   // button is withdrawn -- clicking it could only no-op.
   publishedDrafts: number[];
+  // Specimens already dispatched. A draft on one of these cannot publish.
+  dispatchedImageIds: number[];
   offset: number;
   hasMore: boolean;
   events: Row[];
@@ -458,7 +460,10 @@ export default function AdminDispatchPage() {
               canApprove={Boolean(
                 data?.liveEnvEnabled &&
                   data?.liveCredentialsPresent &&
-                  !data?.publishedDrafts?.includes(row.id)
+                  !data?.publishedDrafts?.includes(row.id) &&
+                  !data?.dispatchedImageIds?.includes(
+                    (row.payload as unknown as SentPayload).imageId
+                  )
               )}
               onApprove={approve}
               busy={approving === row.id}

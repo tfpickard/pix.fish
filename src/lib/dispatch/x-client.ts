@@ -203,13 +203,16 @@ export async function fetchSpecimenImage(
 > {
   try {
     const res = await fetch(blobUrl, { signal: AbortSignal.timeout(timeoutMs) });
-    // A 4xx from blob storage is about this object and will not change -- it is gone,
-    // or it is not ours. A 5xx is the store having a bad minute.
+    // Permanent means the OBJECT is unusable, not merely that this request
+    // failed. Only 404 and 410 establish that. Treating the whole 4xx range as
+    // permanent swept in 408 and 429 -- a timeout and a throttle, both of which
+    // succeed on a later day -- and the consequence is not a retry, it is
+    // dispatch.unpostable retiring a perfectly good image forever.
     if (!res.ok) {
       return {
         ok: false,
         reason: `image fetch failed: ${await errorDetail(res)}`,
-        permanent: res.status >= 400 && res.status < 500
+        permanent: res.status === 404 || res.status === 410
       };
     }
 

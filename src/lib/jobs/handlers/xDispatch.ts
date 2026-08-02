@@ -686,11 +686,23 @@ async function runDispatch(ctx: {
       // But do not claim "no post" when we do not know -- an indeterminate
       // outcome gets its own reason so the log stays honest and an operator knows
       // to check the account.
-      await skip(
-        posted.indeterminate ? SKIP_REASON.PostIndeterminate : SKIP_REASON.PostFailed,
-        posted.reason,
-        chosen.trend.topic
-      );
+      try {
+        await skip(
+          posted.indeterminate ? SKIP_REASON.PostIndeterminate : SKIP_REASON.PostFailed,
+          posted.reason,
+          chosen.trend.topic
+        );
+      } catch (err) {
+        // If this write fails on the INDETERMINATE branch, letting the exception
+        // escape unwrapped is worse than not writing at all: the handler-level
+        // catch sees a locked specimen, files post_failed, and thereby asserts
+        // nothing was published AND releases the specimen for reuse -- turning a
+        // "may be public" into a licence to post the same image again. That
+        // release is the very thing the last fix added, so this branch has to
+        // carry the state past it.
+        if (posted.indeterminate) throw new PostMayExistError(null, err);
+        throw err;
+      }
       return;
     }
     postId = posted.postId;

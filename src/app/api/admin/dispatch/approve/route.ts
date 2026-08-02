@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { enqueueJob, hasInFlightPostingDispatch } from '@/lib/db/queries/jobs';
 import { getEvent } from '@/lib/db/queries/events';
-import { publishedDraftIds } from '@/lib/db/queries/dispatch';
+import { listDispatchedImageIds, publishedDraftIds } from '@/lib/db/queries/dispatch';
 import { EVENT_TYPE } from '@/lib/universe/events';
 import type { DispatchSentPayload } from '@/lib/universe/events';
 import { dispatchLiveEnabled } from '@/lib/dispatch/config';
@@ -63,6 +63,19 @@ export async function POST(req: Request) {
   // and report a queued publication on every click while the job no-opped.
   if ((await publishedDraftIds()).includes(eventId)) {
     return NextResponse.json({ approved: false, reason: 'this draft has already been published' });
+  }
+
+  // The draft's SPECIMEN may have gone out under a different draft, or under the
+  // scheduled run, since this one was written. The publish job would then collide
+  // on the specimen lock and file post_failed -- which is retryable, so the
+  // button would survive and every click would queue another job that can never
+  // publish. Checking the draft id alone cannot see this: the draft is untouched,
+  // it is the image underneath it that is spent.
+  if ((await listDispatchedImageIds()).includes(payload.imageId)) {
+    return NextResponse.json({
+      approved: false,
+      reason: `specimen ${payload.imageId} has already been dispatched; generate a new draft`
+    });
   }
 
   // The SHARED guard, covering scheduled dispatches as well as other

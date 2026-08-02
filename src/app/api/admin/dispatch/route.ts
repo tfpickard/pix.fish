@@ -1,18 +1,30 @@
-import { NextResponse } from 'next/server';
-import { auth, isSiteAdmin } from '@/lib/auth';
-import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
+import { NextResponse } from "next/server";
+import { auth, isSiteAdmin } from "@/lib/auth";
+import { enqueueJob, hasInFlightJobOfType } from "@/lib/db/queries/jobs";
 import {
   countDispatchOutcomes,
   listRecentDispatchEvents,
+  listDispatchedImageIds,
   listUnresolvedAttempts,
-  publishedDraftIds
-} from '@/lib/db/queries/dispatch';
-import { dispatchMinuteForDate, driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
-import { DRIFT_ENABLED, captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
-import { getXCredentials, missingXCredentialNames } from '@/lib/dispatch/x-client';
+  publishedDraftIds,
+} from "@/lib/db/queries/dispatch";
+import {
+  dispatchMinuteForDate,
+  driftForDate,
+  utcDateKey,
+} from "@/lib/dispatch/schedule";
+import {
+  DRIFT_ENABLED,
+  captionCharBudget,
+  dispatchLiveEnabled,
+} from "@/lib/dispatch/config";
+import {
+  getXCredentials,
+  missingXCredentialNames,
+} from "@/lib/dispatch/x-client";
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 // Review surface for the outbound X dispatch. GET returns the dispatch slice of
 // the event log (every would-be post and every skip, with its reason); POST
@@ -20,18 +32,24 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   if (!isSiteAdmin(await auth())) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const now = new Date();
   const dateKey = utcDateKey(now);
   // Bounded page SIZE plus an offset, so the whole history is reachable rather
   // than capped: limit alone made 200 a ceiling on what could ever be read.
   const params = new URL(req.url).searchParams;
-  const rawLimit = Number(params.get('limit') ?? 60);
-  const rawOffset = Number(params.get('offset') ?? 0);
+  const rawLimit = Number(params.get("limit") ?? 60);
+  const rawOffset = Number(params.get("offset") ?? 0);
   const limit = Number.isFinite(rawLimit) ? rawLimit : 60;
   const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
-  const [events, totalOutcomes, unresolvedAttempts, publishedDrafts] = await Promise.all([
+  const [
+    events,
+    totalOutcomes,
+    unresolvedAttempts,
+    publishedDrafts,
+    dispatchedImageIds,
+  ] = await Promise.all([
     listRecentDispatchEvents(limit, offset),
     countDispatchOutcomes(),
     // Fetched independently of the page. An attempt with no outcome means a post
@@ -41,7 +59,11 @@ export async function GET(req: Request) {
     // Which drafts already went out. Derived from the log rather than the draft
     // row, which keeps postId=null forever because publication appends a new
     // event instead of mutating the draft.
-    publishedDraftIds()
+    publishedDraftIds(),
+    // Specimens already spent. A draft whose image went out under another draft
+    // can never publish, so its button is withdrawn rather than left to queue
+    // jobs that only ever collide on the specimen lock.
+    listDispatchedImageIds(),
   ]);
   return NextResponse.json({
     // How the deployment is configured. Posting needs BOTH the switch and
@@ -64,17 +86,18 @@ export async function GET(req: Request) {
       // page is asking -- it would announce "drift variant" for a quarter of days
       // that then ship a standard caption, and the one surface meant to tell the
       // truth about the run would be the one lying about it.
-      driftVariant: DRIFT_ENABLED && driftForDate(dateKey)
+      driftVariant: DRIFT_ENABLED && driftForDate(dateKey),
     },
     totalOutcomes,
     publishedDrafts,
+    dispatchedImageIds,
     // Complete, not a slice of `events` -- see listUnresolvedAttempts.
     unresolvedAttempts: unresolvedAttempts.map((e) => ({
       id: e.id,
       type: e.type,
       dateKey: e.subjectId,
       payload: e.payload,
-      createdAt: e.createdAt
+      createdAt: e.createdAt,
     })),
     // Echoed back so a caller (and the review page's load-more) can page without
     // re-deriving the clamp this route applied.
@@ -85,8 +108,8 @@ export async function GET(req: Request) {
       type: e.type,
       dateKey: e.subjectId,
       payload: e.payload,
-      createdAt: e.createdAt
-    }))
+      createdAt: e.createdAt,
+    })),
   });
 }
 
@@ -125,7 +148,7 @@ export async function GET(req: Request) {
 // eventually skips with no_specimen rather than reposting.
 export async function POST(req: Request) {
   if (!isSiteAdmin(await auth())) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   // Body is optional -- a bare POST is still a review run, which is what the
@@ -141,15 +164,21 @@ export async function POST(req: Request) {
     // does not. That is the exact confusion this endpoint exists to end.
     if (!dispatchLiveEnabled()) {
       return NextResponse.json(
-        { enqueued: false, reason: 'X_DISPATCH_LIVE is not "true" in this environment' },
-        { status: 409 }
+        {
+          enqueued: false,
+          reason: 'X_DISPATCH_LIVE is not "true" in this environment',
+        },
+        { status: 409 },
       );
     }
     const missing = missingXCredentialNames();
     if (missing.length > 0) {
       return NextResponse.json(
-        { enqueued: false, reason: `missing credentials: ${missing.join(', ')}` },
-        { status: 409 }
+        {
+          enqueued: false,
+          reason: `missing credentials: ${missing.join(", ")}`,
+        },
+        { status: 409 },
       );
     }
   }
@@ -158,29 +187,32 @@ export async function POST(req: Request) {
   // Two dispatches running at once would each read listDispatchedImageIds()
   // before either wrote its attempt, so both could select the SAME specimen and
   // post it twice. Serializing costs at most the drain interval.
-  if (await hasInFlightJobOfType('x.dispatch')) {
-    return NextResponse.json({ enqueued: false, reason: 'dispatch already in flight' });
+  if (await hasInFlightJobOfType("x.dispatch")) {
+    return NextResponse.json({
+      enqueued: false,
+      reason: "dispatch already in flight",
+    });
   }
 
   const now = new Date();
   const job = await enqueueJob({
-    type: 'x.dispatch',
+    type: "x.dispatch",
     payload: {
       dateKey: utcDateKey(now),
-      trigger: 'manual',
+      trigger: "manual",
       claimSuffix: `manual:${now.getTime()}`,
       // Always a draft. A manual run's output is reviewed and approved before it
       // reaches X, so the run itself has nothing to post.
-      dryRun: true
+      dryRun: true,
     },
-    maxAttempts: 1
+    maxAttempts: 1,
   });
   return NextResponse.json({
-    enqueued: 'x.dispatch',
+    enqueued: "x.dispatch",
     jobId: job.id,
     // Echoed so the UI can say "draft, then approve" rather than implying a post
     // is on its way.
     awaitingApproval: true,
-    liveChecked: wantsLive
+    liveChecked: wantsLive,
   });
 }
