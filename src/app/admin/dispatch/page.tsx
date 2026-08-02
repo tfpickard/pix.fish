@@ -78,9 +78,13 @@ type Data = {
   // Draft event ids already published (or possibly published). Their approve
   // button is withdrawn -- clicking it could only no-op.
   publishedDrafts: number[];
-  // Specimens a draft can no longer publish: already public (or possibly so), or
-  // ruled permanently unpostable. Drafts appear in neither, so a draft never
-  // disqualifies itself.
+  // Draft event ids X refused outright. The caption is immutable, so re-approving
+  // could only resend the bytes that were already rejected.
+  rejectedDrafts: number[];
+  // Specimens a draft can no longer publish: already public (or possibly so),
+  // ruled permanently unpostable, or no longer live-eligible (archived,
+  // basemented, reclassified, deleted since the draft was written). Drafts
+  // appear in none of those, so a draft never disqualifies itself.
   unapprovableImageIds: number[];
   offset: number;
   hasMore: boolean;
@@ -463,6 +467,7 @@ export default function AdminDispatchPage() {
                 data?.liveEnvEnabled &&
                   data?.liveCredentialsPresent &&
                   !data?.publishedDrafts?.includes(row.id) &&
+                  !data?.rejectedDrafts?.includes(row.id) &&
                   !data?.unapprovableImageIds?.includes(
                     (row.payload as unknown as SentPayload).imageId
                   )

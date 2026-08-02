@@ -70,7 +70,12 @@ import {
   validateCaption
 } from '../src/lib/dispatch/caption';
 import { dedupeKey } from '../src/lib/universe/events';
-import { SKIP_REASON, type SpecimenCandidate, type Trend } from '../src/lib/dispatch/types';
+import {
+  DEFINITE_FAILURE_REASONS,
+  SKIP_REASON,
+  type SpecimenCandidate,
+  type Trend
+} from '../src/lib/dispatch/types';
 
 // Pure, infra-free tests in the style of tests/pisci-cost.test.ts. The guards
 // this feature rests on -- fail-closed safety, one post per day, bounded tokens,
@@ -1279,6 +1284,29 @@ describe('an unknown post outcome is not reported as no-post', () => {
     expect(SKIP_REASON.PostFailed).toBe('post_failed');
     expect(SKIP_REASON.PostIndeterminate).toBe('post_indeterminate');
     expect(SKIP_REASON.PostIndeterminate).not.toBe(SKIP_REASON.PostFailed);
+  });
+});
+
+describe('a definite failure frees the specimen; only some free the draft', () => {
+  // Two separate questions that a single 'post_failed' comparison used to answer
+  // at once. Every guard asking "was anything published?" must accept BOTH
+  // definite reasons, or a draft_rejected attempt silently retires an image that
+  // never reached X. The approval generation asks a different question and must
+  // NOT accept draft_rejected -- that is what freezes an unpublishable draft.
+  test('both definite outcomes count as proof that nothing was published', () => {
+    expect(DEFINITE_FAILURE_REASONS).toContain(SKIP_REASON.PostFailed);
+    expect(DEFINITE_FAILURE_REASONS).toContain(SKIP_REASON.DraftRejected);
+  });
+
+  test('an unknown outcome is never definite', () => {
+    // The one member that must never join this set: if the post may be public,
+    // releasing the specimen is how it goes out twice.
+    expect(DEFINITE_FAILURE_REASONS).not.toContain(SKIP_REASON.PostIndeterminate);
+  });
+
+  test('draft_rejected is its own code, distinct from post_failed', () => {
+    expect(SKIP_REASON.DraftRejected).toBe('draft_rejected');
+    expect(SKIP_REASON.DraftRejected).not.toBe(SKIP_REASON.PostFailed);
   });
 });
 

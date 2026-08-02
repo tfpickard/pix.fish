@@ -5,10 +5,13 @@ import {
   countDispatchOutcomes,
   listRecentDispatchEvents,
   listUnresolvedAttempts,
+  liveIneligibleImageIds,
   publiclyPostedImageIds,
   publishedDraftIds,
+  rejectedDraftIds,
   unpostableImageIds,
 } from "@/lib/db/queries/dispatch";
+import { EVENT_TYPE } from "@/lib/universe/events";
 import {
   dispatchMinuteForDate,
   driftForDate,
@@ -49,6 +52,7 @@ export async function GET(req: Request) {
     totalOutcomes,
     unresolvedAttempts,
     publishedDrafts,
+    rejectedDrafts,
     postedIds,
     badIds,
   ] = await Promise.all([
@@ -62,6 +66,9 @@ export async function GET(req: Request) {
     // row, which keeps postId=null forever because publication appends a new
     // event instead of mutating the draft.
     publishedDraftIds(),
+    // Drafts X refused outright. Their bytes are fixed, so re-approving can only
+    // resend what was already rejected.
+    rejectedDraftIds(),
     // Specimens already public (or possibly so), and specimens ruled permanently
     // unpostable. A draft on either can never publish, so its button is withdrawn
     // rather than left to queue jobs that only ever fail. Drafts appear in
@@ -69,6 +76,21 @@ export async function GET(req: Request) {
     publiclyPostedImageIds(),
     unpostableImageIds(),
   ]);
+
+  // Specimens that stopped being publishable AFTER their draft was written --
+  // archived, basemented, reclassified, deleted. Asked only about the drafts on
+  // this page, since those are the only rows that can render a button.
+  //
+  // Read after the page rather than alongside it: the ids are not known until
+  // the events come back. One extra round trip on an admin surface, in exchange
+  // for the button disappearing when the answer is already determined instead of
+  // after a job has run to discover it.
+  const staleIds = await liveIneligibleImageIds(
+    events
+      .filter((e) => e.type === EVENT_TYPE.DispatchSent && !e.payload?.postId)
+      .map((e) => Number((e.payload as { imageId?: unknown })?.imageId))
+      .filter((n) => Number.isFinite(n)),
+  );
   return NextResponse.json({
     // How the deployment is configured. Posting needs BOTH the switch and
     // credentials; either alone means dry run.
@@ -94,7 +116,8 @@ export async function GET(req: Request) {
     },
     totalOutcomes,
     publishedDrafts,
-    unapprovableImageIds: [...new Set([...postedIds, ...badIds])],
+    rejectedDrafts,
+    unapprovableImageIds: [...new Set([...postedIds, ...badIds, ...staleIds])],
     // Complete, not a slice of `events` -- see listUnresolvedAttempts.
     unresolvedAttempts: unresolvedAttempts.map((e) => ({
       id: e.id,

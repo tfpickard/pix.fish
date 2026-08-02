@@ -257,9 +257,11 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
       return;
     }
     // Nothing was posted. If the specimen lock was already taken, this MUST be
-    // post_failed: that is the only reason listDispatchedImageIds accepts as
-    // releasing a specimen, so internal_error would leave an image that
-    // certainly never posted locked out of every future dispatch.
+    // one of DEFINITE_FAILURE_REASONS: those are the only outcomes
+    // listDispatchedImageIds accepts as releasing a specimen, so internal_error
+    // would leave an image that certainly never posted locked out of every
+    // future dispatch. post_failed is the right member here -- draft_rejected
+    // is about a draft's bytes and this path has no draft.
     if (runState.specimenLocked) {
       await skip(
         SKIP_REASON.PostFailed,

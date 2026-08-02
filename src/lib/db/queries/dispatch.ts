@@ -2,11 +2,20 @@ import { desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { events, type UniverseEvent } from '../schema';
 import { EVENT_TYPE } from '@/lib/universe/events';
-import { LIVE_ALLOW_NSFW, LIVE_STILL_MIMES } from '@/lib/dispatch/config';
+import { LIVE_ALLOW_NSFW, LIVE_STILL_MIMES, liveEligible } from '@/lib/dispatch/config';
+import { DEFINITE_FAILURE_REASONS, SKIP_REASON } from '@/lib/dispatch/types';
 import type { SpecimenCandidate } from '@/lib/dispatch/types';
 
 // Data layer for the outbound X dispatch. Query construction stays here, out of
 // the job handler, per the project rule against inline Drizzle in handlers.
+
+// The reason codes that prove nothing was published, as a SQL list. Every guard
+// that asks "did this attempt definitely fail?" spells the question the same
+// way by construction -- see DEFINITE_FAILURE_REASONS for why that matters.
+const DEFINITE_FAILURE_SQL = sql.join(
+  DEFINITE_FAILURE_REASONS.map((r) => sql`${r}`),
+  sql`, `
+);
 
 // Candidates inside a cosine-distance band from the trend vector. The band is the
 // whole selection idea: nearer than the floor and the specimen is genuinely about
@@ -243,7 +252,7 @@ export async function listDispatchedImageIds(): Promise<number[]> {
             WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
               AND o.subject_type = 'dispatch'
               AND o.payload->>'slotKey' = events.payload->>'slotKey'
-              AND o.payload->>'reason' = 'post_failed'
+              AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
           )
         )
       )
@@ -344,7 +353,7 @@ export async function livePostAttemptedOnDate(dateKey: string): Promise<boolean>
         WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
           AND o.subject_type = 'dispatch'
           AND o.payload->>'slotKey' = events.payload->>'slotKey'
-          AND o.payload->>'reason' = 'post_failed'
+          AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
       )
   `);
   return Number(res.rows?.[0]?.n ?? 0) > 0;
@@ -392,15 +401,104 @@ export async function listUnresolvedAttempts(limit = 50): Promise<UniverseEvent[
 //
 // post_indeterminate deliberately does not count. If the post MAY be public,
 // re-approving must stay blocked.
+//
+// draft_rejected does not count either, for the opposite reason: X read the
+// request and refused these exact bytes, and approval publishes the draft
+// verbatim, so every retry can only reproduce the rejection. Not advancing the
+// generation leaves the approval key occupied, which freezes the draft -- the
+// same mechanism the paragraph above calls a defect, deliberately kept here
+// because a permanently unpublishable draft is precisely the thing that SHOULD
+// stay frozen. rejectedDraftIds withdraws the button so nobody has to discover
+// the freeze by clicking.
+//
+// So this is not DEFINITE_FAILURE_REASONS: that set is about the SPECIMEN,
+// which a rejection does free -- the image never reached X and a fresh draft
+// over it is the right next step.
 export async function publishAttemptGeneration(draftEventId: number): Promise<number> {
   const res = await db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM events
     WHERE type = ${EVENT_TYPE.DispatchSkipped}
       AND subject_type = 'dispatch'
       AND (payload->>'draftEventId')::int = ${draftEventId}
-      AND payload->>'reason' <> 'post_indeterminate'
+      AND payload->>'reason' NOT IN (${SKIP_REASON.PostIndeterminate}, ${SKIP_REASON.DraftRejected})
   `);
   return Number(res.rows?.[0]?.n ?? 0);
+}
+
+// Drafts X has permanently refused. Their approve button is withdrawn: the
+// caption is immutable by design, so re-approving can only resend the bytes that
+// were already read and rejected.
+export async function rejectedDraftIds(): Promise<number[]> {
+  const res = await db.execute<{ id: number }>(sql`
+    SELECT DISTINCT (payload->>'draftEventId')::int AS id
+    FROM events
+    WHERE type = ${EVENT_TYPE.DispatchSkipped}
+      AND subject_type = 'dispatch'
+      AND payload->>'reason' = ${SKIP_REASON.DraftRejected}
+      AND payload->>'draftEventId' IS NOT NULL
+  `);
+  return res.rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
+}
+
+// Which of these images a live post could not use right now: deleted, archived,
+// in the basement, or failing liveEligible (NSFW, unclassified, or a MIME that
+// is not a postable still).
+//
+// The approve route and the review page need this because a draft outlives the
+// state it was drafted from. Nothing stops an admin archiving the specimen, or
+// an nsfw.scan reclassifying it, between the draft being written and read --
+// that gap is the whole point of review. The publish job already re-checks with
+// currentPostState and files post_failed, but post_failed is RETRYABLE, so the
+// button survived and every click queued another job that could only reach the
+// identical verdict. Third time this shape has appeared on this feature: an
+// outcome that is deterministic downstream has to be visible upstream, or the
+// operator is the retry loop.
+//
+// Batched deliberately: the page asks about every draft on screen, and one query
+// per draft would be a round trip per card.
+export async function liveIneligibleImageIds(imageIds: number[]): Promise<number[]> {
+  const ids = [...new Set(imageIds.filter((n) => Number.isFinite(n)))];
+  if (ids.length === 0) return [];
+  const res = await db.execute<{
+    id: number;
+    gated: boolean;
+    is_nsfw: boolean;
+    nsfw_source: string | null;
+    mime: string | null;
+  }>(sql`
+    SELECT
+      id,
+      (archived_at IS NOT NULL OR basement = true) AS gated,
+      is_nsfw, nsfw_source, mime
+    FROM images
+    WHERE id IN (${sql.join(
+      ids.map((id) => sql`${id}`),
+      sql`, `
+    )})
+  `);
+  const seen = new Set<number>();
+  const bad: number[] = [];
+  for (const row of res.rows) {
+    const id = Number(row.id);
+    seen.add(id);
+    // liveEligible(), not a second SQL spelling of it. The policy already lives
+    // in one place and this is a re-check of the same rule, not a new one.
+    if (
+      Boolean(row.gated) ||
+      !liveEligible({
+        isNsfw: Boolean(row.is_nsfw),
+        nsfwSource: row.nsfw_source,
+        mime: row.mime
+      })
+    ) {
+      bad.push(id);
+    }
+  }
+  // A row that did not come back was deleted outright, which is the strongest
+  // form of ineligible. Absence has to be read as a verdict here rather than as
+  // "no information", or a deleted specimen keeps its approve button.
+  for (const id of ids) if (!seen.has(id)) bad.push(id);
+  return bad;
 }
 
 // Draft ids that have already been published, or whose publication may have
@@ -485,7 +583,7 @@ export async function publiclyPostedImageIds(): Promise<number[]> {
             WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
               AND o.subject_type = 'dispatch'
               AND o.payload->>'slotKey' = events.payload->>'slotKey'
-              AND o.payload->>'reason' = 'post_failed'
+              AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
           )
         )
       )
@@ -553,7 +651,7 @@ export async function definiteFailureGeneration(imageId: number): Promise<number
         WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
           AND o.subject_type = 'dispatch'
           AND o.payload->>'slotKey' = a.payload->>'slotKey'
-          AND o.payload->>'reason' = 'post_failed'
+          AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
       )
   `);
   return Number(res.rows?.[0]?.n ?? 0);

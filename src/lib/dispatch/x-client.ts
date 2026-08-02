@@ -27,7 +27,11 @@ export type XPostResult =
   // the post may be public. Distinguishing that from a definite rejection (an
   // HTTP error we actually read) is the difference between the log saying "no
   // post" truthfully and saying it when a post exists.
-  | { ok: false; reason: string; indeterminate: boolean };
+  // `permanent` narrows a DEFINITE failure further: X read the request and
+  // refused the payload itself, so resending the same bytes can only be refused
+  // again. Only meaningful on the approval path, where the bytes are fixed --
+  // see SKIP_REASON.DraftRejected.
+  | { ok: false; reason: string; indeterminate: boolean; permanent?: boolean };
 
 // Which of the four credential names are absent from the environment. Names
 // only, never values -- but names are the whole diagnostic: "credentials
@@ -371,7 +375,20 @@ export async function createPost(
       return {
         ok: false,
         reason: unknown ? `post outcome unknown (server error): ${detail}` : `post rejected: ${detail}`,
-        indeterminate: unknown
+        indeterminate: unknown,
+        // 400 alone. For POST /2/tweets it means "this payload is not
+        // acceptable" -- a caption past the account's length limit being the
+        // one to expect -- and no amount of retrying changes a payload.
+        //
+        // 401/403/429 are deliberately excluded even though they are just as
+        // definite. They are about the environment, not the artifact: a token
+        // minted before write permission, a rotated secret, a throttle. Those
+        // are fixable, and retiring a reviewed draft over a fixable condition
+        // throws away the approval for no reason. A 403 for duplicate content
+        // is the awkward member of that set, but a duplicate means an earlier
+        // post succeeded, and publiclyPostedImageIds already refuses the
+        // specimen on the strength of that post's own event.
+        permanent: res.status === 400
       };
     }
 

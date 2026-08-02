@@ -171,8 +171,8 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
   let postMayExist = false;
   let publishedPostId: string | null = null;
   // Whether this run holds the specimen lock. A failure AFTER taking it that
-  // never reached X must release it, and only post_failed does that --
-  // definiteFailureGeneration advances on nothing else. Filing internal_error
+  // never reached X must release it, and only DEFINITE_FAILURE_REASONS do that
+  // -- definiteFailureGeneration advances on nothing else. Filing internal_error
   // there left the specimen's attempt key occupied forever while the approval
   // generation happily allowed retries, so every retry collided before posting.
   let specimenLocked = false;
@@ -321,8 +321,17 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
     // Set BEFORE the outcome write, because the write is what can fail.
     postMayExist = posted.ok || posted.indeterminate;
     if (!posted.ok) {
+      // Three outcomes, not two. A definite rejection of the ARTIFACT retires
+      // the draft (draft_rejected); a definite rejection of anything else
+      // leaves it approvable once the operator fixes the cause. Both free the
+      // specimen. The scheduled handler has no third case because it has no
+      // draft to retire.
       await skip(
-        posted.indeterminate ? SKIP_REASON.PostIndeterminate : SKIP_REASON.PostFailed,
+        posted.indeterminate
+          ? SKIP_REASON.PostIndeterminate
+          : posted.permanent
+            ? SKIP_REASON.DraftRejected
+            : SKIP_REASON.PostFailed,
         posted.reason
       );
       return;
@@ -375,9 +384,12 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       return;
     }
     // Nothing was posted. If the specimen lock was already taken, the outcome
-    // has to be post_failed rather than internal_error: post_failed is the ONLY
-    // reason definiteFailureGeneration counts, so anything else leaves the lock
-    // held forever and every retry collides before it can post.
+    // has to be one of DEFINITE_FAILURE_REASONS rather than internal_error:
+    // those are the only reasons definiteFailureGeneration counts, so anything
+    // else leaves the lock held forever and every retry collides before it can
+    // post. post_failed, not draft_rejected -- an unhandled throw says nothing
+    // about whether X would accept the caption, and retiring a reviewed draft
+    // on that basis would be a guess.
     if (specimenLocked) {
       await skip(
         SKIP_REASON.PostFailed,

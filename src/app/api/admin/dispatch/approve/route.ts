@@ -3,10 +3,13 @@ import { auth, isSiteAdmin } from '@/lib/auth';
 import { enqueueJob, hasInFlightPostingDispatch } from '@/lib/db/queries/jobs';
 import { getEvent } from '@/lib/db/queries/events';
 import {
+  currentPostState,
   publiclyPostedImageIds,
   publishedDraftIds,
+  rejectedDraftIds,
   unpostableImageIds
 } from '@/lib/db/queries/dispatch';
+import { liveEligible } from '@/lib/dispatch/config';
 import { EVENT_TYPE } from '@/lib/universe/events';
 import type { DispatchSentPayload } from '@/lib/universe/events';
 import { dispatchLiveEnabled } from '@/lib/dispatch/config';
@@ -84,6 +87,40 @@ export async function POST(req: Request) {
     return NextResponse.json({
       approved: false,
       reason: `specimen ${payload.imageId} has already been posted; generate a new draft`
+    });
+  }
+
+  // A draft X has already refused outright. The caption is immutable -- that is
+  // what makes approval mean anything -- so the publish job would send the same
+  // bytes to the same endpoint and read the same rejection. Nothing about
+  // re-approving can change the answer, so the draft is retired here rather than
+  // left to burn one job per click.
+  if ((await rejectedDraftIds()).includes(eventId)) {
+    return NextResponse.json({
+      approved: false,
+      reason: 'X rejected this draft outright; generate a new one'
+    });
+  }
+
+  // Is the SPECIMEN still publishable right now? A draft outlives the state it
+  // was drafted from -- an admin can archive it, an nsfw.scan can reclassify it,
+  // a reprocess can change its MIME -- and the gap between drafting and reading
+  // is the whole point of review, so this is routine rather than exotic.
+  //
+  // The publish job re-checks this too and files post_failed, which is
+  // RETRYABLE, so without the same check here the button survived a verdict that
+  // is deterministic: every click queued a job that could only reach it again.
+  const state = await currentPostState(payload.imageId);
+  if (!state) {
+    return NextResponse.json({
+      approved: false,
+      reason: `specimen ${payload.imageId} no longer exists; generate a new draft`
+    });
+  }
+  if (state.gated || !liveEligible(state)) {
+    return NextResponse.json({
+      approved: false,
+      reason: `specimen ${payload.imageId} is no longer publishable (gated=${state.gated}, nsfw=${state.isNsfw}, source=${state.nsfwSource}, mime=${state.mime}); generate a new draft`
     });
   }
 
