@@ -11,7 +11,8 @@ import type {
   DispatchApprovedPayload,
   DispatchAttemptedPayload,
   DispatchSentPayload,
-  DispatchSkippedPayload
+  DispatchSkippedPayload,
+  DispatchUnpostablePayload
 } from '@/lib/universe/events';
 import {
   IMAGE_FETCH_TIMEOUT_MS,
@@ -204,6 +205,24 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
 
     const media = await prepareMedia(d.blobUrl);
     if (!media.ok) {
+      // Same quarantine as the scheduled path. A permanent media failure is a
+      // property of the image, and this handler reaches the identical check on
+      // the identical bytes -- so discovering it here has to retire the specimen
+      // too, or the scheduled dispatch keeps drawing a row an approval already
+      // proved unpostable.
+      if (media.permanent) {
+        await appendEvent({
+          type: EVENT_TYPE.DispatchUnpostable,
+          subjectType: SUBJECT_TYPE.Dispatch,
+          subjectId: utcDateKey(new Date()),
+          payload: {
+            imageId: d.imageId,
+            slug: d.slug,
+            reason: media.reason
+          } satisfies DispatchUnpostablePayload,
+          dedupeKey: dedupeKey.dispatchUnpostable(d.imageId)
+        });
+      }
       await skip(SKIP_REASON.PostFailed, media.reason);
       return;
     }
