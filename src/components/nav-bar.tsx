@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { auth, isSiteAdmin } from '@/lib/auth';
@@ -48,7 +49,16 @@ export async function NavBar() {
             <span className="text-ink-100">fish</span>
           </span>
         </Link>
-        <NavSearch />
+        {/* NavSearch reads useSearchParams. Without a Suspense boundary that
+            opts the ENTIRE route out of static rendering and stamps a
+            BAILOUT_TO_CLIENT_SIDE_RENDERING marker into the served HTML -- and
+            because the nav lives in the root layout, it did so on every page.
+            An audit crawler reading that marker reasonably concludes the whole
+            gallery is client-rendered. The boundary keeps the bailout local to
+            the search box. */}
+        <Suspense fallback={null}>
+          <NavSearch />
+        </Suspense>
         <NavOverflow
           signedIn={signedIn}
           admin={admin}

@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import type { ImageWithRelations } from '@/lib/db/queries/images';
 import { getCachedGalleryDefaults, getHomeStream } from '@/lib/db/queries/gallery-stream';
@@ -112,7 +113,14 @@ export default async function HomePage({ searchParams }: PageProps) {
       </section>
 
       <div className="mx-auto mt-8 max-w-2xl">
-        <SortBar ownerDefaults={defaults} />
+        {/* Same reasoning as NavSearch in nav-bar: SortBar reads
+            useSearchParams, and an unbounded consumer bails the route out of
+            static rendering. The grid itself is server-rendered above (the
+            first 16 rows are painted into the HTML), so the boundary keeps
+            that intact and confines the client-only part to the control. */}
+        <Suspense fallback={<div className="h-8" />}>
+          <SortBar ownerDefaults={defaults} />
+        </Suspense>
       </div>
 
       {/* Images centered in their own column; the tag cloud floats on the
