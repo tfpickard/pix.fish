@@ -459,6 +459,17 @@ export async function publishedDraftIds(): Promise<number[]> {
 //
 // A draft can never appear here: it has no post id and no attempt. That is what
 // makes this safe to use without excluding the draft under consideration.
+//
+// An attempt correlated with a definite `post_failed` is excluded, matching
+// listDispatchedImageIds. X returned a readable non-2xx, so nothing was
+// published and the specimen is free -- and publishAttemptGeneration /
+// definiteFailureGeneration already release it on the posting path. Counting it
+// here anyway made the two disagree: the approve route would withdraw the draft
+// and refuse every retry of a post that a routine 403 had merely rejected,
+// which is the failure most likely to happen on the very first live attempt.
+// post_indeterminate still burns the specimen -- not knowing is exactly when to
+// stay conservative -- and the correlation is by SLOT, never by date, for the
+// reason spelled out in listDispatchedImageIds.
 export async function publiclyPostedImageIds(): Promise<number[]> {
   const res = await db.execute<{ image_id: number }>(sql`
     SELECT DISTINCT (payload->>'imageId')::int AS image_id
@@ -467,7 +478,16 @@ export async function publiclyPostedImageIds(): Promise<number[]> {
       AND payload->>'imageId' IS NOT NULL
       AND (
         (type = ${EVENT_TYPE.DispatchSent} AND payload->>'postId' IS NOT NULL)
-        OR type = ${EVENT_TYPE.DispatchAttempted}
+        OR (
+          type = ${EVENT_TYPE.DispatchAttempted}
+          AND NOT EXISTS (
+            SELECT 1 FROM events o
+            WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+              AND o.subject_type = 'dispatch'
+              AND o.payload->>'slotKey' = events.payload->>'slotKey'
+              AND o.payload->>'reason' = 'post_failed'
+          )
+        )
       )
   `);
   return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));

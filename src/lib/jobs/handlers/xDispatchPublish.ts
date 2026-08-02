@@ -238,9 +238,11 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
     // The same specimen lock the scheduled path uses, for the same reason: a
     // cron run and an approval can want the same image, and the unique index is
     // what decides. Approval does not exempt a draft from that.
-    // Read here, immediately before the attempt, for the reason above.
-    const postDateKey = utcDateKey(new Date());
     const specimenGeneration = await definiteFailureGeneration(d.imageId);
+    // Read here, immediately before the attempt, for the reason above -- and no
+    // earlier. The generation read is a round trip, and taking the date in front
+    // of it filed the attempt under a date the run may already have left.
+    const postDateKey = utcDateKey(new Date());
     const attempt = await appendEvent({
       type: EVENT_TYPE.DispatchAttempted,
       subjectType: SUBJECT_TYPE.Dispatch,
@@ -277,6 +279,28 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
       await skip(SKIP_REASON.PostFailed, 'X credentials disappeared mid-run');
       return;
     }
+    // Last look at the DATE, for the same reason as the clock below: the attempt
+    // was filed under postDateKey and the authoritative re-read is a round trip
+    // behind us. Crossing midnight in that window would leave the attempt -- the
+    // row livePostAttemptedOnDate reads, by subject_id -- filed under yesterday
+    // while the post lands today, so the new day's cron cannot see that a manual
+    // post already went out and publishes a second one hours later.
+    //
+    // The attempt has to precede the post (it IS the specimen lock), so the two
+    // cannot be made to agree after the fact. Standing down is the honest
+    // resolution: nothing has been sent, post_failed releases both the specimen
+    // and the approval generation, and the admin re-approves into a run whose
+    // bookkeeping is coherent. This is the scheduled path's midnight guard,
+    // arrived at from the opposite direction -- there a run must not spend a day
+    // it never claimed, here it must not hide a post from the day that gets it.
+    if (utcDateKey(new Date()) !== postDateKey) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `crossed into ${utcDateKey(new Date())} after filing the attempt under ${postDateKey}; re-approve to publish`
+      );
+      return;
+    }
+
     // d.caption verbatim. Approving text and posting different text would make
     // the review meaningless, so nothing regenerates or re-validates it here.
     // Same last look as the scheduled path: the gate above predates the
