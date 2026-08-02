@@ -73,6 +73,8 @@ type Data = {
   charBudget: number;
   today: { dateKey: string; targetUtcMinute: number; driftVariant: boolean };
   totalOutcomes: number;
+  // Complete set, independent of pagination -- see the note where it is used.
+  unresolvedAttempts: Row[];
   offset: number;
   hasMore: boolean;
   events: Row[];
@@ -294,29 +296,17 @@ export default function AdminDispatchPage() {
   const skipped = rows.filter((e) => e.type === 'dispatch.skipped');
   // An attempt is written immediately before the X call. One with no outcome of
   // its own means a post was started and never confirmed -- the post may well be
-  // public. This is the only surviving trace when the outcome write itself fails,
-  // so it is surfaced rather than filtered out.
+  // public, and this is the only surviving trace when the outcome write itself
+  // fails.
   //
-  // Correlated by SLOT, not by date. Manual runs are unlimited, so one date can
-  // hold many independent runs, and matching on the date would let any one of
-  // them vouch for all the others -- a dry review run's sent event silently
-  // clearing a scheduled live attempt that never came back. The slot is the only
-  // identifier that belongs to exactly one run.
-  //
-  // A skip resolves an attempt too: post_indeterminate is precisely the case
-  // where the code knows it attempted and could not confirm, and it has already
-  // said so on its own row.
-  const resolvedSlots = new Set(
-    [...sent, ...skipped]
-      .map((e) => e.payload.slotKey)
-      .filter((k): k is string => typeof k === 'string')
-  );
-  const unconfirmed = rows.filter(
-    (e) =>
-      e.type === 'dispatch.attempted' &&
-      typeof e.payload.slotKey === 'string' &&
-      !resolvedSlots.has(e.payload.slotKey)
-  );
+  // Taken from the API's own query, NOT filtered out of `rows`. Deriving it from
+  // the loaded page tied the warning to how far back the operator had scrolled:
+  // once an attempt aged past the first 60 events it vanished, so the page
+  // dropped its single most important claim exactly as the incident got older.
+  // The server correlates attempts to outcomes by slot -- one date can hold many
+  // independent runs, so a date match would let any one of them vouch for the
+  // rest.
+  const unconfirmed = data?.unresolvedAttempts ?? [];
   const total = data?.totalOutcomes ?? 0;
   const hasMore = rows.length < total;
 

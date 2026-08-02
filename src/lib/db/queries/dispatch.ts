@@ -320,6 +320,36 @@ export async function livePostAttemptedOnDate(dateKey: string): Promise<boolean>
   return Number(res.rows?.[0]?.n ?? 0) > 0;
 }
 
+// Every attempt with no outcome of its own, newest first, regardless of where it
+// falls in the paginated log.
+//
+// These are the rows that say a post MAY be public with nothing recording it, so
+// they cannot be a by-product of the page the operator happens to be looking at.
+// Deriving them by filtering the loaded page meant an attempt aged off the first
+// 60 events took the warning with it -- the audit surface quietly dropping its
+// single most important claim, and dropping it precisely as the incident got
+// older and easier to forget.
+//
+// Bounded anyway: this should be empty in normal operation, and a log with more
+// than LIMIT unresolved attempts has a systemic problem that a longer list will
+// not help anyone read.
+export async function listUnresolvedAttempts(limit = 50): Promise<UniverseEvent[]> {
+  return db
+    .select()
+    .from(events)
+    .where(
+      sql`${events.type} = ${EVENT_TYPE.DispatchAttempted}
+        AND NOT EXISTS (
+          SELECT 1 FROM events o
+          WHERE o.subject_type = 'dispatch'
+            AND o.type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+            AND o.payload->>'slotKey' = ${events.payload}->>'slotKey'
+        )`
+    )
+    .orderBy(desc(events.id))
+    .limit(limit);
+}
+
 // How many times this specimen has been attempted and DEFINITELY rejected --
 // a readable 4xx from X, where nothing was published.
 //
