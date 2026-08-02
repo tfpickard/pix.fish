@@ -21,6 +21,7 @@ import {
   POST_PHASE_BUDGET_MS,
   POST_ONLY_BUDGET_MS,
   PIPELINE_BUDGET_MS,
+  PIPELINE_DB_MARGIN_MS,
   POST_TIMEOUT_MS,
   POST_WRITE_MARGIN_MS,
   canFinishPostPhase,
@@ -1172,6 +1173,18 @@ describe('the post phase never starts without time to finish and record', () => 
     // posts. The post-phase gates are far too late for that -- they guard the
     // side effect, and a dry run never reaches them at all.
     expect(PIPELINE_BUDGET_MS).toBeGreaterThan(UPSTREAM_DEADLINE_BUDGET_MS);
+
+    // And it must reserve room for the DATABASE work on the claimed path, not
+    // only the four upstream calls. The config reads, the recent-topic and
+    // dispatched-image queries, the pgvector candidate query and the prompt read
+    // are all awaited after the claim and bounded by nothing.
+    expect(PIPELINE_BUDGET_MS).toBeGreaterThanOrEqual(
+      UPSTREAM_DEADLINE_BUDGET_MS + PIPELINE_DB_MARGIN_MS + POST_WRITE_MARGIN_MS
+    );
+    // Still has to leave a fresh handler able to START. If this inverts, every
+    // scheduled run declines before claiming and the feature stops entirely --
+    // the opposite failure, and a louder one.
+    expect(PIPELINE_BUDGET_MS).toBeLessThan(WORKER_JOB_TIMEOUT_MS);
 
     const now = 1_000_000;
     expect(canStartPipeline(now + PIPELINE_BUDGET_MS, now)).toBe(true);

@@ -17,6 +17,7 @@ import type {
 import {
   IMAGE_FETCH_TIMEOUT_MS,
   LIVE_STILL_MIMES,
+  PIPELINE_DB_MARGIN_MS,
   POST_ONLY_BUDGET_MS,
   POST_PHASE_BUDGET_MS,
   canFinishPostPhase,
@@ -109,9 +110,15 @@ export async function xDispatchPublishHandler(job: Job, ctx: JobContext): Promis
   // draft is untouched either way, and a failed job row at /admin/jobs says the
   // invocation had no room, which is what happened. Same reasoning as
   // canStartPipeline guarding the day-claim.
-  if (!canStartPostPhase(postDeadlineAt)) {
+  //
+  // Charged the DB margin as well, for the same reason canStartPipeline is: four
+  // round trips sit between this gate and the post -- the eligibility read, the
+  // generation count, the attempt insert and the authoritative re-read -- and
+  // POST_PHASE_BUDGET_MS accounts for none of them. The two claims in this
+  // feature strand the same way and are now reserved the same way.
+  if (!canStartPostPhase(postDeadlineAt - PIPELINE_DB_MARGIN_MS)) {
     throw new Error(
-      `declined before claiming approval of draft ${draftEventId}: ${postDeadlineAt - Date.now()}ms left, ${POST_PHASE_BUDGET_MS}ms needed`
+      `declined before claiming approval of draft ${draftEventId}: ${postDeadlineAt - Date.now()}ms left, ${POST_PHASE_BUDGET_MS + PIPELINE_DB_MARGIN_MS}ms needed`
     );
   }
 

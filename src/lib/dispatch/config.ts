@@ -202,6 +202,27 @@ export const POST_TIMEOUT_MS = 8_000;
 // post that lands while the job is being killed, leaving a public post with no
 // outcome on the log, is not.
 export const POST_WRITE_MARGIN_MS = 3_000;
+
+// Database work on the CLAIMED path that no deadline bounds: the ai_config and
+// provider-key reads, the recent-topic and already-dispatched queries, the
+// pgvector candidate query (twice, when the band widens), and the prompt read.
+// None is an upstream call, so none appears in UPSTREAM_DEADLINE_BUDGET_MS, and
+// the claim gate was reserving room for four network calls while the run went on
+// to make roughly half a dozen round trips beyond them.
+//
+// That mattered because of what the claim costs when it strands: the log is
+// append-only, so there is no unclaim, and the cron refuses a claimed date
+// forever. A day lost that way is lost silently and permanently.
+//
+// An allowance, not a bound. Nothing here cancels a slow query, so this narrows
+// the window rather than closing it -- closing it would mean a deadline on every
+// query in the path, which the query layer has no plumbing for. Sized for a
+// serverless Postgres round trip an order of magnitude worse than the usual one,
+// on the reasoning that a database slow enough to blow through this is a
+// database that will also fail the reads outright, which the outer catch turns
+// into an ordinary skip.
+export const PIPELINE_DB_MARGIN_MS = 5_000;
+
 export const POST_PHASE_BUDGET_MS =
   IMAGE_FETCH_TIMEOUT_MS + MEDIA_UPLOAD_TIMEOUT_MS + POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS;
 
@@ -227,7 +248,8 @@ export function canStartPostPhase(deadlineAt: number, now = Date.now()): boolean
 // gates below. A claim with no outcome is unrecoverable (the cron will not
 // re-enqueue a claimed day); a post with no outcome is worse but rarer. Both
 // need guarding, at different moments, against the same clock.
-export const PIPELINE_BUDGET_MS = UPSTREAM_DEADLINE_BUDGET_MS + POST_WRITE_MARGIN_MS;
+export const PIPELINE_BUDGET_MS =
+  UPSTREAM_DEADLINE_BUDGET_MS + PIPELINE_DB_MARGIN_MS + POST_WRITE_MARGIN_MS;
 
 export function canStartPipeline(deadlineAt: number, now = Date.now()): boolean {
   return now + PIPELINE_BUDGET_MS <= deadlineAt;
