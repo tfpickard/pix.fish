@@ -1,6 +1,10 @@
 import type { Job } from '@/lib/db/schema';
 import { appendEvent } from '@/lib/db/queries/events';
-import { listDispatchCandidates, listDispatchedImageIds } from '@/lib/db/queries/dispatch';
+import {
+  isStillPostable,
+  listDispatchCandidates,
+  listDispatchedImageIds
+} from '@/lib/db/queries/dispatch';
 import { getDispatchEmbedder } from '@/lib/ai/dispatch-embed';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
@@ -22,6 +26,7 @@ import {
   WIDE_BAND_MIN_DISTANCE,
   IMAGE_FETCH_TIMEOUT_MS,
   LIVE_ALLOW_NSFW,
+  liveEligible,
   POST_PHASE_BUDGET_MS,
   canStartPostPhase,
   captionCharBudget,
@@ -234,7 +239,7 @@ async function runDispatch(ctx: {
   // skipped the widening pass and reported no_specimen while usable specimens sat
   // in the wide band.
   const selectable = (rows: SpecimenCandidate[]) =>
-    liveConfigured && !LIVE_ALLOW_NSFW ? rows.filter((c) => !c.isNsfw) : rows;
+    liveConfigured ? rows.filter(liveEligible) : rows;
 
   // One widening pass. Two would be a loop dressed as a policy.
   if (selectable(candidates).length === 0) {
@@ -269,7 +274,7 @@ async function runDispatch(ctx: {
     await skip(
       SKIP_REASON.NoSpecimen,
       eligible.length === 0 && filteredOut > 0
-        ? `all ${filteredOut} specimen(s) in the band are NSFW and live posting excludes them`
+        ? `all ${filteredOut} specimen(s) in the band are ineligible for live posting (NSFW, unclassified, or GIF)`
         : 'no embedded specimen fell in the similarity band',
       chosen.trend.topic
     );
@@ -333,6 +338,21 @@ async function runDispatch(ctx: {
       await skip(
         SKIP_REASON.PostFailed,
         `budget exhausted after media upload: ${Date.now() - startedAt}ms elapsed`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Last look at the image itself. Selection read its archived/basement state
+    // tens of seconds ago, before a caption call and a media upload; an admin can
+    // archive an image inside that window and archiving leaves the blob intact,
+    // so nothing else here would notice. The query layer treats archived and
+    // basement rows as never-publishable, and that invariant has to hold at the
+    // moment of publishing, not merely at the moment of choosing.
+    if (!(await isStillPostable(specimen.imageId))) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `specimen ${specimen.imageId} was archived or gated after selection`,
         chosen.trend.topic
       );
       return;

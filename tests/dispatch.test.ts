@@ -18,6 +18,7 @@ import {
   MAX_MEDIA_BYTES,
   POST_PHASE_BUDGET_MS,
   canStartPostPhase,
+  liveEligible,
   madeWithAiFlag
 } from '../src/lib/dispatch/config';
 import { mediaCategoryFor } from '../src/lib/dispatch/x-client';
@@ -1084,5 +1085,31 @@ describe('an unknown post outcome is not reported as no-post', () => {
     expect(SKIP_REASON.PostFailed).toBe('post_failed');
     expect(SKIP_REASON.PostIndeterminate).toBe('post_indeterminate');
     expect(SKIP_REASON.PostIndeterminate).not.toBe(SKIP_REASON.PostFailed);
+  });
+});
+
+describe('live eligibility requires a verdict, not a default', () => {
+  const base = { isNsfw: false, nsfwSource: 'auto', mime: 'image/jpeg' };
+
+  test('an auto-classified safe still is eligible', () => {
+    expect(liveEligible(base)).toBe(true);
+  });
+
+  test('NSFW is never live-eligible while the guard is off', () => {
+    expect(liveEligible({ ...base, isNsfw: true })).toBe(false);
+  });
+
+  // The important one. enrichment-persist writes ('manual', false) when the tag
+  // provider never ran, and nsfwScan.ts documents that as the KEY-LESS DEFAULT,
+  // not a human saying the image is safe. Reading it as safe would let an
+  // entirely unclassified -- possibly NSFW -- image post unflagged.
+  test('an unclassified image is not treated as safe', () => {
+    expect(liveEligible({ ...base, nsfwSource: 'manual' })).toBe(false);
+    expect(liveEligible({ ...base, nsfwSource: null })).toBe(false);
+  });
+
+  test('GIFs are excluded: a tweet_gif id can arrive before processing finishes', () => {
+    expect(liveEligible({ ...base, mime: 'image/gif' })).toBe(false);
+    expect(liveEligible({ ...base, mime: 'IMAGE/GIF' })).toBe(false);
   });
 });

@@ -212,3 +212,30 @@ export function madeWithAiFlag(): boolean | undefined {
   if (raw === 'false') return false;
   return undefined;
 }
+
+// Whether a specimen may be posted LIVE.
+//
+// Three conditions, and the NSFW one is subtler than it looks. `isNsfw === false`
+// is NOT sufficient: enrichment-persist.ts writes ('manual', false) when the tag
+// provider never ran (no key), and nsfwScan.ts documents that state explicitly as
+// the key-less default rather than a human safe verdict. Reading it as "safe"
+// would let an entirely unclassified image -- which may well be NSFW -- go out
+// unflagged, defeating the reason LIVE_ALLOW_NSFW exists. So live posting
+// requires a verdict that was actually reached: nsfwSource === 'auto'.
+//
+// GIFs are excluded because a tweet_gif upload can return a media id while X is
+// still processing it asynchronously, and createPost then rejects the not-ready
+// media. Polling the processing state is the real fix; excluding them costs
+// almost nothing in a stills corpus and cannot post a broken tweet.
+export function liveEligible(c: {
+  isNsfw: boolean;
+  nsfwSource: string | null;
+  mime: string | null;
+}): boolean {
+  if (!LIVE_ALLOW_NSFW) {
+    if (c.isNsfw) return false;
+    if (c.nsfwSource !== 'auto') return false;
+  }
+  if ((c.mime ?? '').toLowerCase() === 'image/gif') return false;
+  return true;
+}

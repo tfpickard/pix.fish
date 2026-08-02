@@ -43,6 +43,12 @@ export type SpecimenCandidate = {
   blobUrl: string;
   mime: string | null;
   isNsfw: boolean;
+  // How isNsfw came to be what it is. Load-bearing for live posting: 'auto'
+  // means the tag pass actually ran and reached a verdict, whereas
+  // ('manual', false) is the KEY-LESS DEFAULT, not a human saying it is safe --
+  // see the comment in jobs/handlers/nsfwScan.ts. Treating that default as a
+  // safe verdict would let an unclassified image post unflagged.
+  nsfwSource: string | null;
   uploadedAt: Date;
   intakeRecord: string;
   distance: number;

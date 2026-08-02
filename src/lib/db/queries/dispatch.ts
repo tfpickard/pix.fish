@@ -60,6 +60,7 @@ export async function listDispatchCandidates(params: {
     blob_url: string;
     mime: string | null;
     is_nsfw: boolean;
+    nsfw_source: string | null;
     uploaded_at: string;
     distance: number;
     intake_record: string;
@@ -71,6 +72,7 @@ export async function listDispatchCandidates(params: {
       i.blob_url,
       i.mime,
       i.is_nsfw,
+      i.nsfw_source,
       i.uploaded_at,
       e.vec <=> ${vecLiteral}::vector AS distance,
       COALESCE(NULLIF(s.current_dossier, ''), NULLIF(c.text, ''), i.slug) AS intake_record
@@ -114,10 +116,24 @@ export async function listDispatchCandidates(params: {
     blobUrl: r.blob_url,
     mime: r.mime,
     isNsfw: Boolean(r.is_nsfw),
+    nsfwSource: r.nsfw_source,
     uploadedAt: new Date(r.uploaded_at),
     intakeRecord: r.intake_record,
     distance: Number(r.distance)
   }));
+}
+
+// Is this image still postable RIGHT NOW? The candidate query already excluded
+// archived and basement rows, but that read happens before caption generation and
+// the media upload -- tens of seconds during which an admin can archive the very
+// image about to go out. Archiving leaves the blob intact, so nothing downstream
+// would notice. Re-read immediately before the side effect.
+export async function isStillPostable(imageId: number): Promise<boolean> {
+  const res = await db.execute<{ ok: boolean }>(sql`
+    SELECT (archived_at IS NULL AND basement = false) AS ok
+    FROM images WHERE id = ${imageId}
+  `);
+  return Boolean(res.rows?.[0]?.ok);
 }
 
 // Image ids already spent on a dispatch. Read straight off the append-only log
@@ -154,7 +170,23 @@ export async function listDispatchedImageIds(): Promise<number[]> {
         -- state that must never be re-selected. Reading only dispatch.sent left a
         -- window where a successful post whose outcome write then failed would
         -- leave the specimen eligible and let it go out a second time.
-        OR type = ${EVENT_TYPE.DispatchAttempted}
+        -- An attempt means "this specimen may already be public". It burns the
+        -- specimen UNLESS the same slot also recorded a definite rejection --
+        -- a readable non-2xx from X, where nothing was published. Without that
+        -- correlation a routine 403 (an access token minted before write
+        -- permission, say) would quietly consume one good specimen per day while
+        -- posting nothing. post_indeterminate deliberately does NOT rescue the
+        -- specimen: not knowing is exactly when to stay conservative.
+        OR (
+          type = ${EVENT_TYPE.DispatchAttempted}
+          AND NOT EXISTS (
+            SELECT 1 FROM events o
+            WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+              AND o.subject_type = 'dispatch'
+              AND o.subject_id = events.subject_id
+              AND o.payload->>'reason' = 'post_failed'
+          )
+        )
       )
   `);
   return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
