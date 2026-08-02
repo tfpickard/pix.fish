@@ -105,6 +105,23 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
   const seedKey = payload.dateKey ?? dateKey;
   const slotKey = dedupeKey.dispatchDay(dateKey, payload.claimSuffix);
 
+  // Selection is seeded per SLOT, not per day. Two runs sharing a date and a
+  // trend would otherwise draw the same specimen deterministically -- so any
+  // moment two dispatches overlap, the collision is not a tail risk, it is the
+  // guaranteed outcome. The enqueue guards make overlap rare but they are
+  // check-then-act and cannot make it impossible; a concurrent pair of admin
+  // POSTs can still slip between the check and the insert.
+  //
+  // Seeding on the slot removes the harm rather than the race. Two manual posts
+  // in a day are by design; two posts of the SAME IMAGE are the actual defect,
+  // and distinct seeds mean concurrent runs diverge on their first draw. It also
+  // makes repeated manual runs naturally varied instead of walking the corpus in
+  // a fixed order.
+  //
+  // The drift predicate deliberately keeps using seedKey: drift is a property of
+  // the day, not of the run, and a replay of a given date must reproduce it.
+  const selectionSeed = payload.claimSuffix ? `${seedKey}:${payload.claimSuffix}` : seedKey;
+
   // Live requires all three: the env switch, a job that did not ask for a dry
   // run, and credentials actually present. Missing credentials degrade to a dry
   // run rather than to a failure -- a deployment with the switch on but no keys
@@ -169,7 +186,7 @@ export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void>
   // transient DB read in the candidate queries or in getPromptByKey, a missing
   // OWNER_GITHUB_ID, a provider that cannot embed.
   try {
-    await runDispatch({ dateKey, seedKey, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip });
+    await runDispatch({ dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip });
   } catch (err) {
     // Fail closed, but audibly. If the skip write ALSO throws we genuinely
     // cannot record anything, and that is the one case where letting the job
@@ -185,6 +202,8 @@ async function runDispatch(ctx: {
   // Drives the drift variant and the selection seed; equals dateKey unless a
   // replay explicitly asked for another day. Never used for the claim.
   seedKey: string;
+  // Seeded per slot so concurrent runs cannot draw the same specimen.
+  selectionSeed: string;
   slotKey: string;
   mode: 'dry-run' | 'live';
   trigger: 'cron' | 'manual';
@@ -192,7 +211,7 @@ async function runDispatch(ctx: {
   postDeadlineAt: number;
   skip: (reason: SkipReason, detail: string, trendTopic?: string | null) => Promise<void>;
 }): Promise<void> {
-  const { dateKey, seedKey, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip } = ctx;
+  const { dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip } = ctx;
   const now = new Date();
 
   // ---- 1. trend acquisition -------------------------------------------------
@@ -267,7 +286,7 @@ async function runDispatch(ctx: {
     vec,
     embedProvider: embedder.name,
     embedModel: embedder.model,
-    sampleSeed: `${seedKey}:${chosen.trend.topic}`,
+    sampleSeed: `${selectionSeed}:${chosen.trend.topic}`,
     minDistance: BAND_MIN_DISTANCE,
     maxDistance: BAND_MAX_DISTANCE,
     limit: MAX_POOL_CANDIDATES,
@@ -287,7 +306,7 @@ async function runDispatch(ctx: {
       vec,
       embedProvider: embedder.name,
       embedModel: embedder.model,
-      sampleSeed: `${seedKey}:${chosen.trend.topic}`,
+      sampleSeed: `${selectionSeed}:${chosen.trend.topic}`,
       minDistance: WIDE_BAND_MIN_DISTANCE,
       maxDistance: WIDE_BAND_MAX_DISTANCE,
       limit: MAX_POOL_CANDIDATES,
@@ -302,7 +321,7 @@ async function runDispatch(ctx: {
   // rather than at the post call means the day picks another specimen instead of
   // being spent on a skip.
   const eligible = selectable(candidates);
-  const specimen = pickSpecimen(eligible, { seed: `${seedKey}:${chosen.trend.topic}`, now });
+  const specimen = pickSpecimen(eligible, { seed: `${selectionSeed}:${chosen.trend.topic}`, now });
   if (!specimen) {
     // Say which of the two emptied the pool. "Nothing in the band" and "the band
     // held only NSFW rows on a live day" call for completely different responses
