@@ -28,6 +28,7 @@ type SentPayload = {
   distance: number;
   model: string;
   postId: string | null;
+  postUrl?: string | null;
 };
 
 type SkippedPayload = {
@@ -56,6 +57,7 @@ type Row = {
 type Data = {
   liveEnvEnabled: boolean;
   livePostingImplemented: boolean;
+  liveCredentialsPresent: boolean;
   charBudget: number;
   today: { dateKey: string; targetUtcMinute: number; driftVariant: boolean };
   totalOutcomes: number;
@@ -111,6 +113,19 @@ function SentCard({ row }: { row: Row }) {
             {weightedLength(p.caption)} weighted chars /{' '}
             {p.hashtags.join(' ') || 'no hashtag'}
           </p>
+          {p.postId ? (
+            <p className="text-ink-500">
+              posted{' '}
+              <a
+                href={p.postUrl ?? `https://x.com/i/web/status/${p.postId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-secondary hover:underline"
+              >
+                {p.postId}
+              </a>
+            </p>
+          ) : null}
           <p className="text-ink-500">
             specimen {p.imageId}{' '}
             <a href={`/u/${p.handle}/${p.slug}`} className="text-secondary hover:underline">
@@ -265,7 +280,10 @@ export default function AdminDispatchPage() {
           <p>
             live posting:{' '}
             <span className="text-ink-300">
-              {data.livePostingImplemented ? 'implemented' : 'not implemented (phase 2)'}
+              {data.livePostingImplemented ? 'implemented' : 'not implemented'}
+              {data.livePostingImplemented && !data.liveCredentialsPresent
+                ? ' (no X credentials -- runs stay dry)'
+                : ''}
             </span>
             {' / '}X_DISPATCH_LIVE:{' '}
             <span className="text-ink-300">{data.liveEnvEnabled ? 'true' : 'unset'}</span>

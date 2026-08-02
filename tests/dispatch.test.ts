@@ -13,8 +13,18 @@ import {
   WORKER_JOB_TIMEOUT_MS,
   captionCharBudget,
   dispatchLiveEnabled,
-  DRIFT_ENABLED
+  DRIFT_ENABLED,
+  LIVE_ALLOW_NSFW,
+  MAX_MEDIA_BYTES,
+  madeWithAiFlag
 } from '../src/lib/dispatch/config';
+import {
+  authorizationHeader,
+  normalizeParams,
+  percentEncode,
+  signatureBaseString,
+  signingKey
+} from '../src/lib/dispatch/x-oauth';
 import {
   buildClassifierPrompt,
   hitsDenylist,
@@ -904,5 +914,123 @@ describe('caption validation enforces the tone contract', () => {
 
   test('hashtag extraction handles unicode topics', () => {
     expect(extractHashtags('filed #Café2 and #b')).toEqual(['#Café2', '#b']);
+  });
+});
+
+describe('OAuth 1.0a signing', () => {
+  // X's own published worked example for "Creating a signature". Pinning the
+  // whole vector means percent-encoding, parameter sorting, the base string and
+  // the HMAC are all verified together against a value we did not compute -- the
+  // only way to know this is right without posting to a live account.
+  const CREDS = {
+    apiKey: 'xvz1evFS4wEEPTGEFPHBog',
+    apiSecret: 'kAcSOqF21Fu85e7zjz7ZN2U4ZRhfV3WpwPAoE3Z7kBw',
+    accessToken: '370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb',
+    accessTokenSecret: 'LswwdoUaIvS8ltyTt5jkRh4J50vUPVVHtR2YPi5kE'
+  };
+  const VECTOR = {
+    nonce: 'kYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg',
+    timestamp: '1318622958',
+    url: 'https://api.twitter.com/1.1/statuses/update.json',
+    params: {
+      status: 'Hello Ladies + Gentlemen, a signed OAuth request!',
+      include_entities: 'true'
+    },
+    signature: 'hCtSmYh+iHYCEqBWrE7C7hYmtUk='
+  };
+
+  test('reproduces the published signature exactly', () => {
+    const header = authorizationHeader({
+      method: 'POST',
+      baseUrl: VECTOR.url,
+      creds: CREDS,
+      signedParams: VECTOR.params,
+      nonce: VECTOR.nonce,
+      timestamp: VECTOR.timestamp
+    });
+    expect(header).toContain(`oauth_signature="${percentEncode(VECTOR.signature)}"`);
+  });
+
+  test('percent-encodes the five characters encodeURIComponent leaves alone', () => {
+    // !*'() are the difference between a valid signature and an opaque 401.
+    expect(percentEncode("!*'()")).toBe('%21%2A%27%28%29');
+    expect(percentEncode('Ladies + Gentlemen')).toBe('Ladies%20%2B%20Gentlemen');
+    // Unreserved characters must survive untouched.
+    expect(percentEncode('aZ09-._~')).toBe('aZ09-._~');
+  });
+
+  test('sorts parameters by encoded key, then encoded value', () => {
+    expect(normalizeParams({ b: '2', a: '1' })).toBe('a=1&b=2');
+    expect(normalizeParams({ a: 'z', A: 'y' })).toBe('A=y&a=z');
+    // Same key twice cannot happen through an object, but equal keys ordering by
+    // value is the documented tie-break; assert the value ordering path.
+    expect(normalizeParams({ k1: 'b', k0: 'a' })).toBe('k0=a&k1=b');
+  });
+
+  test('base string is METHOD&url&params, each encoded once', () => {
+    const base = signatureBaseString('post', 'https://api.x.com/2/tweets', { a: 'b c' });
+    expect(base).toBe('POST&https%3A%2F%2Fapi.x.com%2F2%2Ftweets&a%3Db%2520c');
+  });
+
+  test('signing key joins both secrets with & even when the token secret is empty', () => {
+    expect(signingKey('cs', 'ts')).toBe('cs&ts');
+    expect(signingKey('cs', '')).toBe('cs&');
+  });
+
+  test('header carries only oauth_* params, never the signed request params', () => {
+    const header = authorizationHeader({
+      method: 'POST',
+      baseUrl: VECTOR.url,
+      creds: CREDS,
+      signedParams: { status: 'secret text' },
+      nonce: 'n',
+      timestamp: '1'
+    });
+    expect(header).not.toContain('status');
+    expect(header).not.toContain('secret');
+    expect(header.startsWith('OAuth ')).toBe(true);
+  });
+
+  test('a different nonce yields a different signature', () => {
+    const mk = (nonce: string) =>
+      authorizationHeader({
+        method: 'POST',
+        baseUrl: VECTOR.url,
+        creds: CREDS,
+        nonce,
+        timestamp: '1'
+      });
+    expect(mk('a')).not.toBe(mk('b'));
+  });
+});
+
+describe('live posting guards', () => {
+  // Same rule the other dispatch guards follow: enforced by a test, not merely
+  // configured, so relaxing one is deliberate.
+  test('NSFW specimens are not posted live', () => {
+    // X API v2 has no per-post possibly_sensitive field, so an NSFW specimen
+    // cannot be marked at post time. Selection and dry runs still include them.
+    expect(LIVE_ALLOW_NSFW).toBe(false);
+  });
+
+  test('media ceiling matches the 5MB X image limit', () => {
+    expect(MAX_MEDIA_BYTES).toBe(5 * 1024 * 1024);
+  });
+
+  test('made_with_ai is unset unless explicitly configured', () => {
+    const original = process.env.X_DISPATCH_MADE_WITH_AI;
+    try {
+      delete process.env.X_DISPATCH_MADE_WITH_AI;
+      expect(madeWithAiFlag()).toBeUndefined();
+      process.env.X_DISPATCH_MADE_WITH_AI = 'yes';
+      expect(madeWithAiFlag()).toBeUndefined();
+      process.env.X_DISPATCH_MADE_WITH_AI = 'true';
+      expect(madeWithAiFlag()).toBe(true);
+      process.env.X_DISPATCH_MADE_WITH_AI = 'false';
+      expect(madeWithAiFlag()).toBe(false);
+    } finally {
+      if (original === undefined) delete process.env.X_DISPATCH_MADE_WITH_AI;
+      else process.env.X_DISPATCH_MADE_WITH_AI = original;
+    }
   });
 });

@@ -145,3 +145,48 @@ export const DISPATCH_TAIL_PROBABILITY = 0.1;
 // change and re-enabling is this one constant. The variant is a term of the tone
 // contract; it is not finished, which is different from being unwanted.
 export const DRIFT_ENABLED = false;
+
+// ---- live posting ---------------------------------------------------------
+
+// Bounds on the two outbound X calls. Both are well inside the worker's
+// per-type timeout, and neither call retries -- a retried post that succeeds
+// after a timeout has already posted, which is the one failure this feature
+// cannot take back.
+export const IMAGE_FETCH_TIMEOUT_MS = 10_000;
+export const MEDIA_UPLOAD_TIMEOUT_MS = 20_000;
+export const POST_TIMEOUT_MS = 10_000;
+
+// X's image ceiling is 5MB. Refuse locally rather than paying for an upload the
+// far side will reject.
+export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
+
+// Whether an NSFW specimen may be posted LIVE.
+//
+// The original product call was that the whole corpus is eligible, NSFW
+// included, and that still holds for selection and for dry runs. Live posting is
+// different, and not because the product decision changed: X API v2 has no
+// per-post sensitivity flag. `possibly_sensitive` existed on the v1.1
+// statuses/update endpoint and has no equivalent on POST /2/tweets, so there is
+// no way to mark an individual post as sensitive at the moment of posting.
+//
+// That leaves the account-level "mark media as sensitive" setting as the only
+// control, which applies to every post or none. Posting unflagged NSFW from an
+// account that is not configured that way risks the account itself, which would
+// end the feature rather than degrade it. So live mode declines NSFW specimens
+// and picks again; dry runs are unaffected.
+//
+// Set this true ONLY if the posting account has sensitive-media marking enabled
+// in its X settings.
+export const LIVE_ALLOW_NSFW = false;
+
+// Optional `made_with_ai` labelling on the post. Deliberately tri-state: unset
+// asserts nothing, because sending false is as much a claim about the image's
+// provenance as sending true, and this code cannot tell how a given specimen was
+// made. Set X_DISPATCH_MADE_WITH_AI to "true" or "false" only if that is true of
+// the whole corpus.
+export function madeWithAiFlag(): boolean | undefined {
+  const raw = process.env.X_DISPATCH_MADE_WITH_AI;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return undefined;
+}
