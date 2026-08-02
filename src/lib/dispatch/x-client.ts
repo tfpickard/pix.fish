@@ -76,6 +76,57 @@ async function errorDetail(res: Response): Promise<string> {
 }
 
 /**
+ * Read a response body, refusing as soon as it passes `cap` rather than after.
+ *
+ * The cancel() matters as much as the early return: without it the connection
+ * stays open and the sender keeps pushing bytes nobody will look at, on a job
+ * that is already racing a deadline.
+ *
+ * Falls back to arrayBuffer() only when the runtime gives no readable stream.
+ * That path can still over-read, which is why it is the fallback and not the
+ * implementation.
+ */
+async function readCapped(
+  res: Response,
+  cap: number
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string }> {
+  if (!res.body) {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.byteLength > cap) {
+      return { ok: false, reason: `image is ${buf.byteLength} bytes, over the ${cap} limit` };
+    }
+    return { ok: true, bytes: buf };
+  }
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > cap) {
+        await reader.cancel().catch(() => {});
+        return { ok: false, reason: `image exceeds the ${cap} byte limit` };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    bytes.set(c, offset);
+    offset += c.byteLength;
+  }
+  return { ok: true, bytes };
+}
+
+/**
  * Fetch the specimen image from blob storage. Bounded by size as well as time:
  * the post is refused rather than truncated if the image is too large for X,
  * because a truncated upload would fail server-side anyway and cost the call.
@@ -92,12 +143,16 @@ export async function fetchSpecimenImage(
     if (declared > MAX_MEDIA_BYTES) {
       return { ok: false, reason: `image is ${declared} bytes, over the ${MAX_MEDIA_BYTES} limit` };
     }
-    const buf = new Uint8Array(await res.arrayBuffer());
-    // Re-check after reading: content-length can be absent or wrong, and the
-    // declared check above is only an early out.
-    if (buf.byteLength > MAX_MEDIA_BYTES) {
-      return { ok: false, reason: `image is ${buf.byteLength} bytes, over the ${MAX_MEDIA_BYTES} limit` };
-    }
+    // Read incrementally and stop at the ceiling rather than calling
+    // arrayBuffer(). content-length is a claim, not a guarantee -- it can be
+    // absent on a chunked response or simply wrong -- and the upload route sets
+    // no size limit of its own, so a large enough specimen really can reach here.
+    // arrayBuffer() would materialize the whole object first, meaning the check
+    // that exists to refuse the image runs only after the damage it was meant to
+    // prevent: an OOM or a killed invocation instead of a clean post_failed.
+    const read = await readCapped(res, MAX_MEDIA_BYTES);
+    if (!read.ok) return read;
+    const buf = read.bytes;
     if (buf.byteLength === 0) return { ok: false, reason: 'image is empty' };
 
     const mime = res.headers.get('content-type')?.split(';')[0]?.trim() || 'image/jpeg';

@@ -43,8 +43,26 @@ export async function listDispatchCandidates(params: {
   maxDistance: number;
   limit: number;
   excludeImageIds: number[];
+  // Restrict to rows a LIVE post may use. This has to happen in SQL, before the
+  // LIMIT, not in the caller afterwards: the limit takes the first N of a seeded
+  // sample, so filtering after it means a band whose first N happen to be
+  // ineligible reports an empty pool while eligible rows sit just past the cut.
+  // The widening pass cannot rescue that either -- it re-samples a superset with
+  // the same seed, so the same rows stay in front.
+  //
+  // Mirrors liveEligible() in src/lib/dispatch/config.ts, which still runs on the
+  // result and again at post time against currentPostState. Two expressions of
+  // one rule is a drift risk, taken deliberately: the predicate has to be in SQL
+  // to be correct here, and in TS to re-check an image that changed after
+  // selection. Change one, change the other.
+  liveOnly?: boolean;
 }): Promise<SpecimenCandidate[]> {
   const vecLiteral = `[${params.vec.join(',')}]`;
+  const liveFilter = params.liveOnly
+    ? sql`AND i.is_nsfw = false
+          AND i.nsfw_source = 'auto'
+          AND COALESCE(lower(i.mime), '') <> 'image/gif'`
+    : sql``;
   const exclude =
     params.excludeImageIds.length > 0
       ? sql`AND i.id NOT IN (${sql.join(
@@ -94,6 +112,7 @@ export async function listDispatchCandidates(params: {
       AND i.basement = false
       AND (e.vec <=> ${vecLiteral}::vector) BETWEEN ${params.minDistance} AND ${params.maxDistance}
       ${exclude}
+      ${liveFilter}
     -- Sample the band, do not skim its near edge. Ordering by distance before the
     -- LIMIT made only the N nearest rows reachable, so every farther specimen had
     -- zero chance of selection no matter its recency weight -- and the bias grows

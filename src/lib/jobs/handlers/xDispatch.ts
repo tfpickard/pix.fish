@@ -317,7 +317,8 @@ async function runDispatch(ctx: {
     minDistance: BAND_MIN_DISTANCE,
     maxDistance: BAND_MAX_DISTANCE,
     limit: MAX_POOL_CANDIDATES,
-    excludeImageIds
+    excludeImageIds,
+    liveOnly: liveConfigured
   });
   // Live mode drops NSFW rows (see below). The widening decision has to be made
   // on what is actually SELECTABLE, not on the raw count -- a narrow band holding
@@ -337,7 +338,8 @@ async function runDispatch(ctx: {
       minDistance: WIDE_BAND_MIN_DISTANCE,
       maxDistance: WIDE_BAND_MAX_DISTANCE,
       limit: MAX_POOL_CANDIDATES,
-      excludeImageIds
+      excludeImageIds,
+      liveOnly: liveConfigured
     });
   }
   // NSFW rows stay in the band for dry runs and for selection generally -- that
