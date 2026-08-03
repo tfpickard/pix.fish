@@ -39,7 +39,11 @@ const KEY = 'dispatch_caption';
 // is not on this list looks like an admin edit and will be left alone forever.
 const SHIPPED_DEFAULT_HASHES = [
   // Phase F initial (PR #62).
-  '2e1c453526cdd3fbcb211b9b205aee8113cda8f21cfb08c0fc7d3d2f9ef18f14'
+  '2e1c453526cdd3fbcb211b9b205aee8113cda8f21cfb08c0fc7d3d2f9ef18f14',
+  // Phase F, single fixed "records institution" persona (PR #66, pre-rewrite).
+  // Superseded by the per-notice specialist voice: one persona made every
+  // caption a filing and leaked as a stock opener.
+  'b25c0f83bf8846ca56416559558354072aedc8fa0948c4a64a52a08657d718f2'
 ];
 
 function hash(s: string): string {

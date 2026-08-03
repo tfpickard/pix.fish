@@ -1,4 +1,4 @@
-import { dispatchText } from '@/lib/ai/dispatch-text';
+import { dispatchText, type DispatchTextResult } from '@/lib/ai/dispatch-text';
 import { SAFETY_MAX_TOKENS, SAFETY_TIMEOUT_MS } from './config';
 import { formatTrendContext } from './trends';
 import type { ClassifiedTrend, SafetyVerdict, Trend } from './types';
@@ -207,12 +207,17 @@ export async function screenTrends(trends: Trend[]): Promise<SafetyOutcome> {
     return { ok: true, cleared: [], screened: 0, deniedByList, deniedNoContext };
   }
 
-  let raw: { text: string; model: string } | null;
+  let raw: DispatchTextResult | null;
   try {
     raw = await dispatchText({
       prompt: buildClassifierPrompt(prefiltered),
       maxTokens: SAFETY_MAX_TOKENS,
-      timeoutMs: SAFETY_TIMEOUT_MS
+      timeoutMs: SAFETY_TIMEOUT_MS,
+      // Its own routing row. This call is mechanical -- batch in, fixed JSON out
+      // -- and it sits inside a deadline that has to fit alongside the rest of a
+      // 50s job, so a slow or reasoning-heavy model here does not produce a
+      // better verdict, it produces no post at all.
+      field: 'dispatchSafety'
     });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -222,7 +227,19 @@ export async function screenTrends(trends: Trend[]): Promise<SafetyOutcome> {
   if (!raw) return { ok: false, error: 'no anthropic key or non-anthropic dispatch routing' };
 
   const verdicts = parseVerdicts(raw.text, prefiltered);
-  if (!verdicts) return { ok: false, error: 'classifier response was not parseable JSON' };
+  if (!verdicts) {
+    // Distinguish "the model wrote something we cannot parse" from "the model was
+    // cut off mid-array". They look identical at the JSON parser and they are not
+    // the same problem: truncation is a budget to raise, garbage is a prompt to
+    // fix. Without this the log said the same sentence for both.
+    return {
+      ok: false,
+      error:
+        raw.stopReason === 'max_tokens'
+          ? `classifier response was truncated at the ${SAFETY_MAX_TOKENS}-token cap (${prefiltered.length} topics to judge)`
+          : `classifier response was not parseable JSON (stop_reason ${raw.stopReason ?? 'unknown'}, ${raw.text.length} chars)`
+    };
+  }
 
   const cleared: ClassifiedTrend[] = [];
   for (const verdict of verdicts) {

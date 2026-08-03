@@ -40,12 +40,39 @@ export const MAX_HASHTAGS = 2;
 
 // ---- LLM budgets ----------------------------------------------------------
 
-// Bounded output on every call. The classifier emits a small JSON array; the
-// caption is at most a few hundred characters. Neither needs headroom, and an
-// unbounded max_tokens on a daily job is exactly the kind of thing that quietly
-// costs money for a year before anyone looks.
-export const SAFETY_MAX_TOKENS = 700;
-export const CAPTION_MAX_TOKENS = 400;
+// Bounded output on every call. An unbounded max_tokens on a daily job is
+// exactly the kind of thing that quietly costs money for a year before anyone
+// looks -- so these stay caps. But a cap that is too SMALL does not save
+// anything: the call is billed either way and the day is lost, converting the
+// whole spend into waste. These are sized to be sufficient first and bounded
+// second, which is the opposite of how they were originally picked.
+//
+// Two things have to fit under the cap, and the second is easy to forget:
+//
+//   1. The visible output. The classifier judges up to MAX_TREND_CANDIDATES (12)
+//      topics in ONE batched call, emitting a JSON object per topic --
+//      {"index":0,"safe":true,"category":"brand-fail","confidence":"high",...}
+//      -- at roughly 40 tokens each, so ~480 for a full batch. The caption is a
+//      few hundred characters.
+//
+//   2. EXTENDED THINKING, on any model that does it. Thinking tokens are drawn
+//      from this same budget and are spent BEFORE any text is produced, so an
+//      undersized cap does not truncate the answer -- it can consume the entire
+//      budget and return a response with no text block at all. The `dispatch`
+//      ai_config row is repointable from /admin/ai (Haiku by default, but a
+//      thinking-class model is a legitimate choice for caption quality), so this
+//      is a configuration the operator can reach, not a hypothetical.
+//
+// That second case is why 700 failed in two different-looking ways on the same
+// model: sometimes the budget was gone before any text (no text block),
+// sometimes thinking finished with just enough left to emit a truncated array
+// (unparseable JSON). One cause, two symptoms, neither naming it.
+//
+// So both caps clear a realistic thinking budget plus the output. Still bounded,
+// still cheap for a once-a-day job, and now sufficient for the models the admin
+// UI actually allows.
+export const SAFETY_MAX_TOKENS = 4000;
+export const CAPTION_MAX_TOKENS = 2000;
 
 // Per-call deadlines. These run SEQUENTIALLY, so what matters is their sum plus
 // the embed and the DB work, measured against the worker's per-job timeout for
@@ -76,6 +103,12 @@ export const TREND_FETCH_TIMEOUT_MS = 6_000;
 // How many feed items to consider. The feed returns ~20; classifying more than
 // this buys nothing and costs tokens.
 export const MAX_TREND_CANDIDATES = 12;
+// How far back to look when avoiding a topic the account has already ridden.
+// Sized against the feed, not the calendar: the classifier sees at most
+// MAX_TREND_CANDIDATES a run, so remembering more than a couple of runs' worth
+// would exhaust the safe pool on a quiet day and force the fallback every time,
+// which is the same monotony by another route.
+export const RECENT_TREND_MEMORY = 8;
 // Headlines carried into the classifier and the caption prompt per trend. Two is
 // enough to disambiguate what a topic is actually about.
 export const MAX_HEADLINES_PER_TREND = 3;
@@ -145,3 +178,174 @@ export const DISPATCH_TAIL_PROBABILITY = 0.1;
 // change and re-enabling is this one constant. The variant is a term of the tone
 // contract; it is not finished, which is different from being unwanted.
 export const DRIFT_ENABLED = false;
+
+// ---- live posting ---------------------------------------------------------
+
+// Bounds on the outbound X calls. Neither retries -- a retried post that
+// succeeds after a timeout has already posted, which is the one failure this
+// feature cannot take back.
+export const IMAGE_FETCH_TIMEOUT_MS = 8_000;
+export const MEDIA_UPLOAD_TIMEOUT_MS = 12_000;
+export const POST_TIMEOUT_MS = 8_000;
+
+// What the posting phase can cost end to end, plus a margin for the outcome
+// write that must follow it.
+//
+// This does NOT fit alongside UPSTREAM_DEADLINE_BUDGET_MS inside the worker's
+// 50s, and pretending otherwise would be the dangerous kind of arithmetic: the
+// worst case is 32s upstream plus 28s here, and the cron function itself dies at
+// 60s (maxDuration), so there is no timeout large enough to make the sum safe.
+//
+// So the handler does not rely on the sum fitting. It checks the clock before
+// starting the post and declines the day if too little time remains -- see
+// canStartPostPhase(). A day skipped because the upstream ran slow is cheap; a
+// post that lands while the job is being killed, leaving a public post with no
+// outcome on the log, is not.
+export const POST_WRITE_MARGIN_MS = 3_000;
+
+// Database work on the CLAIMED path that no deadline bounds: the ai_config and
+// provider-key reads, the recent-topic and already-dispatched queries, the
+// pgvector candidate query (twice, when the band widens), and the prompt read.
+// None is an upstream call, so none appears in UPSTREAM_DEADLINE_BUDGET_MS, and
+// the claim gate was reserving room for four network calls while the run went on
+// to make roughly half a dozen round trips beyond them.
+//
+// That mattered because of what the claim costs when it strands: the log is
+// append-only, so there is no unclaim, and the cron refuses a claimed date
+// forever. A day lost that way is lost silently and permanently.
+//
+// An allowance, not a bound. Nothing here cancels a slow query, so this narrows
+// the window rather than closing it -- closing it would mean a deadline on every
+// query in the path, which the query layer has no plumbing for. Sized for a
+// serverless Postgres round trip an order of magnitude worse than the usual one,
+// on the reasoning that a database slow enough to blow through this is a
+// database that will also fail the reads outright, which the outer catch turns
+// into an ordinary skip.
+export const PIPELINE_DB_MARGIN_MS = 5_000;
+
+export const POST_PHASE_BUDGET_MS =
+  IMAGE_FETCH_TIMEOUT_MS + MEDIA_UPLOAD_TIMEOUT_MS + POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS;
+
+// True when enough time remains before `deadlineAt` to run the whole posting
+// phase AND record the outcome.
+//
+// The caller must pass the EARLIEST deadline that can stop the work, which is
+// not the handler's own timeout: the cron drain runs several jobs sequentially
+// inside one 60s function, so a handler that starts 40s in has ~15s left however
+// fresh its own clock looks. Measuring against the handler alone would let a
+// post start with the invocation nearly spent -- reintroducing, one level up,
+// exactly the failure this gate exists to prevent.
+export function canStartPostPhase(deadlineAt: number, now = Date.now()): boolean {
+  return now + POST_PHASE_BUDGET_MS <= deadlineAt;
+}
+
+// What a run needs before it may CLAIM a day: the whole pre-post pipeline plus
+// the outcome write. Everything from the trend fetch to the caption, which is
+// what every run does regardless of mode -- a dry run reaches an outcome having
+// spent exactly this and nothing more.
+//
+// This gate protects the CLAIM, which is a different thing from the post-phase
+// gates below. A claim with no outcome is unrecoverable (the cron will not
+// re-enqueue a claimed day); a post with no outcome is worse but rarer. Both
+// need guarding, at different moments, against the same clock.
+export const PIPELINE_BUDGET_MS =
+  UPSTREAM_DEADLINE_BUDGET_MS + PIPELINE_DB_MARGIN_MS + POST_WRITE_MARGIN_MS;
+
+export function canStartPipeline(deadlineAt: number, now = Date.now()): boolean {
+  return now + PIPELINE_BUDGET_MS <= deadlineAt;
+}
+
+// What the post phase still needs once the media is uploaded: the create call and
+// the outcome write, nothing else.
+export const POST_ONLY_BUDGET_MS = POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS;
+
+// The same gate, re-asked after the fetch and upload have already happened.
+//
+// It has to be a SMALLER requirement than canStartPostPhase, because the two are
+// asking different questions. The first is "is there room for all of this?"; the
+// second is "is there room for what is left?". Re-asking the first would charge
+// the run again for the 20s of fetch and upload it has already spent, so a run
+// 20s into a 55s budget would decline with 35s in hand and 11s of work to do --
+// refusing viable dispatches in the name of a deadline it was going to meet.
+//
+// Both directions are wrong here and neither is symmetric: too strict silently
+// costs posts, too loose leaves a public post with no outcome row. Charging for
+// exactly the remaining work is what keeps both closed.
+export function canFinishPostPhase(deadlineAt: number, now = Date.now()): boolean {
+  return now + POST_ONLY_BUDGET_MS <= deadlineAt;
+}
+
+// X's image ceiling is 5MB. Refuse locally rather than paying for an upload the
+// far side will reject.
+export const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
+
+// Whether an NSFW specimen may be posted LIVE.
+//
+// The original product call was that the whole corpus is eligible, NSFW
+// included, and that still holds for selection and for dry runs. Live posting is
+// different, and not because the product decision changed: X API v2 has no
+// per-post sensitivity flag. `possibly_sensitive` existed on the v1.1
+// statuses/update endpoint and has no equivalent on POST /2/tweets, so there is
+// no way to mark an individual post as sensitive at the moment of posting.
+//
+// That leaves the account-level "mark media as sensitive" setting as the only
+// control, which applies to every post or none. Posting unflagged NSFW from an
+// account that is not configured that way risks the account itself, which would
+// end the feature rather than degrade it. So live mode declines NSFW specimens
+// and picks again; dry runs are unaffected.
+//
+// Set this true ONLY if the posting account has sensitive-media marking enabled
+// in its X settings.
+export const LIVE_ALLOW_NSFW = false;
+
+// Optional `made_with_ai` labelling on the post. Deliberately tri-state: unset
+// asserts nothing, because sending false is as much a claim about the image's
+// provenance as sending true, and this code cannot tell how a given specimen was
+// made. Set X_DISPATCH_MADE_WITH_AI to "true" or "false" only if that is true of
+// the whole corpus.
+export function madeWithAiFlag(): boolean | undefined {
+  const raw = process.env.X_DISPATCH_MADE_WITH_AI;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return undefined;
+}
+
+// Whether a specimen may be posted LIVE.
+//
+// Three conditions, and the NSFW one is subtler than it looks. `isNsfw === false`
+// is NOT sufficient: enrichment-persist.ts writes ('manual', false) when the tag
+// provider never ran (no key), and nsfwScan.ts documents that state explicitly as
+// the key-less default rather than a human safe verdict. Reading it as "safe"
+// would let an entirely unclassified image -- which may well be NSFW -- go out
+// unflagged, defeating the reason LIVE_ALLOW_NSFW exists. So live posting
+// requires a verdict that was actually reached: nsfwSource === 'auto'.
+//
+// GIFs are excluded because a tweet_gif upload can return a media id while X is
+// still processing it asynchronously, and createPost then rejects the not-ready
+// media. Polling the processing state is the real fix; excluding them costs
+// almost nothing in a stills corpus and cannot post a broken tweet.
+export function liveEligible(c: {
+  isNsfw: boolean;
+  nsfwSource: string | null;
+  mime: string | null;
+}): boolean {
+  if (!LIVE_ALLOW_NSFW) {
+    if (c.isNsfw) return false;
+    if (c.nsfwSource !== 'auto') return false;
+  }
+  // An ALLOWLIST of still-image types, not a denylist of GIF. images.mime is
+  // nullable and legacy rows carry null, so "is not image/gif" admitted every
+  // unknown -- including an actual GIF whose type was simply never recorded. The
+  // NSFW guard three lines up already learned this lesson: a missing value is not
+  // a safe value, it is an absent one. Same mistake, same fix.
+  //
+  // Unknown means unpostable rather than presumed still. The cost is a legacy row
+  // sitting out until something records its type; the alternative is uploading a
+  // GIF as tweet_image and posting it before X has processed it.
+  return LIVE_STILL_MIMES.has((c.mime ?? '').toLowerCase());
+}
+
+// What X accepts as a still image, and what this feature is willing to post.
+// GIF is deliberately absent: a tweet_gif upload can return a media id while
+// processing is still pending, and nothing here polls for readiness.
+export const LIVE_STILL_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);

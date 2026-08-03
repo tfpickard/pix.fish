@@ -78,18 +78,49 @@ export async function hasInFlightJobOfType(type: string): Promise<boolean> {
   return Boolean(res.rows?.[0]?.present);
 }
 
-// In-flight SCHEDULED dispatches only -- jobs with no claimSuffix in their
-// payload. A manual review run carries a suffix and claims its own slot, so it
-// can never become the day's dispatch; letting it trip a type-wide guard meant a
-// review overlapping the last cron tick of the day silently cost that day its
-// post, with no later tick to recover.
-export async function hasInFlightScheduledDispatch(): Promise<boolean> {
+// In-flight dispatches that could POST: the scheduled ones (no claimSuffix) plus
+// any manual run that was not queued as a dry run.
+//
+// The scoping is deliberately by dry-vs-live rather than by scheduled-vs-manual.
+// The original guard ignored every suffixed job so that a dry review overlapping
+// the last cron tick of the day could not silently cost that day its post -- a
+// review claims its own slot and can never become the day's dispatch, so blocking
+// on it bought nothing. That reasoning holds only while manual means dry.
+//
+// Once a manual run can post, ignoring it is a double-post: the cron tick would
+// enqueue alongside it, both handlers would read the same already-dispatched set
+// before either wrote its attempt, and -- because selection is seeded on
+// `<date>:<trend>` -- they would deterministically pick the SAME specimen and
+// publish it twice. Same-seed makes that the expected outcome of the race, not a
+// tail risk.
+//
+// So dry review runs still pass (preserving the original fix) and live ones do
+// not.
+// Covers BOTH job types that can post: the dispatch itself and the publication
+// of an approved draft. Scoping it to one type let a cron tick and an approval
+// be queued together, each publishing a different specimen on the same day --
+// which defeats the rule that a manual publication stands down the automatic
+// one, since neither handler looks for the other's type.
+//
+// This is the shared guard; both enqueue routes call it, so "is something about
+// to post?" has a single answer rather than two partial ones.
+export async function hasInFlightPostingDispatch(): Promise<boolean> {
   const res = await db.execute<{ present: boolean }>(sql`
     SELECT EXISTS(
       SELECT 1 FROM jobs
-      WHERE type = 'x.dispatch'
-        AND status IN ('pending', 'processing')
-        AND payload->>'claimSuffix' IS NULL
+      WHERE status IN ('pending', 'processing')
+        AND (
+          -- A scheduled dispatch, or a manual one not queued as a dry run.
+          (
+            type = 'x.dispatch'
+            AND (
+              payload->>'claimSuffix' IS NULL
+              OR payload->>'dryRun' IS DISTINCT FROM 'true'
+            )
+          )
+          -- Publishing an approved draft always posts.
+          OR type = 'x.dispatch.publish'
+        )
     ) AS present
   `);
   return Boolean(res.rows?.[0]?.present);

@@ -2,10 +2,20 @@ import { desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { events, type UniverseEvent } from '../schema';
 import { EVENT_TYPE } from '@/lib/universe/events';
+import { LIVE_ALLOW_NSFW, LIVE_STILL_MIMES, liveEligible } from '@/lib/dispatch/config';
+import { DEFINITE_FAILURE_REASONS, SKIP_REASON } from '@/lib/dispatch/types';
 import type { SpecimenCandidate } from '@/lib/dispatch/types';
 
 // Data layer for the outbound X dispatch. Query construction stays here, out of
 // the job handler, per the project rule against inline Drizzle in handlers.
+
+// The reason codes that prove nothing was published, as a SQL list. Every guard
+// that asks "did this attempt definitely fail?" spells the question the same
+// way by construction -- see DEFINITE_FAILURE_REASONS for why that matters.
+const DEFINITE_FAILURE_SQL = sql.join(
+  DEFINITE_FAILURE_REASONS.map((r) => sql`${r}`),
+  sql`, `
+);
 
 // Candidates inside a cosine-distance band from the trend vector. The band is the
 // whole selection idea: nearer than the floor and the specimen is genuinely about
@@ -43,8 +53,36 @@ export async function listDispatchCandidates(params: {
   maxDistance: number;
   limit: number;
   excludeImageIds: number[];
+  // Restrict to rows a LIVE post may use. This has to happen in SQL, before the
+  // LIMIT, not in the caller afterwards: the limit takes the first N of a seeded
+  // sample, so filtering after it means a band whose first N happen to be
+  // ineligible reports an empty pool while eligible rows sit just past the cut.
+  // The widening pass cannot rescue that either -- it re-samples a superset with
+  // the same seed, so the same rows stay in front.
+  //
+  // The predicate below is BUILT from the same constants liveEligible() uses, not
+  // written out again alongside it. It has to exist in SQL to be correct here and
+  // in TS to re-check an image that changed after selection, but sharing the
+  // constants means the policy has one home even though it has two call sites.
+  liveOnly?: boolean;
 }): Promise<SpecimenCandidate[]> {
   const vecLiteral = `[${params.vec.join(',')}]`;
+  // Built FROM the policy constants rather than restating them. The previous
+  // version hardcoded the NSFW half, so flipping LIVE_ALLOW_NSFW -- a documented
+  // switch -- changed liveEligible() and left this query excluding the very rows
+  // the switch exists to admit. Two expressions of one rule had already drifted
+  // within a day of my writing a comment acknowledging the risk. Deriving both
+  // from the same constants is the actual fix; the comment was not.
+  const mimeList = sql.join(
+    [...LIVE_STILL_MIMES].map((m) => sql`${m}`),
+    sql`, `
+  );
+  const nsfwFilter = LIVE_ALLOW_NSFW
+    ? sql``
+    : sql`AND i.is_nsfw = false AND i.nsfw_source = 'auto'`;
+  const liveFilter = params.liveOnly
+    ? sql`${nsfwFilter} AND lower(i.mime) IN (${mimeList})`
+    : sql``;
   const exclude =
     params.excludeImageIds.length > 0
       ? sql`AND i.id NOT IN (${sql.join(
@@ -60,6 +98,7 @@ export async function listDispatchCandidates(params: {
     blob_url: string;
     mime: string | null;
     is_nsfw: boolean;
+    nsfw_source: string | null;
     uploaded_at: string;
     distance: number;
     intake_record: string;
@@ -71,6 +110,7 @@ export async function listDispatchCandidates(params: {
       i.blob_url,
       i.mime,
       i.is_nsfw,
+      i.nsfw_source,
       i.uploaded_at,
       e.vec <=> ${vecLiteral}::vector AS distance,
       COALESCE(NULLIF(s.current_dossier, ''), NULLIF(c.text, ''), i.slug) AS intake_record
@@ -92,6 +132,7 @@ export async function listDispatchCandidates(params: {
       AND i.basement = false
       AND (e.vec <=> ${vecLiteral}::vector) BETWEEN ${params.minDistance} AND ${params.maxDistance}
       ${exclude}
+      ${liveFilter}
     -- Sample the band, do not skim its near edge. Ordering by distance before the
     -- LIMIT made only the N nearest rows reachable, so every farther specimen had
     -- zero chance of selection no matter its recency weight -- and the bias grows
@@ -114,10 +155,46 @@ export async function listDispatchCandidates(params: {
     blobUrl: r.blob_url,
     mime: r.mime,
     isNsfw: Boolean(r.is_nsfw),
+    nsfwSource: r.nsfw_source,
     uploadedAt: new Date(r.uploaded_at),
     intakeRecord: r.intake_record,
     distance: Number(r.distance)
   }));
+}
+
+// Is this image still postable RIGHT NOW? The candidate query already excluded
+// archived and basement rows, but that read happens before caption generation and
+// the media upload -- tens of seconds during which an admin can archive the very
+// image about to go out. Archiving leaves the blob intact, so nothing downstream
+// would notice. Re-read immediately before the side effect.
+// Returns the CURRENT publishability inputs, not a verdict: the caller applies
+// liveEligible() so one predicate governs both selection and this last look.
+// Returns null when the row has vanished.
+export async function currentPostState(imageId: number): Promise<{
+  gated: boolean;
+  isNsfw: boolean;
+  nsfwSource: string | null;
+  mime: string | null;
+} | null> {
+  const res = await db.execute<{
+    gated: boolean;
+    is_nsfw: boolean;
+    nsfw_source: string | null;
+    mime: string | null;
+  }>(sql`
+    SELECT
+      (archived_at IS NOT NULL OR basement = true) AS gated,
+      is_nsfw, nsfw_source, mime
+    FROM images WHERE id = ${imageId}
+  `);
+  const row = res.rows?.[0];
+  if (!row) return null;
+  return {
+    gated: Boolean(row.gated),
+    isNsfw: Boolean(row.is_nsfw),
+    nsfwSource: row.nsfw_source,
+    mime: row.mime
+  };
 }
 
 // Image ids already spent on a dispatch. Read straight off the append-only log
@@ -139,11 +216,45 @@ export async function listDispatchedImageIds(): Promise<number[]> {
   const res = await db.execute<{ image_id: number }>(sql`
     SELECT DISTINCT (payload->>'imageId')::int AS image_id
     FROM events
-    WHERE type = ${EVENT_TYPE.DispatchSent}
-      AND payload->>'imageId' IS NOT NULL
+    WHERE payload->>'imageId' IS NOT NULL
       AND (
-        payload->>'trigger' IS DISTINCT FROM 'manual'
-        OR payload->>'postId' IS NOT NULL
+        (
+          type = ${EVENT_TYPE.DispatchSent}
+          AND (
+            payload->>'trigger' IS DISTINCT FROM 'manual'
+            OR payload->>'postId' IS NOT NULL
+          )
+        )
+        -- Attempts count unconditionally, including manual ones. The attempt row
+        -- is only ever written on a LIVE run immediately before the X call, so it
+        -- means "this specimen may already be public" -- which is exactly the
+        -- state that must never be re-selected. Reading only dispatch.sent left a
+        -- window where a successful post whose outcome write then failed would
+        -- leave the specimen eligible and let it go out a second time.
+        -- An attempt means "this specimen may already be public". It burns the
+        -- specimen UNLESS the same slot also recorded a definite rejection --
+        -- a readable non-2xx from X, where nothing was published. Without that
+        -- correlation a routine 403 (an access token minted before write
+        -- permission, say) would quietly consume one good specimen per day while
+        -- posting nothing. post_indeterminate deliberately does NOT rescue the
+        -- specimen: not knowing is exactly when to stay conservative.
+        --
+        -- Correlated by SLOT, not by date. subject_id is only the UTC date, and
+        -- manual runs are unlimited, so one date holds many independent runs. On
+        -- a date-only match any one run's definite rejection would rescue every
+        -- other run's specimen -- including one whose post may be public. That is
+        -- the precise case this predicate exists to prevent, so matching on the
+        -- date turns the guard into its own counterexample.
+        OR (
+          type = ${EVENT_TYPE.DispatchAttempted}
+          AND NOT EXISTS (
+            SELECT 1 FROM events o
+            WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+              AND o.subject_type = 'dispatch'
+              AND o.payload->>'slotKey' = events.payload->>'slotKey'
+              AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
+          )
+        )
       )
   `);
   return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
@@ -169,7 +280,18 @@ export async function listRecentDispatchEvents(
   return db
     .select()
     .from(events)
-    .where(inArray(events.type, [EVENT_TYPE.DispatchSent, EVENT_TYPE.DispatchSkipped]))
+    // Attempts are included alongside outcomes. They are written before the X
+    // call on live runs, so an attempt with no matching sent is the only trace
+    // left when a post succeeds and its outcome write dies -- exactly the case an
+    // operator most needs to see, and the case the page could not previously show
+    // at all.
+    .where(
+      inArray(events.type, [
+        EVENT_TYPE.DispatchAttempted,
+        EVENT_TYPE.DispatchSent,
+        EVENT_TYPE.DispatchSkipped
+      ])
+    )
     .orderBy(desc(events.id))
     .limit(lim)
     .offset(off);
@@ -180,7 +302,7 @@ export async function listRecentDispatchEvents(
 export async function countDispatchOutcomes(): Promise<number> {
   const res = await db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM events
-    WHERE type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+    WHERE type IN (${EVENT_TYPE.DispatchAttempted}, ${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
   `);
   return Number(res.rows?.[0]?.n ?? 0);
 }
@@ -198,6 +320,361 @@ export async function dispatchOutcomeForDate(dateKey: string): Promise<UniverseE
     .orderBy(desc(events.id))
     .limit(1);
   return row ?? null;
+}
+
+// Whether a LIVE post was already attempted on a given UTC date, by any trigger.
+//
+// dispatch.attempted is written only on the live path, immediately before the one
+// call that can publish, so its presence is exactly "something was posted, or may
+// have been" -- which is the question the cron needs answered. A dispatch.sent
+// always follows an attempt, so checking attempts alone covers both.
+//
+// This backs the rule that a manual post suppresses the day's automatic one. It
+// is advisory: the structural cron-vs-cron cap is still the day-claim's unique
+// dedupe key. A manual run racing the cron tick could in principle let both
+// through, which is within tolerance -- manual posting is deliberately unlimited,
+// so the failure mode is one extra post on a day the operator was posting by hand
+// anyway.
+export async function livePostAttemptedOnDate(dateKey: string): Promise<boolean> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM events
+    WHERE subject_type = 'dispatch'
+      AND subject_id = ${dateKey}
+      AND type = ${EVENT_TYPE.DispatchAttempted}
+      -- An attempt that X definitely rejected published nothing, so it must not
+      -- stand down the day's scheduled post. A manual run refused with a 403 --
+      -- an access token minted before write permission was granted, say -- is the
+      -- likely case, and the operator fixing the credentials should still get
+      -- their scheduled dispatch rather than silently losing the day to a post
+      -- that never existed. post_indeterminate still suppresses: not knowing is
+      -- when to stay conservative.
+      AND NOT EXISTS (
+        SELECT 1 FROM events o
+        WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+          AND o.subject_type = 'dispatch'
+          AND o.payload->>'slotKey' = events.payload->>'slotKey'
+          AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
+      )
+  `);
+  return Number(res.rows?.[0]?.n ?? 0) > 0;
+}
+
+// Every attempt with no outcome of its own, newest first, regardless of where it
+// falls in the paginated log.
+//
+// These are the rows that say a post MAY be public with nothing recording it, so
+// they cannot be a by-product of the page the operator happens to be looking at.
+// Deriving them by filtering the loaded page meant an attempt aged off the first
+// 60 events took the warning with it -- the audit surface quietly dropping its
+// single most important claim, and dropping it precisely as the incident got
+// older and easier to forget.
+//
+// Bounded anyway: this should be empty in normal operation, and a log with more
+// than LIMIT unresolved attempts has a systemic problem that a longer list will
+// not help anyone read.
+export async function listUnresolvedAttempts(limit = 50): Promise<UniverseEvent[]> {
+  return db
+    .select()
+    .from(events)
+    .where(
+      sql`${events.type} = ${EVENT_TYPE.DispatchAttempted}
+        AND NOT EXISTS (
+          SELECT 1 FROM events o
+          WHERE o.subject_type = 'dispatch'
+            AND o.type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+            AND o.payload->>'slotKey' = ${events.payload}->>'slotKey'
+        )`
+    )
+    .orderBy(desc(events.id))
+    .limit(limit);
+}
+
+// How many publish attempts for this draft have already ended DEFINITELY -- a
+// failure where nothing was published.
+//
+// This is the generation behind the approval key, and it is what makes approval
+// retryable without making it repeatable. Keying approval on the draft alone
+// made a single failure permanent: a run that declined for a stale credential,
+// a blob 404, or a spent budget still left the approval committed, so every
+// later click enqueued a job that returned immediately. The button stayed, the
+// draft stayed unpublished, and nothing an operator could do would change that.
+//
+// post_indeterminate deliberately does not count. If the post MAY be public,
+// re-approving must stay blocked.
+//
+// draft_rejected does not count either, for the opposite reason: X read the
+// request and refused these exact bytes, and approval publishes the draft
+// verbatim, so every retry can only reproduce the rejection. Not advancing the
+// generation leaves the approval key occupied, which freezes the draft -- the
+// same mechanism the paragraph above calls a defect, deliberately kept here
+// because a permanently unpublishable draft is precisely the thing that SHOULD
+// stay frozen. rejectedDraftIds withdraws the button so nobody has to discover
+// the freeze by clicking.
+//
+// So this is not DEFINITE_FAILURE_REASONS: that set is about the SPECIMEN,
+// which a rejection does free -- the image never reached X and a fresh draft
+// over it is the right next step.
+export async function publishAttemptGeneration(draftEventId: number): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM events
+    WHERE type = ${EVENT_TYPE.DispatchSkipped}
+      AND subject_type = 'dispatch'
+      AND (payload->>'draftEventId')::int = ${draftEventId}
+      AND payload->>'reason' NOT IN (${SKIP_REASON.PostIndeterminate}, ${SKIP_REASON.DraftRejected})
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
+// Drafts X has permanently refused. Their approve button is withdrawn: the
+// caption is immutable by design, so re-approving can only resend the bytes that
+// were already read and rejected.
+export async function rejectedDraftIds(): Promise<number[]> {
+  const res = await db.execute<{ id: number }>(sql`
+    SELECT DISTINCT (payload->>'draftEventId')::int AS id
+    FROM events
+    WHERE type = ${EVENT_TYPE.DispatchSkipped}
+      AND subject_type = 'dispatch'
+      AND payload->>'reason' = ${SKIP_REASON.DraftRejected}
+      AND payload->>'draftEventId' IS NOT NULL
+  `);
+  return res.rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
+}
+
+// Which of these images a live post could not use right now: deleted, archived,
+// in the basement, or failing liveEligible (NSFW, unclassified, or a MIME that
+// is not a postable still).
+//
+// The approve route and the review page need this because a draft outlives the
+// state it was drafted from. Nothing stops an admin archiving the specimen, or
+// an nsfw.scan reclassifying it, between the draft being written and read --
+// that gap is the whole point of review. The publish job already re-checks with
+// currentPostState and files post_failed, but post_failed is RETRYABLE, so the
+// button survived and every click queued another job that could only reach the
+// identical verdict. Third time this shape has appeared on this feature: an
+// outcome that is deterministic downstream has to be visible upstream, or the
+// operator is the retry loop.
+//
+// Batched deliberately: the page asks about every draft on screen, and one query
+// per draft would be a round trip per card.
+export async function liveIneligibleImageIds(imageIds: number[]): Promise<number[]> {
+  const ids = [...new Set(imageIds.filter((n) => Number.isFinite(n)))];
+  if (ids.length === 0) return [];
+  const res = await db.execute<{
+    id: number;
+    gated: boolean;
+    is_nsfw: boolean;
+    nsfw_source: string | null;
+    mime: string | null;
+  }>(sql`
+    SELECT
+      id,
+      (archived_at IS NOT NULL OR basement = true) AS gated,
+      is_nsfw, nsfw_source, mime
+    FROM images
+    WHERE id IN (${sql.join(
+      ids.map((id) => sql`${id}`),
+      sql`, `
+    )})
+  `);
+  const seen = new Set<number>();
+  const bad: number[] = [];
+  for (const row of res.rows) {
+    const id = Number(row.id);
+    seen.add(id);
+    // liveEligible(), not a second SQL spelling of it. The policy already lives
+    // in one place and this is a re-check of the same rule, not a new one.
+    if (
+      Boolean(row.gated) ||
+      !liveEligible({
+        isNsfw: Boolean(row.is_nsfw),
+        nsfwSource: row.nsfw_source,
+        mime: row.mime
+      })
+    ) {
+      bad.push(id);
+    }
+  }
+  // A row that did not come back was deleted outright, which is the strongest
+  // form of ineligible. Absence has to be read as a verdict here rather than as
+  // "no information", or a deleted specimen keeps its approve button.
+  for (const id of ids) if (!seen.has(id)) bad.push(id);
+  return bad;
+}
+
+// Draft ids that have already been published, or whose publication may have
+// happened. The review page uses this to stop offering an approve button that
+// can only no-op, and the approve route to refuse before enqueueing.
+//
+// The draft row itself cannot answer this: the log is append-only, so publishing
+// writes a NEW dispatch.sent and the draft keeps postId=null forever. Reading
+// the draft alone is exactly why the button persisted after a successful post.
+export async function publishedDraftIds(): Promise<number[]> {
+  const res = await db.execute<{ id: number }>(sql`
+    SELECT DISTINCT (payload->>'approvedFromDraft')::int AS id
+    FROM events
+    WHERE subject_type = 'dispatch'
+      AND payload->>'approvedFromDraft' IS NOT NULL
+    UNION
+    SELECT DISTINCT (payload->>'draftEventId')::int AS id
+    FROM events
+    WHERE type = ${EVENT_TYPE.DispatchSkipped}
+      AND subject_type = 'dispatch'
+      AND payload->>'reason' = 'post_indeterminate'
+      AND payload->>'draftEventId' IS NOT NULL
+    UNION
+    -- Attempts with no outcome at all. The attempt is written immediately before
+    -- the X call, so one left unresolved means the post MAY be public and both
+    -- outcome writes failed. Omitting these left the worst case looking like the
+    -- safest: the draft kept its approve button, each click reported a queued
+    -- publication, and the job no-opped on the approval key -- an operator told
+    -- repeatedly that something was happening while a possibly-public post sat
+    -- unrecorded.
+    SELECT DISTINCT (a.payload->>'draftEventId')::int AS id
+    FROM events a
+    WHERE a.type = ${EVENT_TYPE.DispatchAttempted}
+      AND a.subject_type = 'dispatch'
+      AND a.payload->>'draftEventId' IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM events o
+        WHERE o.subject_type = 'dispatch'
+          AND o.type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+          AND o.payload->>'slotKey' = a.payload->>'slotKey'
+      )
+  `);
+  return res.rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
+}
+
+// Specimens that are actually PUBLIC, or may be -- a post carrying an id, or an
+// attempt written immediately before the X call.
+//
+// Deliberately NOT listDispatchedImageIds(). That set answers a different
+// question -- "has selection already used this?" -- and counts dry-run drafts,
+// which is right for selection (a specimen already drafted should not be drawn
+// again) and wrong for approval: a scheduled draft carries trigger 'cron' with a
+// null postId, so the draft's OWN event marked its specimen spent and the
+// approve route rejected the very draft it was asked about. One query answering
+// two questions that only looked alike.
+//
+// A draft can never appear here: it has no post id and no attempt. That is what
+// makes this safe to use without excluding the draft under consideration.
+//
+// An attempt correlated with a definite `post_failed` is excluded, matching
+// listDispatchedImageIds. X returned a readable non-2xx, so nothing was
+// published and the specimen is free -- and publishAttemptGeneration /
+// definiteFailureGeneration already release it on the posting path. Counting it
+// here anyway made the two disagree: the approve route would withdraw the draft
+// and refuse every retry of a post that a routine 403 had merely rejected,
+// which is the failure most likely to happen on the very first live attempt.
+// post_indeterminate still burns the specimen -- not knowing is exactly when to
+// stay conservative -- and the correlation is by SLOT, never by date, for the
+// reason spelled out in listDispatchedImageIds.
+export async function publiclyPostedImageIds(): Promise<number[]> {
+  const res = await db.execute<{ image_id: number }>(sql`
+    SELECT DISTINCT (payload->>'imageId')::int AS image_id
+    FROM events
+    WHERE subject_type = 'dispatch'
+      AND payload->>'imageId' IS NOT NULL
+      AND (
+        (type = ${EVENT_TYPE.DispatchSent} AND payload->>'postId' IS NOT NULL)
+        OR (
+          type = ${EVENT_TYPE.DispatchAttempted}
+          AND NOT EXISTS (
+            SELECT 1 FROM events o
+            WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+              AND o.subject_type = 'dispatch'
+              AND o.payload->>'slotKey' = events.payload->>'slotKey'
+              AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
+          )
+        )
+      )
+  `);
+  return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
+}
+
+// Images ruled permanently unpostable. Excluded from selection outright: the
+// verdict is about the object (its bytes are not a postable still, or it is over
+// the size ceiling), so re-testing it tomorrow can only reach the same answer
+// after spending another dispatch to get there.
+export async function unpostableImageIds(): Promise<number[]> {
+  const res = await db.execute<{ image_id: number }>(sql`
+    SELECT DISTINCT (payload->>'imageId')::int AS image_id
+    FROM events
+    WHERE type = ${EVENT_TYPE.DispatchUnpostable}
+      AND payload->>'imageId' IS NOT NULL
+  `);
+  return res.rows.map((r) => Number(r.image_id)).filter((n) => Number.isFinite(n));
+}
+
+// Trend topics this account has already ridden recently, newest first.
+//
+// The feed is not a stream of novelty. Google Trends carries perennials --
+// "stock market news today" and its relatives are there most days -- and the
+// safety gate reliably clears them precisely because they are low-stakes, so a
+// deterministic pick lands on the same topic run after run. That reads as a bot
+// with one subject, which is worse than a bot with no subject.
+//
+// Read from the outcome events rather than a separate table: they already record
+// every topic the account has attached itself to, drafts included, and a draft
+// that was reviewed and discarded still means the operator has seen that topic.
+// Returns NORMALIZED topics -- lowercased, punctuation collapsed -- because the
+// dedupe below has to happen in SQL and the caller must see the same keys the
+// query grouped on.
+//
+// The limit counts DISTINCT topics, not rows, and that is the whole correction
+// here. One topic routinely occupies several rows: a draft and its approved
+// publication both carry it, as does every skip that named it. Truncating rows
+// first meant eight rows could hold four topics, so the memory quietly ran at
+// half its configured depth exactly when the account was most active -- which is
+// when repeating a topic is most visible.
+export async function recentTrendTopics(limit = 12): Promise<string[]> {
+  const res = await db.execute<{ topic: string }>(sql`
+    SELECT topic
+    FROM (
+      SELECT
+        -- Must stay in step with normalizeTopic() in xDispatch.ts. Two spellings
+        -- of one rule, but the alternative is fetching the whole log and
+        -- grouping in TS to keep a "recent" window honest.
+        btrim(regexp_replace(lower(payload->>'trendTopic'), '[^a-z0-9]+', ' ', 'g')) AS topic,
+        id
+      FROM events
+      WHERE subject_type = 'dispatch'
+        AND type IN (${EVENT_TYPE.DispatchSent}, ${EVENT_TYPE.DispatchSkipped})
+        AND payload->>'trendTopic' IS NOT NULL
+    ) t
+    WHERE topic <> ''
+    GROUP BY topic
+    ORDER BY max(id) DESC
+    LIMIT ${Math.min(Math.max(Math.trunc(limit), 1), 200)}
+  `);
+  return res.rows.map((r) => r.topic).filter((t): t is string => Boolean(t));
+}
+
+// How many times this specimen has been attempted and DEFINITELY rejected --
+// a readable 4xx from X, where nothing was published.
+//
+// This is the generation counter behind dedupeKey.dispatchAttempt. It has to be
+// derived rather than stored: two concurrent runs must compute the SAME value so
+// their attempt keys collide and only one proceeds, and any value derived from
+// the same committed history satisfies that. A per-run counter would not.
+//
+// post_indeterminate deliberately does not count. A specimen whose post may be
+// public must never come back, so its generation stays put and its key stays
+// taken.
+export async function definiteFailureGeneration(imageId: number): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n
+    FROM events a
+    WHERE a.type = ${EVENT_TYPE.DispatchAttempted}
+      AND (a.payload->>'imageId')::int = ${imageId}
+      AND EXISTS (
+        SELECT 1 FROM events o
+        WHERE o.type = ${EVENT_TYPE.DispatchSkipped}
+          AND o.subject_type = 'dispatch'
+          AND o.payload->>'slotKey' = a.payload->>'slotKey'
+          AND o.payload->>'reason' IN (${DEFINITE_FAILURE_SQL})
+      )
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
 }
 
 export async function countDispatchEventsOfType(type: string): Promise<number> {

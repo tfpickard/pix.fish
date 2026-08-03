@@ -17,7 +17,8 @@ function providerOptions(field: string): readonly string[] {
   // dispatch-text.ts speaks Anthropic only, and the PUT schema rejects anything
   // else -- offering OpenAI here would submit a value the API refuses while save()
   // reloads without surfacing why.
-  if (field === 'chat' || field === 'dispatch') return ['anthropic'];
+  if (field === 'chat' || field === 'dispatch' || field === 'dispatchSafety')
+    return ['anthropic'];
   if (field === 'imagegen') return ['anthropic', 'openai', 'openrouter', 'stub'];
   return ['anthropic', 'openai'];
 }
@@ -32,10 +33,14 @@ const FIELDS = [
   'dossier',
   'nsfw',
   'chat',
-  // Outbound X dispatch: trend safety classification + caption generation.
-  // Anthropic-only -- src/lib/ai/dispatch-text.ts speaks no other provider and
-  // returns null (skipping the day) if this row names one.
+  // Outbound X dispatch, split in two because the calls want opposite things.
+  // 'dispatch' writes the caption (the deliverable -- a better tier earns its
+  // cost here); 'dispatchSafety' is the trend classifier (mechanical JSON under
+  // a tight deadline, so speed matters more than reasoning). Both Anthropic-only
+  // -- src/lib/ai/dispatch-text.ts speaks no other provider and returns null,
+  // skipping the day, if either row names one.
   'dispatch',
+  'dispatchSafety',
   'imagegen'
 ] as const;
 const PROVIDERS = ['anthropic', 'openai', 'openrouter', 'stub'] as const;

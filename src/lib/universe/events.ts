@@ -22,8 +22,22 @@ export const EVENT_TYPE = {
   // None of these are reduced into a projection and none are in the chronicle's
   // type allow-list: surfacing them in the feed is deliberately out of scope.
   DispatchClaimed: 'dispatch.claimed',
+  // Written immediately BEFORE the X call, live runs only. Its whole job is to
+  // burn the specimen durably ahead of the side effect: if the post succeeds and
+  // the dispatch.sent write then fails, this row is what stops the same specimen
+  // going out again on a later day.
+  DispatchAttempted: 'dispatch.attempted',
   DispatchSent: 'dispatch.sent',
-  DispatchSkipped: 'dispatch.skipped'
+  DispatchSkipped: 'dispatch.skipped',
+  // A specimen that can never pass the live media path -- its bytes are not a
+  // postable still, or it is over X's size ceiling. Written once per image and
+  // excluded from selection thereafter, because without it a single bad row in a
+  // narrow band is chosen again every day and consumes dispatch after dispatch
+  // while posting nothing.
+  DispatchUnpostable: 'dispatch.unpostable',
+  // An admin signed off on a specific draft. Written before the publish job does
+  // anything, and deduped on the draft, so one draft can be approved once.
+  DispatchApproved: 'dispatch.approved'
 } as const;
 
 export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
@@ -32,6 +46,7 @@ export type EventType = (typeof EVENT_TYPE)[keyof typeof EVENT_TYPE];
 // history at once (/admin/dispatch).
 export const DISPATCH_EVENT_TYPES = [
   EVENT_TYPE.DispatchClaimed,
+  EVENT_TYPE.DispatchAttempted,
   EVENT_TYPE.DispatchSent,
   EVENT_TYPE.DispatchSkipped
 ] as const;
@@ -130,11 +145,49 @@ export type DispatchClaimedPayload = {
   trigger: 'cron' | 'manual';
 };
 
+// The specimen a live run is about to post, recorded before the call so the
+// commitment survives a failure of the outcome write.
+export type DispatchAttemptedPayload = {
+  // Which claim slot this belongs to. subjectId is only the UTC date, and manual
+  // runs are unlimited, so a single date can carry many independent runs -- an
+  // attempt can only be paired with ITS outcome by the slot. Correlating on the
+  // date instead lets an unrelated run's outcome vouch for an attempt that never
+  // completed, which is the one thing this event exists to make visible.
+  slotKey: string;
+  // Set only on the approval-publication path. An attempt with no outcome means
+  // the post may be public, and this is what ties that back to the draft.
+  draftEventId?: number;
+  trigger: 'cron' | 'manual';
+  imageId: number;
+  slug: string;
+};
+
 // A dispatch that produced a post (live) or a complete would-be post (dry run).
 // Everything needed to review the decision after the fact is on the event: the
 // specimen, the caption as posted, the trend it rode, and the safety verdict
 // that cleared it.
+// Recorded when an admin approves a draft for publication. Separate from the
+// publication itself: the approval is a human decision and survives even if the
+// post then fails, which is what makes the log answer "was this signed off?"
+// independently of "did it go out?".
+// Why an image can never be posted. Recorded so the exclusion is explicable
+// rather than an image mysteriously never being chosen again.
+export type DispatchUnpostablePayload = {
+  imageId: number;
+  slug: string;
+  reason: string;
+};
+
+export type DispatchApprovedPayload = {
+  draftEventId: number;
+  slotKey: string;
+  imageId: number;
+  slug: string;
+};
+
 export type DispatchSentPayload = {
+  // Pairs this outcome with its dispatch.attempted. See the note there.
+  slotKey: string;
   mode: 'dry-run' | 'live';
   // How this outcome came about. The claim event already records it, but nothing
   // associates a claim with its outcome at read time -- /admin/dispatch lists
@@ -158,11 +211,22 @@ export type DispatchSentPayload = {
   distance: number;
   model: string;
   postId: string | null; // null in dry run
+  // Permalink to the live post. Derived from postId, but stored rather than
+  // rebuilt at read time: the URL shape is X's to change, and the log is meant
+  // to stay resolvable without this codebase being around to reconstruct it.
+  postUrl?: string | null;
 };
 
 // A day that ended without a post. `reason` is one of the SKIP_REASON codes in
 // src/lib/dispatch/types.ts; `detail` is free text for the admin page.
 export type DispatchSkippedPayload = {
+  // Pairs this outcome with its dispatch.attempted. A post_indeterminate skip is
+  // an outcome for an attempt just as much as a sent is.
+  slotKey: string;
+  // Set only on the approval-publication path: which draft this attempt was
+  // publishing. Counting these is how a definitely-failed publication releases
+  // its approval for a retry.
+  draftEventId?: number;
   mode: 'dry-run' | 'live';
   trigger: 'cron' | 'manual';
   reason: string;
@@ -215,5 +279,40 @@ export const dedupeKey = {
     suffix ? `x.dispatch:${dateKey}:${suffix}` : `x.dispatch:${dateKey}`,
   // Outcomes are keyed off the same slot id so one claim yields at most one
   // outcome even if a handler somehow ran twice against the same claim.
-  dispatchOutcome: (slotKey: string) => `x.dispatch.outcome:${slotKey}`
+  dispatchOutcome: (slotKey: string) => `x.dispatch.outcome:${slotKey}`,
+  // The pre-post attempt marker, keyed off the SPECIMEN rather than the slot.
+  //
+  // This is mutual exclusion, and it has to be, because nothing upstream of it
+  // is. The enqueue guards are check-then-act; per-slot seeding only makes two
+  // concurrent runs UNLIKELY to draw the same image, and with a single eligible
+  // candidate it does not even do that -- both seeds necessarily pick the one
+  // row. The unique index on dedupe_key is the only real lock available, so the
+  // attempt marker is where the specimen gets claimed: whoever inserts first
+  // posts, and any concurrent run gets inserted=false and stops before its own
+  // side effect.
+  //
+  // `generation` is what keeps that lock from being permanent. Keying on the
+  // image alone would retire a specimen forever on its first attempt, defeating
+  // the rule that a DEFINITE rejection (a readable 4xx, nothing published)
+  // releases it -- a 403 from a read-only token would otherwise consume one good
+  // specimen per run with nothing to show. Generation is the count of definite
+  // failures this image has already recorded, so a released specimen gets a
+  // fresh key while two concurrent runs, computing the same count, still collide
+  // on the same one.
+  dispatchAttempt: (imageId: number, generation: number) =>
+    `x.dispatch.attempt:${imageId}:${generation}`,
+  // One approval per draft. The publish job's first act, so a double-clicked
+  // button, a re-enqueued job, or two admins looking at the same page collapse
+  // to a single publication of that draft.
+  // `generation` counts publish attempts for this draft that ended definitely --
+  // nothing published. Without it a single pre-post failure (a stale credential,
+  // a blob 404, a spent budget) made approval permanent: the claim was already
+  // committed, so every later click enqueued a job that returned immediately and
+  // the draft could never be published by anyone. Same shape as the specimen
+  // lock, same reason: the lock must survive a success and yield to a definite
+  // failure.
+  // One row per image: the verdict is about the object, not about the day.
+  dispatchUnpostable: (imageId: number) => `x.dispatch.unpostable:${imageId}`,
+  dispatchApproval: (draftEventId: number, generation: number) =>
+    `x.dispatch.approve:${draftEventId}:${generation}`
 };

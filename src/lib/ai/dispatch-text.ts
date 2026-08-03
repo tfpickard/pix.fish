@@ -18,15 +18,21 @@ import { getSiteAdminId } from '@/lib/db/queries/users';
 // Provider routing does not: this helper speaks Anthropic only. A 'dispatch' row
 // naming another provider makes the call return null, which every caller treats
 // as "skip the day" -- fail closed rather than silently running unbounded.
-export type DispatchTextResult = { text: string; model: string };
+export type DispatchTextResult = { text: string; model: string; stopReason: string | null };
 
 export async function dispatchText(opts: {
   prompt: string;
   maxTokens: number;
   timeoutMs: number;
+  // Which ai_config row routes this call. 'dispatch' is the caption -- the
+  // creative deliverable, where a better tier earns its cost. 'dispatchSafety'
+  // is the trend classifier, which wants speed and a fixed JSON shape and gets
+  // nothing from reasoning. Defaults to the caption row so an unspecified call
+  // does not silently pick the cheap model for creative work.
+  field?: 'dispatch' | 'dispatchSafety';
 }): Promise<DispatchTextResult | null> {
   const cfg = await loadAiConfig();
-  const row = cfg.dispatch;
+  const row = cfg[opts.field ?? 'dispatch'];
   if (row.provider !== 'anthropic') return null;
 
   const keys = await loadUserProviderKeys(getSiteAdminId());
@@ -47,6 +53,32 @@ export async function dispatchText(opts: {
   );
 
   const block = res.content.find((c) => c.type === 'text');
-  if (!block || block.type !== 'text') throw new Error('dispatch call returned no text block');
-  return { text: block.text, model: row.model };
+  if (!block || block.type !== 'text') {
+    // Name the cause instead of the symptom. "no text block" is true and
+    // useless: it is equally consistent with a max_tokens cut before any text
+    // was emitted, a refusal, or a model whose response is entirely non-text
+    // blocks -- three problems with three different fixes, and the event log is
+    // the only place an operator sees any of it. Report the stop reason and the
+    // block types actually returned.
+    const kinds = res.content.map((c) => c.type).join(', ') || 'none';
+    const context = `model ${row.model}, stop_reason ${res.stop_reason ?? 'unknown'}, blocks: ${kinds}, max_tokens ${opts.maxTokens}`;
+    // Name the specific trap rather than leaving an operator to infer it from a
+    // block-type list. Thinking tokens come out of the SAME max_tokens budget and
+    // are spent before any text, so a thinking model under a tight cap returns a
+    // response with no text at all -- which looks like a broken provider and is
+    // actually a number being too small.
+    // Compared as a widened string: the pinned SDK's ContentBlock union predates
+    // thinking blocks, so the narrow type would reject the comparison even though
+    // the API really can return them. The wire format is what matters here, not
+    // what this SDK version knows how to name.
+    const isThinking = (c: { type: string }) =>
+      c.type === 'thinking' || c.type === 'redacted_thinking';
+    if (res.content.some((c) => isThinking(c as { type: string }))) {
+      throw new Error(
+        `dispatch call spent its whole token budget on extended thinking and emitted no text -- raise max_tokens or route 'dispatch' at a non-thinking model (${context})`
+      );
+    }
+    throw new Error(`dispatch call returned no text block (${context})`);
+  }
+  return { text: block.text, model: row.model, stopReason: res.stop_reason ?? null };
 }
