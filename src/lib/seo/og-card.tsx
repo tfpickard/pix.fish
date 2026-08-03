@@ -36,6 +36,18 @@ const JPEG_QUALITY = 86;
 // hot path -- the edge serves stale while it refreshes behind the request.
 const CARD_CACHE_CONTROL = 'public, no-transform, max-age=300, s-maxage=3600, stale-while-revalidate=86400';
 
+// A card that does not contain the artwork gets minutes, not hours, and no
+// stale-while-revalidate (which would extend the poison window by a day).
+//
+// Every route into that state is potentially transient: the detail routes turn
+// a failed lookup into the not-found card, and loadSource() turns a blob blip
+// into a text-only one. Caching those like a real render lets a scraper that
+// happened to arrive during a thirty-second outage hold a broken card long
+// after the dependency recovered. A genuine 404 is graded the same way -- it
+// costs one cheap 8 KB re-render to avoid needing to tell the two apart, and
+// a slug that 404s today can exist tomorrow.
+const DEGRADED_CACHE_CONTROL = 'public, no-transform, max-age=60, s-maxage=60';
+
 // Cards are read by scrapers, not humans scrolling -- a long flat caption is
 // the joke, but it still has to fit. Trim on a word boundary.
 function fitCaption(text: string, max = 150): string {
@@ -46,9 +58,12 @@ function fitCaption(text: string, max = 150): string {
   return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trimEnd()}...`;
 }
 
-function cardResponse(bytes: Buffer, contentType: string): Response {
+function cardResponse(bytes: Buffer, contentType: string, degraded: boolean): Response {
   return new Response(new Uint8Array(bytes), {
-    headers: { 'content-type': contentType, 'cache-control': CARD_CACHE_CONTROL }
+    headers: {
+      'content-type': contentType,
+      'cache-control': degraded ? DEGRADED_CACHE_CONTROL : CARD_CACHE_CONTROL
+    }
   });
 }
 
@@ -87,6 +102,10 @@ export async function renderOgCard(opts: {
   caption: string;
 }): Promise<Response> {
   const source = await loadSource(opts.imageUrl);
+  // A card is fully cacheable only if it actually carries the artwork. That
+  // one rule covers every degraded path -- missing row, failed lookup, dead
+  // blob, undecodable source -- without the route having to classify which.
+  const degraded = source === null;
 
   // Buffer the Satori output ONCE, before the re-encode can fail. Reading an
   // ImageResponse consumes its body, so the obvious shape -- read inside the
@@ -102,15 +121,16 @@ export async function renderOgCard(opts: {
   try {
     const sharp = (await import('sharp')).default;
     const jpeg = await sharp(pngBytes).jpeg({ quality: JPEG_QUALITY, mozjpeg: true }).toBuffer();
-    return cardResponse(jpeg, OG_CONTENT_TYPE);
+    return cardResponse(jpeg, OG_CONTENT_TYPE, degraded);
   } catch (err) {
     console.error('og-card: jpeg re-encode failed, serving png', err);
     // The route files export contentType = OG_CONTENT_TYPE, which Next emits as
     // og:image:type, so this path's advisory metadata says jpeg while the bytes
     // are png. Deliberate: declaring png would mislabel every card to be honest
     // about a rare one. What consumers actually read -- the response header set
-    // just below, and the magic bytes -- stays truthful.
-    return cardResponse(pngBytes, 'image/png');
+    // just below, and the magic bytes -- stays truthful. Graded degraded too:
+    // a card in the wrong format should not outlive the failure that caused it.
+    return cardResponse(pngBytes, 'image/png', true);
   }
 }
 
