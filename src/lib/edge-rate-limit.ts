@@ -36,6 +36,21 @@ const MAX_KEYS = 20_000;
 // oversized maps shed a batch at once.
 const EVICT_BATCH = 2_000;
 
+// Parse a requests-per-minute override. Lives here rather than in the
+// middleware so it can be unit tested without dragging in next/server.
+//
+// The subtle case is a positive fraction: `0.5` is finite and > 0, so a naive
+// guard accepts it, and flooring lands on 0. A limit of 0 does not mean "block
+// everything" -- the first request opens a window with count 1 and is allowed,
+// and every later one fails `count >= 0` -- so the deployment silently drops
+// to one request per IP per minute. Anything under 1 is nonsense as a limit,
+// so it falls back to the default rather than being clamped to 1, which would
+// itself be a near-total lockout applied without anyone asking for it.
+export function parseRpm(raw: string | undefined, fallback: number): number {
+  const parsed = Math.floor(Number(raw));
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
 export type EdgeRateLimitResult = {
   ok: boolean;
   limit: number;

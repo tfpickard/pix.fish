@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { __resetEdgeRateLimit, edgeRateLimit } from '../src/lib/edge-rate-limit';
+import { __resetEdgeRateLimit, edgeRateLimit, parseRpm } from '../src/lib/edge-rate-limit';
 
 // `now` is injected in every case: the limiter's whole contract is about
 // window boundaries, and asserting them with real time would make the suite
@@ -80,5 +80,29 @@ describe('edgeRateLimit', () => {
 
     expect(resets).toBe(0);
     expect(hammer().ok).toBe(false);
+  });
+});
+
+describe('parseRpm', () => {
+  test('takes a sane positive integer', () => {
+    expect(parseRpm('50', 200)).toBe(50);
+    expect(parseRpm('1', 200)).toBe(1);
+  });
+
+  test('falls back on anything that is not a usable limit', () => {
+    for (const raw of [undefined, '', 'abc', '0', '-5', 'Infinity', 'NaN']) {
+      expect(parseRpm(raw, 200)).toBe(200);
+    }
+  });
+
+  test('falls back on a positive fraction rather than flooring it to zero', () => {
+    // The bug this guards: 0.5 is finite and > 0, so a naive guard accepts it
+    // and Math.floor lands on 0 -- which reads as "block everything" but
+    // actually admits the window-opening request and refuses the rest, i.e. a
+    // silent 1-request-per-minute limit.
+    expect(parseRpm('0.5', 200)).toBe(200);
+    expect(parseRpm('0.99', 200)).toBe(200);
+    // A fraction at or above 1 is still a usable limit once floored.
+    expect(parseRpm('1.9', 200)).toBe(1);
   });
 });

@@ -1,6 +1,6 @@
 import { NextResponse, type NextFetchEvent, type NextMiddleware, type NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
-import { edgeRateLimit } from '@/lib/edge-rate-limit';
+import { edgeRateLimit, parseRpm } from '@/lib/edge-rate-limit';
 
 // This file lives in `src/` and not the repo root on purpose. With a `src`
 // directory Next.js only picks up `src/middleware.ts`; a root-level
@@ -82,8 +82,10 @@ const authGate = authGateHandler as unknown as NextMiddleware;
 // Generous enough that a human browsing the gallery -- including infinite
 // scroll firing /api/images pages and a burst of parallel requests on first
 // paint -- never sees a 429, while a client pulling tens of requests a second
-// is capped. Override per-deployment with RATE_LIMIT_RPM; set
-// RATE_LIMIT_DISABLED=1 to switch the gate off without a code change.
+// is capped. Override per-deployment with RATE_LIMIT_RPM; RATE_LIMIT_DISABLED=1
+// switches the gate off without a code change -- but note that Vercel bakes env
+// vars into a deployment, so changing either one needs a redeploy to take
+// effect. Neither is an instant lever; see docs/rate-limiting.md.
 const DEFAULT_RPM = 200;
 const WINDOW_MS = 60_000;
 // /api/auth/* gets its own, smaller bucket rather than the page allowance.
@@ -94,8 +96,7 @@ const WINDOW_MS = 60_000;
 const AUTH_RPM = 60;
 
 function requestsPerMinute(): number {
-  const raw = Number(process.env.RATE_LIMIT_RPM);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_RPM;
+  return parseRpm(process.env.RATE_LIMIT_RPM, DEFAULT_RPM);
 }
 
 // Vercel Cron is the one caller that must never be throttled: a throttled

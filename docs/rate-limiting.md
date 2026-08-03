@@ -97,8 +97,17 @@ It cannot stop the request from reaching Vercel, but it does stop it from
 reaching the RSC render and the Postgres queries behind it -- which is where the
 cost of a hammered `/` actually lives.
 
-- Default 200 requests / minute / IP. Override with `RATE_LIMIT_RPM`.
-- `RATE_LIMIT_DISABLED=1` turns the gate off without a deploy.
+- Default 200 requests / minute / IP. Override with `RATE_LIMIT_RPM`. A value
+  below 1 is rejected in favour of the default: `0.5` floors to a limit of 0,
+  which does not block everything -- it lets the window-opening request through
+  and refuses the rest, i.e. one request per IP per minute.
+- `RATE_LIMIT_DISABLED=1` turns the gate off without a code change, but **not
+  without a redeploy**. Vercel bakes environment variables into a deployment,
+  so changing either variable requires redeploying before it takes effect.
+  Neither is an instant lever, so do not reach for them during an incident:
+  if this layer ever locks real traffic out, the fast fix is at the WAF (layer
+  1), whose rules publish in seconds and can be flipped to `Log` or deleted
+  outright without touching the app.
 - `/api/auth/*` gets a separate 60/min bucket, so a client that has spent its
   page allowance during a flood can still finish an OAuth callback rather than
   being stranded on a 429 it cannot retry past.
