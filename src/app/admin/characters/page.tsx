@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 
 // Admin controls for the character pipeline. Gating is enforced by the API
 // routes (isSiteAdmin). Two actions -- detect crops across images, then run the
@@ -18,6 +18,25 @@ type Tuning = {
   space: Space;
   blendWeight: number;
 };
+
+// Why a visual/blend cluster is (or isn't) allowed to run. Clustering aborts on
+// partial visual coverage rather than filing a roster that would prune the
+// canon, so a stalled character page is usually this, not the cluster job.
+type Readiness = {
+  space: Space;
+  needsVisual: boolean;
+  retriable: number;
+  abandoned: number;
+  embedderConfigured: boolean;
+  backfillInFlight: boolean;
+  ready: boolean;
+  blocker: string | null;
+};
+
+// How often the blocked panel re-reads coverage while the backfill drains.
+// Slow enough to be a rounding error against the per-minute job cron, fast
+// enough that an admin watching the page sees it clear on its own.
+const READINESS_POLL_MS = 15_000;
 
 const DEFAULTS: Tuning = {
   maxDist: 0.45,
@@ -71,6 +90,14 @@ export default function AdminCharactersPage() {
   const [info, setInfo] = useState<string | null>(null);
   const [tuning, setTuning] = useState<Tuning>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+
+  const loadReadiness = useCallback(() => {
+    fetch('/api/admin/characters/backfill')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => setReadiness(r))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetch('/api/admin/characters/tuning')
@@ -78,7 +105,34 @@ export default function AdminCharactersPage() {
       .then((t) => setTuning({ ...DEFAULTS, ...t }))
       .catch(() => {})
       .finally(() => setLoaded(true));
-  }, []);
+    loadReadiness();
+  }, [loadReadiness]);
+
+  // Clicking "backfill" only ENQUEUES; the drain runs across cron ticks over
+  // minutes, so the refresh that follows the POST necessarily reads the same
+  // blocked coverage. Without polling the panel would keep saying "blocked"
+  // long after the queue finished and clustering resumed -- the one question
+  // this panel exists to answer, answered wrongly.
+  //
+  // Poll only while something is actually draining -- which means a backfill is
+  // in flight, not merely that crops COULD be retried. Without that distinction
+  // the loop runs forever in the two states that never resolve on their own: no
+  // VOYAGE_API_KEY, or a backfill chain that ended with no successor. An
+  // abandoned-only blocker is the same case (that is what the attempt cap
+  // means), and it is covered because it leaves nothing in flight.
+  // Keyed on the backfill being in flight ALONE, not on retriable crops as well.
+  // The last crop can reach the attempt cap while the handler is still
+  // processing, giving retriable=0, abandoned>0, inFlight=true -- a live drain
+  // that the retriable clause would stop polling, freezing the panel on
+  // "backfill running" once the handler finished. In flight is the whole
+  // question: it is exactly the state that resolves on its own, and the states
+  // that never do (no key, nothing queued, abandoned-only) all leave it false.
+  const draining = !!readiness && readiness.needsVisual && readiness.backfillInFlight;
+  useEffect(() => {
+    if (!draining) return;
+    const timer = setInterval(loadReadiness, READINESS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [draining, loadReadiness]);
 
   function set<K extends keyof Tuning>(key: K, value: Tuning[K]) {
     setTuning((t) => ({ ...t, [key]: value }));
@@ -102,6 +156,7 @@ export default function AdminCharactersPage() {
       } catch (err) {
         setInfo(`${label} error: ${String(err)}`);
       }
+      loadReadiness(); // the action may have changed what blocks clustering
     });
   }
 
@@ -118,6 +173,11 @@ export default function AdminCharactersPage() {
       } catch (err) {
         setInfo(`tuning error: ${String(err)}`);
       }
+      // Readiness is a function of the SAVED space: switching from text (or a
+      // zero-weight blend) to visual/blend is what blocks the cron, so the panel
+      // has to re-read here or it keeps showing "ready" for defaults that no
+      // longer are.
+      loadReadiness();
     });
   }
 
@@ -157,6 +217,34 @@ export default function AdminCharactersPage() {
           backfill visual vectors
         </button>
       </div>
+
+      {readiness && readiness.needsVisual && !readiness.ready ? (
+        <section className="space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-4">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-amber-400">
+            clustering blocked -- visual coverage
+          </h2>
+          <p className="font-mono text-[11px] leading-relaxed text-ink-300">{readiness.blocker}</p>
+          <p className="font-mono text-[10px] text-ink-600">
+            space={readiness.space} -- {readiness.retriable} missing
+            {readiness.backfillInFlight ? ' (backfill running)' : ' (no backfill queued)'},{' '}
+            {readiness.abandoned} given up on. no cluster is enqueued while this holds, so the
+            roster is stale rather than pruned.
+          </p>
+          {readiness.abandoned > 0 ? (
+            <button
+              type="button"
+              onClick={() =>
+                run('/api/admin/characters/backfill', 'release + backfill', { reset: true })
+              }
+              disabled={isPending}
+              className="rounded border border-amber-500/50 px-3 py-1.5 font-mono text-xs text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+              title="Clear the per-crop attempt cap and re-run the backfill. Only useful once the underlying cause (key, quota, model id) is fixed."
+            >
+              release {readiness.abandoned} + retry
+            </button>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="space-y-4 rounded border border-ink-800 p-4">
         <div className="flex items-center justify-between">

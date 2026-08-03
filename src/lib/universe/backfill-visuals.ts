@@ -1,5 +1,9 @@
-import { type ImageEmbedder } from '@/lib/ai/imageEmbed';
-import { cropsMissingImageVec, setCropImageVec } from '@/lib/db/queries/character-crops';
+import { ImageEmbedError, type ImageEmbedder } from '@/lib/ai/imageEmbed';
+import {
+  cropsMissingImageVec,
+  recordCropImageVecFailure,
+  setCropImageVec
+} from '@/lib/db/queries/character-crops';
 
 export type BackfillProgress = (msg: string) => void;
 
@@ -19,8 +23,13 @@ const PAGE = 500;
 // failure), so each crop is embedded at most once and a poisoned prefix (blobs
 // deleted, so every embed fails) can't wedge the drain -- we step past it and
 // reach the valid crops behind it. A crop that fails here stays NULL and is
-// retried on the next run (which starts the cursor at 0 again). Idempotent:
+// retried on the next run (which starts the cursor at 0 again), up to the
+// per-crop attempt cap that cropsMissingImageVec enforces. Idempotent:
 // setCropImageVec only writes while vec_image is still NULL.
+//
+// A systemic embedder failure (bad key, quota, outage) aborts the sweep rather
+// than charging every crop an attempt for it -- same rule as the queue handler,
+// since a local run and a cron run share the same attempt counters.
 export async function backfillVisualsInline(
   embedder: ImageEmbedder,
   onProgress?: BackfillProgress
@@ -38,7 +47,19 @@ export async function backfillVisualsInline(
         ok++;
         if (ok % 20 === 0) onProgress?.(`  embedded ${ok}`);
       } catch (err) {
+        // Same rule as the queue handler: only a provider-classified crop fault
+        // spends an attempt. A systemic embedder failure, a malformed response,
+        // or a failed write is not evidence about this crop, and charging it
+        // would abandon healthy crops three runs later.
+        if (!(err instanceof ImageEmbedError) || err.systemic) {
+          throw new Error(
+            `backfill aborted after ${ok} embedded -- not a crop-specific failure: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
         fail++;
+        // Not swallowed, same as the queue handler: an unrecorded attempt means
+        // this crop is re-bought on every future sweep and never reaches the cap.
+        await recordCropImageVecFailure(crop.cropId);
         onProgress?.(`  crop ${crop.cropId} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       afterId = crop.cropId; // advance past every attempted crop, success or fail

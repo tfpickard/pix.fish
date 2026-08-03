@@ -63,6 +63,48 @@ export async function hasPendingJobOfType(type: string): Promise<boolean> {
   return Boolean(res.rows?.[0]?.present);
 }
 
+// True when another job of this type STARTED BEFORE the caller and is still
+// executing -- i.e. the caller lost the election and must step aside. For
+// handlers whose work is corpus-wide and BILLED: two concurrent sweeps select
+// overlapping rows and pay twice for the same embedding, because a SELECT
+// predicate is not a claim.
+//
+// The ordering is the whole mechanism, and it has to be over START TIME, not
+// over the id. Two wrong shapes to avoid:
+//
+//   - "Is any sibling running?" is symmetric. Two handlers racing each see the
+//     other, both step aside, both retry together, and after enough rounds both
+//     give up waiting and collide anyway -- a livelock ending in the exact
+//     double-spend it was meant to stop.
+//   - "Is an older-id sibling running?" only elects a winner when every
+//     contender looks before any of them proceeds. claimJobs orders by run_at,
+//     not by id, so a delayed low-id job (a backoff retry) can start while a
+//     high-id sweep is already running: it looks, sees no elder, and both run.
+//
+// locked_at is stamped at claim time, so (locked_at, id) is the real start
+// order, with the id breaking the tie when two are claimed in the same
+// transaction timestamp. Whoever started first is unambiguous and never defers.
+// No lock, no protocol, and nothing tied to a pooled connection -- which is what
+// rules out a session-scoped advisory lock here, while a transaction-scoped one
+// cannot span a multi-statement sweep.
+//
+// Deliberately 'processing' only: a pending row is not spending anything yet.
+export async function earlierClaimedJobOfType(type: string, selfId: number): Promise<boolean> {
+  const res = await db.execute<{ present: boolean }>(sql`
+    SELECT EXISTS(
+      SELECT 1
+      FROM jobs other, jobs self
+      WHERE self.id = ${Math.trunc(selfId)}
+        AND other.id <> self.id
+        AND other.type = ${type}
+        AND other.status = 'processing'
+        AND (COALESCE(other.locked_at, other.run_at), other.id)
+          < (COALESCE(self.locked_at, self.run_at), self.id)
+    ) AS present
+  `);
+  return Boolean(res.rows?.[0]?.present);
+}
+
 // True when a job of this type is pending OR already processing -- the stricter
 // counterpart to hasPendingJobOfType. Use it where an in-flight (already claimed)
 // job DOES cover the work, so a second enqueue would only duplicate it: e.g. the
@@ -205,6 +247,19 @@ export async function claimJobs(lockId: string, limit: number): Promise<Job[]> {
     RETURNING j.*
   `);
   return res.rows.map(normalizeJob);
+}
+
+// Merge a patch into a running job's own payload, so a fact the handler learned
+// mid-run survives into its RETRY. A retry re-reads the row as it was enqueued,
+// which is fine for inputs and wrong for progress: a handler that committed work
+// and then failed in its tail would otherwise come back believing it had done
+// nothing. Writing the marker where the retry will look for it is what makes the
+// handler's own progress durable without a table of its own.
+export async function mergeJobPayload(id: number, patch: Record<string, unknown>): Promise<void> {
+  await db.execute(sql`
+    UPDATE jobs SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
+    WHERE id = ${Math.trunc(id)}
+  `);
 }
 
 export async function markJobDone(id: number): Promise<void> {

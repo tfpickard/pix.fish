@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
+import { isCropFault } from '../src/lib/ai/imageEmbed';
 import { parseDetectionsJson } from '../src/lib/ai/types';
 import { detectCommunities } from '../src/lib/universe/cluster';
 import {
   buildCropEdges,
   cropClusterVector,
   parseCharacterIdentity,
-  parseVerifyGroups
+  parseVerifyGroups,
+  spaceNeedsVisual
 } from '../src/lib/universe/characters';
 
 // Pure, infra-free tests in the existing style. The DB-bound invariants
@@ -130,6 +132,133 @@ describe('cropClusterVector', () => {
     expect(cropClusterVector({ vec: [3, 4], vecImage: null }, 'blend', 0)).toEqual([3, 4]);
     // w=1 = all visual: works without a text vec
     expect(cropClusterVector({ vec: [], vecImage: [0, 5] }, 'blend', 1)).toEqual([0, 5]);
+  });
+});
+
+describe('spaceNeedsVisual', () => {
+  // The coverage gate that decides whether to enqueue a cluster at all reads
+  // this; it must agree exactly with cropClusterVector about when a missing
+  // vec_image would cause a crop to be dropped. Disagreement either blocks
+  // clustering forever on a space that never needed visuals, or lets a run
+  // through that silently prunes characters out of the canon.
+  const spaces = ['text', 'visual', 'blend'] as const;
+  const weights = [0, 0.25, 0.5, 1];
+
+  test('agrees with cropClusterVector for a crop that has no visual vec', () => {
+    const textOnly = { vec: [1, 0], vecImage: null };
+    for (const space of spaces) {
+      for (const w of weights) {
+        const dropped = cropClusterVector(textOnly, space, w) === null;
+        expect(spaceNeedsVisual(space, w)).toBe(dropped);
+      }
+    }
+  });
+
+  test('text and a zero-weight blend never need a visual vec', () => {
+    expect(spaceNeedsVisual('text', 1)).toBe(false);
+    expect(spaceNeedsVisual('blend', 0)).toBe(false);
+    expect(spaceNeedsVisual('blend', -1)).toBe(false); // clamped to 0
+  });
+
+  test('visual and any genuine blend do', () => {
+    expect(spaceNeedsVisual('visual', 0)).toBe(true);
+    expect(spaceNeedsVisual('blend', 0.01)).toBe(true);
+    expect(spaceNeedsVisual('blend', 1)).toBe(true);
+  });
+});
+
+describe('isCropFault', () => {
+  // Decides whether a failed embed spends one of a crop's bounded attempts.
+  // Getting this backwards is expensive in both directions: charge the crop for
+  // an outage and one Voyage incident abandons the whole corpus; excuse a dead
+  // blob and it is re-billed on every pass forever.
+  test('no status alone blames the crop -- we send a URL, not the pixels', () => {
+    // 415 is about our application/json content type, 422 about the body schema,
+    // 413 about a few hundred bytes of JSON. All identical for every crop, so
+    // trusting the status would abandon the whole corpus on one config mistake.
+    for (const s of [400, 413, 415, 422]) expect(isCropFault(s, '')).toBe(false);
+  });
+
+  test('auth, quota, throttling and server errors are systemic', () => {
+    for (const s of [401, 402, 403, 408, 429, 500, 502, 503, 529]) {
+      expect(isCropFault(s, 'the image could not be decoded')).toBe(false);
+    }
+  });
+
+  test('a 404 is the endpoint, not the image -- our crop URL is fetched by Voyage', () => {
+    expect(isCropFault(404, 'image not found')).toBe(false);
+  });
+
+  test('an ambiguous 4xx blames the crop only when the body is about the image', () => {
+    expect(isCropFault(400, '{"detail":"Unable to decode the image"}')).toBe(true);
+    expect(isCropFault(413, '{"detail":"Image is too large"}')).toBe(true);
+    expect(isCropFault(422, '{"detail":"The image dimensions are out of range"}')).toBe(true);
+  });
+
+  test('a request-level body is systemic even when it mentions the image', () => {
+    // The exact failure that must never burn the corpus: one bad model id
+    // charging every crop an attempt and abandoning all of them in three sweeps.
+    expect(isCropFault(400, '{"detail":"Model voyage-multimodal-3.5 is not supported"}')).toBe(false);
+    expect(
+      isCropFault(400, '{"detail":"invalid model, expected one of the multimodal image models"}')
+    ).toBe(false);
+    expect(isCropFault(415, '{"detail":"Unsupported media type: expected application/json"}')).toBe(
+      false
+    );
+    expect(isCropFault(422, '{"detail":"invalid parameter: inputs[0].content"}')).toBe(false);
+    expect(isCropFault(400, '{"detail":"Invalid api key"}')).toBe(false);
+    expect(isCropFault(400, '{"detail":"You have exceeded your quota"}')).toBe(false);
+  });
+
+  test('a fetch failure convicts the crop only when the blob is stated to be gone', () => {
+    // Voyage fetches our Blob URL, so "could not download" is what a Blob/CDN
+    // outage says about EVERY crop. Charging them for it abandons the corpus in
+    // three sweeps for something that fixed itself in ten minutes.
+    expect(isCropFault(400, '{"detail":"Failed to download image from the provided url"}')).toBe(
+      false
+    );
+    expect(isCropFault(400, '{"detail":"timed out fetching the image"}')).toBe(false);
+    expect(isCropFault(400, '{"detail":"could not load image: upstream 503"}')).toBe(false);
+    // Permanently gone is a real crop fault -- retrying cannot resurrect a blob.
+    expect(isCropFault(400, '{"detail":"Failed to download image: 404 Not Found"}')).toBe(true);
+    expect(isCropFault(400, '{"detail":"could not fetch image, object does not exist"}')).toBe(true);
+  });
+
+  test('a size or format complaint with no image subject is systemic', () => {
+    // The 413/415 reason phrases. Each is about OUR request -- a few hundred
+    // bytes of JSON, and its content type -- so each would otherwise convict
+    // every crop in the corpus for one request-level mistake.
+    expect(isCropFault(413, 'Request Entity Too Large')).toBe(false);
+    expect(isCropFault(413, '{"detail":"Payload Too Large"}')).toBe(false);
+    expect(isCropFault(415, 'Unsupported Media Type')).toBe(false);
+    expect(isCropFault(422, '{"detail":"malformed input"}')).toBe(false);
+  });
+
+  test('a generic word does not veto explicit crop evidence', () => {
+    // The veto must match the request being the SUBJECT of the complaint, not
+    // any appearance of the word. A false veto is the dangerous direction: a
+    // systemic verdict aborts the whole run instead of spending an attempt, so
+    // one such crop would wedge the drain forever with its counter at zero.
+    expect(isCropFault(400, "{\"detail\":\"image dimensions exceed this model's limit\"}")).toBe(true);
+    expect(isCropFault(413, '{"detail":"the image is too large for the model"}')).toBe(true);
+    expect(isCropFault(422, '{"detail":"could not decode image; parameter inputs[0] rejected it"}')).toBe(
+      true
+    );
+  });
+
+  test('a named image stated to be gone convicts without a fetch verb', () => {
+    // The blob really is missing; retrying cannot resurrect it. Reading this as
+    // systemic would abort the run without spending an attempt, wedging the
+    // drain on the same dead crop forever.
+    expect(isCropFault(400, '{"detail":"image not found"}')).toBe(true);
+    expect(isCropFault(400, '{"detail":"the image has been deleted"}')).toBe(true);
+    // ...but the subject gate still applies: a bare "not found" is the endpoint.
+    expect(isCropFault(400, '{"detail":"not found"}')).toBe(false);
+  });
+
+  test('an unrecognized ambiguous body defaults to systemic', () => {
+    expect(isCropFault(400, 'bad request')).toBe(false);
+    expect(isCropFault(422, 'unprocessable')).toBe(false);
   });
 });
 
