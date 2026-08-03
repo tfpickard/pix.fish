@@ -68,19 +68,31 @@ const REQUEST_FAULT_PATTERNS = [
   /\bcontent[-_ ]type\b/,
   /application\/json/
 ];
-const IMAGE_FAULT_MARKERS = [
-  'image',
+// Crop blame requires the message to NAME THE IMAGE. This is one rule replacing
+// a marker list, because the marker list kept failing the same way: every
+// complaint word an image can attract is also a word a request can attract.
+// "Unsupported Media Type" is the HTTP 415 reason phrase for our content type;
+// "Request Entity Too Large" and "Payload Too Large" are 413's, about a body of
+// a few hundred bytes. Each would convict every crop in the corpus for one
+// request-level mistake. Demanding an explicit image subject makes that whole
+// class of false positives impossible rather than removing them one at a time.
+const IMAGE_SUBJECT = /\b(image|picture|photo|pixels?|thumbnail|media file)\b/;
+// What is wrong WITH that image. Only consulted once the subject is established,
+// so these can stay broad.
+const IMAGE_COMPLAINTS = [
   'decode',
   'corrupt',
-  'pixel',
-  // NB: "unsupported media type" is deliberately absent -- it is the literal
-  // HTTP 415 reason phrase, so a bare request-level rejection of our
-  // application/json content type would read as evidence about the crop. A
-  // genuinely unusable format still matches via 'image' or 'decode'.
   'too large',
+  'too small',
   'dimension',
   'width',
-  'height'
+  'height',
+  'resolution',
+  'format',
+  'unsupported',
+  'invalid',
+  'malformed',
+  'empty'
 ];
 
 // "Could not download the image" is NOT an image fault by itself. Voyage fetches
@@ -103,6 +115,10 @@ export function isCropFault(status: number, body = ''): boolean {
   // Order matters: a request-level phrase vetoes, because "invalid model, expected
   // one of the multimodal image models" mentions the image without being about it.
   if (REQUEST_FAULT_PATTERNS.some((p) => p.test(text))) return false;
+  // Nothing convicts a crop unless the message is about an image at all. This is
+  // the gate that makes "Payload Too Large" and "Unsupported Media Type" -- both
+  // about our request -- stay systemic without needing a rule per phrase.
+  if (!IMAGE_SUBJECT.test(text)) return false;
   // A failure to fetch our URL convicts the crop only when the blob is stated to
   // be gone. Everything else -- timeout, connection reset, a 5xx from the CDN --
   // is an outage wearing an image-shaped message, and outages must not be billed
@@ -110,7 +126,7 @@ export function isCropFault(status: number, body = ''): boolean {
   if (FETCH_MARKERS.some((m) => text.includes(m))) {
     return PERMANENTLY_GONE_MARKERS.some((m) => text.includes(m));
   }
-  return IMAGE_FAULT_MARKERS.some((m) => text.includes(m));
+  return IMAGE_COMPLAINTS.some((m) => text.includes(m));
 }
 
 export type ImageEmbedder = {

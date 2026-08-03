@@ -224,6 +224,16 @@ describe('isCropFault', () => {
     expect(isCropFault(400, '{"detail":"could not fetch image, object does not exist"}')).toBe(true);
   });
 
+  test('a size or format complaint with no image subject is systemic', () => {
+    // The 413/415 reason phrases. Each is about OUR request -- a few hundred
+    // bytes of JSON, and its content type -- so each would otherwise convict
+    // every crop in the corpus for one request-level mistake.
+    expect(isCropFault(413, 'Request Entity Too Large')).toBe(false);
+    expect(isCropFault(413, '{"detail":"Payload Too Large"}')).toBe(false);
+    expect(isCropFault(415, 'Unsupported Media Type')).toBe(false);
+    expect(isCropFault(422, '{"detail":"malformed input"}')).toBe(false);
+  });
+
   test('a generic word does not veto explicit crop evidence', () => {
     // The veto must match the request being the SUBJECT of the complaint, not
     // any appearance of the word. A false veto is the dangerous direction: a
