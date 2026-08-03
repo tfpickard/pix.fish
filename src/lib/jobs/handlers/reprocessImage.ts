@@ -6,6 +6,7 @@ import { getProvider, getEmbedder, loadUserProviderKeys, type ProviderField } fr
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { resolvePrompt } from '@/lib/prompts';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
+import { scheduleAtlasRefresh } from '@/lib/jobs/atlas';
 
 type Payload = { imageId: number; fields: ProviderField[] };
 
@@ -102,6 +103,11 @@ export async function reprocessImageHandler(job: Job): Promise<void> {
         provider: embedder.name,
         model: embedder.model
       });
+      // Reprocessing REPLACES a vector rather than adding one, so skipping this
+      // left /map plotting the image at coordinates derived from a vector that
+      // no longer exists. The debounce inside collapses a whole reprocess batch
+      // into roughly one projection.
+      await scheduleAtlasRefresh();
     }
   }
 }

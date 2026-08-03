@@ -10,6 +10,7 @@
  */
 import { asc, eq, isNull, sql } from 'drizzle-orm';
 import { getEmbedder, loadUserProviderKeys } from '../src/lib/ai';
+import { scheduleAtlasRefresh } from '../src/lib/jobs/atlas';
 import { loadAiConfig } from '../src/lib/ai/loadConfig';
 import { db } from '../src/lib/db/client';
 import { captions, embeddings, images } from '../src/lib/db/schema';
@@ -84,6 +85,14 @@ async function main() {
   }
 
   console.log(`done: ${ok} ok, ${fail} failed`);
+
+  // A backfill is the single biggest thing that can happen to the atlas -- it
+  // can add hundreds of vectors at once -- and it used to leave /map untouched
+  // until somebody uploaded again or clicked recompute by hand.
+  if (ok > 0) {
+    await scheduleAtlasRefresh();
+    console.log('queued a umap.recompute so /map picks up the new vectors');
+  }
 }
 
 main()

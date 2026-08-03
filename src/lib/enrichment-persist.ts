@@ -3,7 +3,8 @@ import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags } from '@/lib/db/schema';
 import { getEmbedder, type AiConfigMap, type UserProviderKeys } from '@/lib/ai';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
-import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
+import { enqueueJob } from '@/lib/db/queries/jobs';
+import { scheduleAtlasRefresh } from '@/lib/jobs/atlas';
 import { uniquifySlug, pushSlugToHistory } from '@/lib/db/queries/slugs';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { slugify } from '@/lib/slug';
@@ -25,13 +26,6 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 const MAX_SLUG_RETRIES = 5;
-
-// Debounce window for the atlas refresh fired after a new caption vector lands.
-// Long enough that an upload flurry (or a backfill run) collapses to ~one
-// projection via the pending-dedupe below, short enough that a single new
-// upload appears on /map within a couple of minutes. Mirrors the recluster
-// debounce in charactersDetect, which solves the same burst problem.
-const UMAP_DEBOUNCE_MS = 120_000;
 
 /**
  * Persist an enrichment result for an image that currently holds a
@@ -242,25 +236,7 @@ export async function persistEnrichment(args: {
     // Nothing used to trigger this at all -- umap.recompute only ever ran when
     // someone hit /admin/map by hand -- so the map drifted badly out of date
     // and covered a fraction of the gallery while new uploads kept landing.
-    //
-    // Pending-only dedupe (not in-flight): a queued run has not read the
-    // vectors yet, so it will include this image and we can skip. A run that is
-    // already PROCESSING may have snapshotted before this commit, so we still
-    // schedule one -- otherwise the image that raced a recompute would sit
-    // outside the atlas until some later upload happened to trigger another.
-    // The delay collapses an upload flurry (or a backfill) into ~one run.
-    try {
-      if (!(await hasPendingJobOfType('umap.recompute'))) {
-        await enqueueJob({
-          type: 'umap.recompute',
-          payload: {},
-          runAt: new Date(Date.now() + UMAP_DEBOUNCE_MS),
-          maxAttempts: 1
-        });
-      }
-    } catch (err) {
-      console.error('failed to enqueue umap.recompute for image', imageId, err);
-    }
+    await scheduleAtlasRefresh();
   }
 
   // Webhook fan-out -- also best effort; emit() only enqueues delivery jobs.

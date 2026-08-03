@@ -12,10 +12,9 @@ import { SITE_NAME } from '@/lib/site';
 // card sitting on it is load-bearing.
 //
 // Two deliberate constraints:
-//  - Source is the ORIGINAL blob, not a WebP derivative. Satori's image
-//    decoding is reliable for PNG/JPEG but not WebP, and the heavy fetch is
-//    server-side and cached -- the visitor only ever receives the ~1200x630
-//    output, which is the byte win we actually care about.
+//  - The source is normalized through sharp before Satori sees it, rather than
+//    handed over as-is. See loadSource() -- uploads accept formats Satori
+//    cannot decode, and that failure is not recoverable downstream.
 //  - No custom face. The only local font is FungalVF.woff2 and Satori cannot
 //    parse woff2, so loading it would fail at runtime. Identity comes from the
 //    ink palette and layout instead of a font that would not render.
@@ -47,39 +46,75 @@ function fitCaption(text: string, max = 150): string {
   return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).trimEnd()}...`;
 }
 
+function cardResponse(bytes: Buffer, contentType: string): Response {
+  return new Response(new Uint8Array(bytes), {
+    headers: { 'content-type': contentType, 'cache-control': CARD_CACHE_CONTROL }
+  });
+}
+
+// Satori decodes PNG/JPEG/GIF but not WebP, and the upload route accepts
+// image/webp (ALLOWED_MIME in api/images/route.ts). Handing it a WebP blob
+// throws during render, and nothing downstream can repair that -- the JPEG
+// re-encode below only ever sees a card that already rendered. So normalize
+// first: fetch the original, let sharp transcode and shrink it to the frame,
+// and give Satori a data URI it is guaranteed to understand.
+//
+// Resizing here is not incidental. Satori otherwise decodes the full original
+// (one measured at 3.4 MB) just to draw it at 1200x630.
+//
+// Returns null rather than throwing on any failure, which renders the
+// text-only card. A card with no picture still carries the caption, the name
+// and the frame; a throw here would 500 the route and yield no card at all.
+async function loadSource(url: string): Promise<string | null> {
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`blob fetch ${res.status}`);
+    const sharp = (await import('sharp')).default;
+    const jpeg = await sharp(Buffer.from(await res.arrayBuffer()))
+      .resize(OG_SIZE.width, OG_SIZE.height, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
+      .toBuffer();
+    return `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+  } catch (err) {
+    console.error('og-card: source unusable, rendering text-only card', url, err);
+    return null;
+  }
+}
+
 export async function renderOgCard(opts: {
   imageUrl: string;
   caption: string;
 }): Promise<Response> {
-  const png = renderPng(opts);
+  const source = await loadSource(opts.imageUrl);
 
-  // Best-effort re-encode. sharp is already a dependency (the derive.image job
-  // uses it) and this route runs on the nodejs runtime, but if anything goes
-  // wrong we still want to serve a valid card -- so fall back to the PNG rather
-  // than 500 on a share.
+  // Buffer the Satori output ONCE, before the re-encode can fail. Reading an
+  // ImageResponse consumes its body, so the obvious shape -- read inside the
+  // try, hand the same object back from the catch -- returns a response with
+  // bodyUsed already true. The fallback that exists so a share never breaks
+  // was itself serving an unreadable body, and only on the path where it was
+  // the last line of defense.
+  const pngBytes = Buffer.from(await renderPng({ ...opts, imageUrl: source }).arrayBuffer());
+
+  // sharp is already a dependency (the derive.image job uses it) and these
+  // routes run on the nodejs runtime, so this should not fail -- but a card is
+  // worth serving in the wrong format, and not worth 500ing over.
   try {
     const sharp = (await import('sharp')).default;
-    const buf = Buffer.from(await png.arrayBuffer());
-    const jpeg = await sharp(buf).jpeg({ quality: JPEG_QUALITY, mozjpeg: true }).toBuffer();
-    return new Response(new Uint8Array(jpeg), {
-      headers: { 'content-type': OG_CONTENT_TYPE, 'cache-control': CARD_CACHE_CONTROL }
-    });
+    const jpeg = await sharp(pngBytes).jpeg({ quality: JPEG_QUALITY, mozjpeg: true }).toBuffer();
+    return cardResponse(jpeg, OG_CONTENT_TYPE);
   } catch (err) {
     console.error('og-card: jpeg re-encode failed, serving png', err);
     // The route files export contentType = OG_CONTENT_TYPE, which Next emits as
-    // og:image:type -- so on this path the advisory metadata says jpeg while the
-    // bytes are png. Harmless, and deliberately preferred over the alternatives:
-    // declaring png would mislabel every card for one rare failure, and hard-
-    // failing would serve no card at all. Every consumer that matters sniffs the
-    // magic bytes or trusts the response header, both of which stay truthful --
-    // ImageResponse sets content-type: image/png itself. We only override
-    // cache-control, so a degraded card cannot outlive the failure it came from.
-    png.headers.set('cache-control', CARD_CACHE_CONTROL);
-    return png;
+    // og:image:type, so this path's advisory metadata says jpeg while the bytes
+    // are png. Deliberate: declaring png would mislabel every card to be honest
+    // about a rare one. What consumers actually read -- the response header set
+    // just below, and the magic bytes -- stays truthful.
+    return cardResponse(pngBytes, 'image/png');
   }
 }
 
-function renderPng(opts: { imageUrl: string; caption: string }): ImageResponse {
+function renderPng(opts: { imageUrl: string | null; caption: string }): ImageResponse {
   const caption = fitCaption(opts.caption);
 
   return new ImageResponse(
