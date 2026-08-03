@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useCallback, useEffect, useState, useTransition } from 'react';
 
 // Admin controls for the character pipeline. Gating is enforced by the API
 // routes (isSiteAdmin). Two actions -- detect crops across images, then run the
@@ -30,6 +30,11 @@ type Readiness = {
   ready: boolean;
   blocker: string | null;
 };
+
+// How often the blocked panel re-reads coverage while the backfill drains.
+// Slow enough to be a rounding error against the per-minute job cron, fast
+// enough that an admin watching the page sees it clear on its own.
+const READINESS_POLL_MS = 15_000;
 
 const DEFAULTS: Tuning = {
   maxDist: 0.45,
@@ -85,12 +90,12 @@ export default function AdminCharactersPage() {
   const [loaded, setLoaded] = useState(false);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
 
-  function loadReadiness() {
+  const loadReadiness = useCallback(() => {
     fetch('/api/admin/characters/backfill')
       .then((r) => (r.ok ? r.json() : null))
       .then((r) => setReadiness(r))
       .catch(() => {});
-  }
+  }, []);
 
   useEffect(() => {
     fetch('/api/admin/characters/tuning')
@@ -99,7 +104,23 @@ export default function AdminCharactersPage() {
       .catch(() => {})
       .finally(() => setLoaded(true));
     loadReadiness();
-  }, []);
+  }, [loadReadiness]);
+
+  // Clicking "backfill" only ENQUEUES; the drain runs across cron ticks over
+  // minutes, so the refresh that follows the POST necessarily reads the same
+  // blocked coverage. Without polling the panel would keep saying "blocked"
+  // long after the queue finished and clustering resumed -- the one question
+  // this panel exists to answer, answered wrongly.
+  //
+  // Poll only while something is actually draining. An abandoned-only blocker
+  // cannot resolve on its own (that is what the attempt cap means), so polling
+  // it would just be a request every 15s forever.
+  const draining = !!readiness && readiness.needsVisual && readiness.retriable > 0;
+  useEffect(() => {
+    if (!draining) return;
+    const timer = setInterval(loadReadiness, READINESS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [draining, loadReadiness]);
 
   function set<K extends keyof Tuning>(key: K, value: Tuning[K]) {
     setTuning((t) => ({ ...t, [key]: value }));
