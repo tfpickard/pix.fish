@@ -120,8 +120,14 @@ export default function AdminCharactersPage() {
   // VOYAGE_API_KEY, or a backfill chain that ended with no successor. An
   // abandoned-only blocker is the same case (that is what the attempt cap
   // means), and it is covered because it leaves nothing in flight.
-  const draining =
-    !!readiness && readiness.needsVisual && readiness.retriable > 0 && readiness.backfillInFlight;
+  // Keyed on the backfill being in flight ALONE, not on retriable crops as well.
+  // The last crop can reach the attempt cap while the handler is still
+  // processing, giving retriable=0, abandoned>0, inFlight=true -- a live drain
+  // that the retriable clause would stop polling, freezing the panel on
+  // "backfill running" once the handler finished. In flight is the whole
+  // question: it is exactly the state that resolves on its own, and the states
+  // that never do (no key, nothing queued, abandoned-only) all leave it false.
+  const draining = !!readiness && readiness.needsVisual && readiness.backfillInFlight;
   useEffect(() => {
     if (!draining) return;
     const timer = setInterval(loadReadiness, READINESS_POLL_MS);

@@ -89,6 +89,7 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
   let failed = 0;
   let attempted = 0;
   let budgetHit = false;
+  let markedWrote = false;
 
   outer: for (;;) {
     if (Date.now() - startedAt > BUDGET_MS) {
@@ -105,16 +106,27 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
       attempted++;
       try {
         const vec = await embedder.embed(crop.blobUrl);
+        // Stamp the change marker into THIS job's payload BEFORE persisting the
+        // vector, not after. Everything past this loop can fail -- the coverage
+        // read, the enqueue -- and a retry re-reads the row as enqueued, so a run
+        // that embedded crops and then died in its tail would come back with
+        // wrote=false, take the no-change path, and leave the repaired corpus
+        // with a stale roster until the next six-hourly cron.
+        //
+        // The two writes cannot be one transaction here, so the ORDER decides
+        // which way the flag can be wrong, and the two are not equally costly.
+        // Marker first: if it fails, no vector was written and the retry is
+        // honest; if the vector write then fails, the flag over-reports a change
+        // that a retry is about to make anyway, costing at most one redundant
+        // cluster. Vector first would under-report -- a written vector with the
+        // flag lost -- which is a silently stale roster, the thing this marker
+        // exists to prevent. Once per run, before the first write only.
+        if (!markedWrote && !inheritedWrote) {
+          await mergeJobPayload(job.id, { wrote: true });
+          markedWrote = true;
+        }
         await setCropImageVec(crop.cropId, vec, embedder.name, embedder.model);
         ok++;
-        // Stamp the change marker into THIS job's payload the moment the first
-        // vector lands, rather than only passing it to a continuation. Everything
-        // after this loop can fail -- the coverage read, the enqueue -- and a
-        // retry re-reads the row as enqueued, so a run that embedded crops and
-        // then died in its tail would come back with wrote=false, take the
-        // no-change path, and leave the repaired corpus with a stale roster until
-        // the next six-hourly cron. Once per run, only on the first write.
-        if (ok === 1 && !inheritedWrote) await mergeJobPayload(job.id, { wrote: true });
       } catch (err) {
         // Spending an attempt requires POSITIVE evidence that this crop is the
         // problem: an ImageEmbedError the provider classified as crop-scoped.
