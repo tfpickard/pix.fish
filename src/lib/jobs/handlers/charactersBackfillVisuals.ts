@@ -1,9 +1,8 @@
 import { ImageEmbedError, getImageEmbedder } from '@/lib/ai/imageEmbed';
 import {
   abandonedImageVecSample,
-  countCropsAbandonedImageVec,
-  countCropsMissingImageVec,
   cropsMissingImageVec,
+  imageVecCoverage,
   recordCropImageVecFailure,
   setCropImageVec,
   MAX_IMAGE_EMBED_ATTEMPTS
@@ -114,7 +113,13 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
           );
         }
         failed++;
-        await recordCropImageVecFailure(crop.cropId).catch(() => {});
+        // Deliberately NOT swallowed. This write is the only thing that makes a
+        // crop fault cost anything; if it silently no-ops, the crop stays under
+        // the cap forever and every future sweep re-buys the same failing call.
+        // A failed write is a persistence failure like any other here, so it
+        // aborts the run for the queue to retry rather than advancing the cursor
+        // past a crop whose attempt was never recorded.
+        await recordCropImageVecFailure(crop.cropId);
         console.error(`characters.backfill-visuals: crop ${crop.cropId} failed`, err);
       }
       afterId = crop.cropId; // advance the cursor past this crop, success or fail
@@ -138,7 +143,10 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
   // Full sweep finished. Anything still NULL and still under the per-crop
   // attempt cap failed transiently somewhere in this pass and is worth another
   // sweep; anything over the cap is abandoned and no longer counted here.
-  const remaining = await countCropsMissingImageVec();
+  // One snapshot for both halves -- the sweep decision and the report below read
+  // the same partition, and taking them as separate counts lets a crop crossing
+  // the cap in between fall out of both.
+  const { retriable: remaining, abandoned } = await imageVecCoverage();
   if (remaining > 0 && sweep + 1 < MAX_SWEEPS) {
     // Restart a FRESH sweep from the front (afterId 0), not from this job's end
     // cursor. Retrying this job's payload would only re-scan ids past the cursor
@@ -164,7 +172,6 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
   // would only manufacture a red job on every pass while fixing nothing. The
   // blocker surfaces through the coverage report instead (/api/cron/characters
   // and the admin panel), where it names an action a human can actually take.
-  const abandoned = await countCropsAbandonedImageVec();
   if (abandoned > 0) {
     const sample = await abandonedImageVecSample(5);
     console.warn(

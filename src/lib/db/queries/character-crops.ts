@@ -155,6 +155,27 @@ export async function countCropsAbandonedImageVec(): Promise<number> {
   return Number(res.rows?.[0]?.n ?? 0);
 }
 
+// Both halves of the coverage picture from ONE snapshot. The two counts above
+// partition the same rows on a column the backfill is concurrently
+// incrementing, so reading them as separate statements can observe a crop in
+// NEITHER half: the abandoned count lands before the crop crosses the cap and
+// the retriable count lands after. Both return 0, coverage reads complete, and
+// a cluster gets enqueued for a corpus that still has a crop without a vector
+// -- reproducing the exact failed job this whole change exists to prevent.
+// A single aggregate cannot tear that way.
+export async function imageVecCoverage(): Promise<{ retriable: number; abandoned: number }> {
+  const res = await db.execute<{ retriable: number; abandoned: number }>(sql`
+    SELECT
+      count(*) FILTER (WHERE cc.vec_image_attempts < ${MAX_IMAGE_EMBED_ATTEMPTS})::int AS retriable,
+      count(*) FILTER (WHERE cc.vec_image_attempts >= ${MAX_IMAGE_EMBED_ATTEMPTS})::int AS abandoned
+    FROM character_crops cc
+    JOIN images i ON i.id = cc.image_id
+    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+  `);
+  const row = res.rows?.[0];
+  return { retriable: Number(row?.retriable ?? 0), abandoned: Number(row?.abandoned ?? 0) };
+}
+
 // A sample of abandoned crops, for the operator-facing report. Bounded because
 // the point is to name something investigable (open the blob URL, find the
 // image), not to dump the whole set into a job error or an admin panel.

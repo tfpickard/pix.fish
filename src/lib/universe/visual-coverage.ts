@@ -1,8 +1,4 @@
-import {
-  countCropsAbandonedImageVec,
-  countCropsMissingImageVec,
-  MAX_IMAGE_EMBED_ATTEMPTS
-} from '@/lib/db/queries/character-crops';
+import { imageVecCoverage, MAX_IMAGE_EMBED_ATTEMPTS } from '@/lib/db/queries/character-crops';
 import { getTuning, type ClusterSpace } from '@/lib/db/queries/character-tuning';
 import { spaceNeedsVisual } from '@/lib/universe/characters';
 
@@ -44,10 +40,10 @@ export async function clusterReadiness(): Promise<ClusterReadiness> {
     };
   }
 
-  const [retriable, abandoned] = await Promise.all([
-    countCropsMissingImageVec(),
-    countCropsAbandonedImageVec()
-  ]);
+  // One snapshot, not two counts: the backfill increments the column these are
+  // partitioned on, so separate reads can miss a crop crossing the cap between
+  // them and report full coverage for a corpus that has none.
+  const { retriable, abandoned } = await imageVecCoverage();
 
   if (retriable === 0 && abandoned === 0) {
     return { space: tuning.space, needsVisual, retriable, abandoned, ready: true, blocker: null };

@@ -167,7 +167,7 @@ Crops carry `vec_image_attempts`. Past `MAX_IMAGE_EMBED_ATTEMPTS` a crop is **ab
 - Abandonment is a **state, not a job failure**. The backfill logs and returns rather than throwing -- re-running it cannot embed a dead blob, so failing would only manufacture a red job per pass. It surfaces at `/admin/characters`, in the cron response, and in both offline scripts.
 - Releasing the cap is an explicit human act: `POST /api/admin/characters/backfill {"reset": true}`, for once the actual cause is fixed. `partialOk` (cluster route body, or `--partial-ok`) is the other escape hatch and it accepts the pruning.
 
-`countCropsMissingImageVec()` counts only what is still **retriable**; abandoned crops need `countCropsAbandonedImageVec()`. Any new coverage check wants both, or it will read a drained retry queue as full coverage.
+`countCropsMissingImageVec()` counts only what is still **retriable**; abandoned crops need `countCropsAbandonedImageVec()`. Any new coverage check wants both -- and wants them from `imageVecCoverage()`, one aggregate, not two counts: they partition the same rows on a column the backfill increments, so separate reads can drop a crop crossing the cap out of *both* and report full coverage for a corpus that has none.
 
 ### Gallery sort + color pages
 

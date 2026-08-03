@@ -57,7 +57,9 @@ export async function backfillVisualsInline(
           );
         }
         fail++;
-        await recordCropImageVecFailure(crop.cropId).catch(() => {});
+        // Not swallowed, same as the queue handler: an unrecorded attempt means
+        // this crop is re-bought on every future sweep and never reaches the cap.
+        await recordCropImageVecFailure(crop.cropId);
         onProgress?.(`  crop ${crop.cropId} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       afterId = crop.cropId; // advance past every attempted crop, success or fail
