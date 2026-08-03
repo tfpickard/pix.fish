@@ -85,8 +85,12 @@ export async function umapRecomputeHandler(job: Job): Promise<void> {
   const all = await allCaptionVectors();
   if (all.length < 4) {
     // UMAP needs at least nNeighbors+1 points to be meaningful. Persist an
-    // empty projection so the read path knows the job ran.
-    await saveProjection({ nNeighbors, minDist, kind }, []);
+    // empty projection so the read path knows the job ran -- under the same
+    // guard as the full-fit path below. An empty projection still becomes
+    // latestProjection() and is still what later runs inherit from, so letting
+    // this one path skip the check would leave the exact reversion the guard
+    // exists to stop, just on a corpus small enough to look unimportant.
+    await saveProjection({ nNeighbors, minDist, kind }, [], inherited ? resolved : null);
     return;
   }
 
