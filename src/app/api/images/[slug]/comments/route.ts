@@ -1,3 +1,4 @@
+import { checkBotId } from 'botid/server';
 import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { getImageBySlug } from '@/lib/db/queries/images';
@@ -25,6 +26,15 @@ export async function POST(req: Request, ctx: { params: { slug: string } }) {
   // change.
   if (!rateLimit(`comment:${ipHash}`, 3, 10 * 60_000)) {
     return NextResponse.json({ error: 'rate limited' }, { status: 429 });
+  }
+
+  // Guests may comment without signing in, so before BotID the per-IP throttle
+  // was the only thing between a spam script and the moderation queue. After
+  // the throttle deliberately: checkBotId() is a network round trip and a
+  // client already over its 3-per-10-minutes should not cost us one.
+  const { isBot } = await checkBotId();
+  if (isBot) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   const img = await getImageBySlug(decodeURIComponent(ctx.params.slug));

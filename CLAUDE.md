@@ -70,6 +70,16 @@ Three things about that middleware are load-bearing and easy to undo by accident
 
 See `docs/rate-limiting.md` for how the three limiter layers relate.
 
+### BotID (`botid`, `src/lib/botid-routes.ts`, `next.config.mjs`, root layout)
+
+Vercel's invisible CAPTCHA, on three browser-invoked POSTs: `/api/chat` (spends LLM tokens anonymously), `/api/register` (account spam), and `/api/images/*/comments` (guest comment spam). It is **not** a rate limiter -- it answers "did a real browser session send this", which is orthogonal to volume.
+
+Three parts, all required, and the list has to agree across them: `withBotId` in `next.config.mjs` (proxies the challenge script through our origin), `<BotIdClient>` in the root layout (Next 14 predates the 15.3 `instrumentation-client.ts` hook, so it is a component; it patches `fetch`/`XHR`), and a `checkBotId()` call in each protected handler. A path on the client list but unchecked server-side is decoration; a handler checking a path the client does not instrument 403s real users.
+
+**Failure is user-facing and invisible locally.** `checkBotId()` returns `HUMAN` in dev, so a broken wiring only shows up on a deployment -- and it shows up as real people getting 403 on sign-up, chat, and comments. Verify from a real browser on a preview, never with curl (curl has no token by construction and is supposed to be rejected).
+
+`POST /api/images` is deliberately **not** protected: `/api/share-target` re-enters that handler with a synthesized `Request` that never passed through the instrumented `fetch`, so a check there would 403 every PWA share. Reactions are excluded too -- the round trip costs more than the abuse a unique index already collapses.
+
 ### AI provider abstraction (`src/lib/ai/`)
 
 Everything that calls a vision/embedding model goes through `AIProvider` (`types.ts`). Files: `anthropic.ts`, `openai.ts` (implementations), `index.ts` (`getProvider`/`getEmbedder` factories), `config.ts` (defaults), `loadConfig.ts` (DB-backed config), `keys.ts` (per-user key crypto + loading), `breed.ts` (embedding-centroid generation), `types.ts` (interface + JSON parsers). The interface has required `captions`/`descriptions`/`tags` plus optional `text?` (breed-only) and `embed?`/`embedModel?` (embeddings-only).

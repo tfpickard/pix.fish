@@ -1,3 +1,4 @@
+import { checkBotId } from 'botid/server';
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -76,6 +77,15 @@ export async function POST(req: Request) {
   // spamming unique emails. Same in-memory helper as the credentials flow.
   if (!rateLimit(`register:ip:${hashIp(getRequestIp(req))}`, 5, 10 * 60_000)) {
     return NextResponse.json({ error: 'too many attempts -- try again later' }, { status: 429 });
+  }
+
+  // Account creation is the gate in front of everything session-only, upload
+  // included, so a scripted signup is worth more to an attacker than any single
+  // request it could make. After the throttle: checkBotId() is a network call
+  // and a client already over the per-IP limit should not cost us one.
+  const { isBot } = await checkBotId();
+  if (isBot) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   let body: unknown;

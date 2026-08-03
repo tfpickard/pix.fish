@@ -6,6 +6,7 @@
 // persona system prompt and the API key live in src/lib/ai/pisci-chat.ts and
 // never reach the browser -- the client only ever POSTs this route.
 
+import { checkBotId } from 'botid/server';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { renderPisciTurn, pisciLlmDisabled } from '@/lib/ai/pisci-chat';
@@ -51,6 +52,17 @@ export async function POST(req: Request) {
   const ipKey = `pisci-chat:${hashIp(getRequestIp(req))}`;
   if (!rateLimit(ipKey, RATE_MAX, RATE_WINDOW_MS)) {
     return NextResponse.json({ error: 'rate limited' }, { status: 429 });
+  }
+
+  // This is the one anonymous endpoint that spends money per request, so it
+  // gets BotID on top of the IP throttle. Ordered after the throttle on
+  // purpose: the throttle is a local Map lookup and checkBotId() is a network
+  // round trip, so a client already over its limit never pays for the call.
+  // A 429 makes the widget fall back to its canned pools; 403 is the same
+  // dead end for a scripted client, and neither crashes the UI.
+  const { isBot } = await checkBotId();
+  if (isBot) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
 
   const parsed = bodySchema.safeParse(await req.json().catch(() => null));

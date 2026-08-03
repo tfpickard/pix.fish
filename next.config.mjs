@@ -1,4 +1,5 @@
 import withSerwistInit from '@serwist/next';
+import { withBotId } from 'botid/next/config';
 
 const withSerwist = withSerwistInit({
   swSrc: 'src/app/sw.ts',
@@ -47,4 +48,10 @@ const nextConfig = {
   }
 };
 
-export default withSerwist(nextConfig);
+// withBotId injects the rewrites that proxy its challenge script from our own
+// origin (loading it cross-origin is what ad blockers and CSP break). It wraps
+// the already-Serwist-wrapped config rather than the bare one so it sees the
+// final rewrite set and merges into it -- the `/random` aliases above are
+// beforeFiles rules and must survive. `bun run build` writes the merged list to
+// .next/routes-manifest.json; check there if a rewrite ever goes missing.
+export default withBotId(withSerwist(nextConfig));

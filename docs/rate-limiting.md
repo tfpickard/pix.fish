@@ -1,8 +1,10 @@
 # Rate limiting
 
-Three layers, cheapest-to-defend first. They are complementary, not
-alternatives -- the first is the only one that stops a flood before it costs
-anything, and the only one that is configured outside this repo.
+Three layers, cheapest-to-defend first, plus BotID on a short list of routes
+(see the last section -- it answers a different question and is not a limiter).
+The three layers are complementary, not alternatives -- the first is the only
+one that stops a flood before it costs anything, and the only one that is
+configured outside this repo.
 
 ## 1. Vercel WAF (edge, global, not in this repo)
 
@@ -141,3 +143,44 @@ the problem rather than one abusive client, a short `s-maxage` on the anonymous,
 unfiltered variant of `/` is the bigger lever -- but it interacts with the NSFW
 cookie, the per-request random haiku, and the sort seed, so it is a real change
 rather than a config tweak.
+
+## BotID (`botid`, `src/lib/botid-routes.ts`)
+
+Not a fourth limiter. The three layers above ask "how many requests has this
+client made"; BotID asks "did a real browser session make this one". The two
+are complementary -- a botnet spread thin enough to stay under every limit is
+exactly what BotID catches, and a logged-in human hammering a button is exactly
+what it does not.
+
+Wiring, all three parts required:
+
+1. `next.config.mjs` wraps the config in `withBotId`, which adds rewrites that
+   proxy the challenge script through our own origin. Loading it cross-origin
+   is what ad blockers and CSP break.
+2. `src/app/layout.tsx` renders `<BotIdClient>`. Next 14 predates the
+   `instrumentation-client.ts` hook that 15.3+ uses, so the client half is a
+   component rather than an init call. It patches `window.fetch` and
+   `XMLHttpRequest` to attach a token on the protected paths.
+3. Each protected handler calls `checkBotId()` and 403s on `isBot`.
+
+The protected list lives in `src/lib/botid-routes.ts` with the reasoning for
+each entry, including the two deliberate omissions (`POST /api/images`, because
+`/api/share-target` re-enters that handler with a synthesized request that
+carries no token; and reactions, because the round trip costs more than the
+abuse). The client list and the `checkBotId()` call sites have to agree -- a
+path protected on the client but unchecked on the server is decoration, and a
+handler checking a path the client does not instrument 403s real users.
+
+Running at the default `basic` check level, which needs no configuration beyond
+the package. `deepAnalysis` is the paid Bot Management tier and must be set on
+**both** sides (client `advancedOptions.checkLevel` and the `checkBotId()`
+call) or verification fails.
+
+**The failure direction is user-facing.** If the client script does not run --
+blocked, or the project is not provisioned for BotID -- requests arrive without
+a token and read as bots, so real people get 403s on sign-up, chat, and
+comments. In local development `checkBotId()` returns `HUMAN` by default and
+none of this is exercised, so a preview deployment is the first place the real
+answer shows up. Verify a protected route from an actual browser on the preview
+before merging, not with curl: curl has no token by construction and is
+*supposed* to be rejected, so it can only confirm the blocking direction.
