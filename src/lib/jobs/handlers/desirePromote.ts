@@ -3,7 +3,7 @@ import { getProvider, loadUserProviderKeys } from '@/lib/ai';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { firstCaptionsByImageIds, type CaptionSnippet } from '@/lib/db/queries/captions';
 import { getSiteAdminId } from '@/lib/db/queries/users';
-import { getTopPaths, getWornEdgesFor, edgeKey } from '@/lib/db/queries/path-traffic';
+import { getTopGraphBackedPaths, getWornEdgesFor, edgeKey } from '@/lib/db/queries/path-traffic';
 import { getKnnPairsAmong, knnPairKey } from '@/lib/db/queries/knn';
 import {
   getDesirePathsBySigs,
@@ -67,20 +67,20 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const minEdgeValue = payload.minEdgeValue ?? DEFAULT_MIN_EDGE_VALUE;
   const maxRoutes = payload.maxRoutes ?? DEFAULT_MAX_ROUTES;
 
-  const rawEdges = await getTopPaths(TOP_EDGE_LIMIT);
-
-  // Gate on graph-backed traffic BEFORE assembly. /api/traffic accepts
-  // client-supplied walks, so without this an unauthenticated caller could post
-  // arbitrary real image ids a few times and manufacture a public desire path
-  // between images that were never walkable. Filtering pre-assembly (rather
-  // than validating finished corridors) also stops a fabricated edge from
-  // greedily attaching itself to an otherwise genuine corridor.
+  // Gated in SQL, before the cap. /api/traffic accepts client-supplied walks,
+  // so an unauthenticated caller could otherwise post arbitrary real image ids
+  // and manufacture a public desire path between images that were never
+  // walkable. Doing it pre-assembly (rather than validating finished corridors)
+  // also stops a fabricated edge greedily attaching itself to a genuine one.
+  //
+  // Applying the gate inside the query rather than after it is the load-bearing
+  // part: ranking raw rows first let a flood of high-value fake pairs occupy
+  // the whole top-N, and filtering afterwards then left assembly with nothing
+  // at all -- trading fabrication for starvation.
   //
   // This drops no legitimate traffic: the only emitter is a completed /connect
   // journey, whose node sequence findPath built out of these very kNN edges.
-  const knnPairs = await getKnnPairsAmong(rawEdges.flatMap((e) => [e.srcId, e.dstId]));
-  const edges = rawEdges.filter((e) => knnPairs.has(knnPairKey(e.srcId, e.dstId)));
-  const rejected = rawEdges.length - edges.length;
+  const edges = await getTopGraphBackedPaths(TOP_EDGE_LIMIT);
 
   // Assemble at the promotion floor, not the (looser) minEdgeValue. Strength is
   // a chain's weakest edge, so any edge below promoteFloor would drag its whole
@@ -142,12 +142,15 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
 
   // Ask the clerk to name a corridor. Returns null when captioning is off, the
   // per-run budget is spent, or the provider call fails -- all non-fatal.
-  async function nameRoute(route: AssembledRoute): Promise<string | null> {
+  async function nameRoute(
+    nodeIds: number[],
+    caps: Map<number, CaptionSnippet>
+  ): Promise<string | null> {
     if (!canCaption || captionBudget <= 0) return null;
     captionBudget--;
     try {
-      const stops: RouteStop[] = route.nodeIds.map((id) => {
-        const c = capMap.get(id);
+      const stops: RouteStop[] = nodeIds.map((id) => {
+        const c = caps.get(id);
         return { slug: c?.slug ?? String(id), caption: c?.caption ?? '' };
       });
       const text = (await provider!.text!(buildRouteNamePrompt(stops))).trim();
@@ -160,7 +163,7 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   let promoted = 0;
   for (const route of toFile) {
     const sig = routeSignature(route.nodeIds);
-    const caption = await nameRoute(route);
+    const caption = await nameRoute(route.nodeIds, capMap);
 
     let filed = false;
     for (let attempt = 0; attempt < SLUG_RETRIES && !filed; attempt++) {
@@ -194,7 +197,7 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   let renamed = 0;
   for (const route of needName) {
     if (captionBudget <= 0) break;
-    const caption = await nameRoute(route);
+    const caption = await nameRoute(route.nodeIds, capMap);
     if (!caption) continue;
     await setDesirePathCaptionIfNull(
       routeSignature(route.nodeIds),
@@ -220,6 +223,15 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
     unverified.flatMap((a) => routeEdgePairs(a.nodeIds as number[]))
   );
 
+  // Retention needs the same graph gate as promotion. Traffic alone is not
+  // evidence a corridor is walkable: a path promoted from fabricated traffic
+  // before this gate existed, or one whose edges vanished in a later kNN
+  // rebuild, would otherwise be kept alive indefinitely by anyone continuing to
+  // post its pairs -- the gate above only ever sees freshly assembled routes.
+  const activeKnnPairs = await getKnnPairsAmong(
+    unverified.flatMap((a) => a.nodeIds as number[])
+  );
+
   const retireSigs: string[] = [];
   const stillAlive: {
     edgeSig: string;
@@ -227,6 +239,10 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
     lifetime: number;
     lastWalkedAt: Date | null;
   }[] = [];
+  // Survivors kept alive purely by edge verification, still without a name.
+  // They never enter `qualifying`, so the rename pass above -- which is built
+  // from toRefresh -- structurally cannot reach them.
+  const survivorsNeedName: { edgeSig: string; nodeIds: number[] }[] = [];
 
   for (const a of unverified) {
     const pairs = routeEdgePairs(a.nodeIds as number[]);
@@ -236,6 +252,10 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
     let complete = pairs.length > 0;
 
     for (const p of pairs) {
+      if (!activeKnnPairs.has(knnPairKey(p.srcId, p.dstId))) {
+        complete = false; // not walkable in the current graph -- retire it
+        break;
+      }
       const worn = wornMap.get(edgeKey(p.srcId, p.dstId));
       if (!worn) {
         complete = false; // an edge with no live traffic breaks the chain
@@ -255,6 +275,9 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
         lifetime: minLife,
         lastWalkedAt: lastWalked
       });
+      if (a.caption == null) {
+        survivorsNeedName.push({ edgeSig: a.edgeSig, nodeIds: a.nodeIds as number[] });
+      }
     } else {
       retireSigs.push(a.edgeSig);
     }
@@ -263,10 +286,34 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const revived = await refreshDesirePathsBulk(stillAlive);
   const retired = await retireDesirePathsBySigs(retireSigs, now);
 
+  // Second rename pass, for the survivors above. Without it, a route that lost
+  // its first naming attempt to a provider blip and then stopped resurfacing in
+  // the greedy partition would display its generated slug forever -- which is
+  // precisely what the retry pass exists to prevent, so leaving this gap would
+  // make that guarantee true only for the routes that needed it least.
+  // Needs its own caption hydration: capMap was built from toFile + needName,
+  // and by construction none of these appear in either.
+  if (captionBudget > 0 && survivorsNeedName.length > 0) {
+    const survivorCaps = await firstCaptionsByImageIds([
+      ...new Set(survivorsNeedName.flatMap((s) => s.nodeIds))
+    ]);
+    for (const s of survivorsNeedName) {
+      if (captionBudget <= 0) break;
+      const caption = await nameRoute(s.nodeIds, survivorCaps);
+      if (!caption) continue;
+      await setDesirePathCaptionIfNull(
+        s.edgeSig,
+        caption,
+        cfg.descriptions.provider,
+        cfg.descriptions.model
+      );
+      renamed++;
+    }
+  }
+
   console.log(
     `desire.promote: ${promoted} promoted, ${refreshed} refreshed, ${revived} verified-kept, ` +
-      `${renamed} renamed, ${retired} retired (${edges.length} graph-backed edges of ` +
-      `${rawEdges.length}${rejected ? `, ${rejected} rejected as not kNN-backed` : ''}; ` +
+      `${renamed} renamed, ${retired} retired (${edges.length} graph-backed edges; ` +
       `${qualifying.length} corridors above floor ${promoteFloor}; ${toFile.length} filed; ` +
       `caption budget left ${captionBudget})`
   );

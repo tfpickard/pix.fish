@@ -99,12 +99,14 @@ export type WornEdge = {
   lastUpdatedAt: Date;
 };
 
-// getTopPaths(): the most-walked edges by CURRENT (decayed) traffic, descending.
-// The natural reader for desire-paths promotion. The path_traffic table is
+// getTopGraphBackedPaths(): the most-walked GRAPH-BACKED edges by CURRENT
+// (decayed) traffic, descending. The reader for desire-paths promotion; the
+// name states the guarantee because the cap makes it load-bearing (see the
+// EXISTS below). The path_traffic table is
 // small (bounded by walked edges over a few-hundred-image corpus), so we scan
 // it and rank in JS with the shared decay function rather than approximate the
 // decay in SQL. `limit` caps the returned rows, not the scan.
-export async function getTopPaths(limit = 100): Promise<WornEdge[]> {
+export async function getTopGraphBackedPaths(limit = 100): Promise<WornEdge[]> {
   const dbRows = await db
     .select({
       srcId: pathTraffic.srcId,
@@ -113,7 +115,23 @@ export async function getTopPaths(limit = 100): Promise<WornEdge[]> {
       lifetime: pathTraffic.lifetime,
       lastUpdatedAt: pathTraffic.lastUpdatedAt
     })
-    .from(pathTraffic);
+    .from(pathTraffic)
+    // The kNN gate belongs HERE, before the cap -- not in the caller after it.
+    // /api/traffic accepts client-supplied walks, so ranking raw rows first let
+    // anyone flood enough high-value non-kNN pairs to fill the whole top-N;
+    // filtering afterwards then removed every one of them and left assembly
+    // with nothing, blocking promotion entirely. Fabrication was already
+    // blocked; this closes the starvation that blocking it created.
+    //
+    // EXISTS rather than a join: the graph is written symmetrically, so a join
+    // would match twice and duplicate the traffic row. Either orientation
+    // counts, for the same reason.
+    .where(sql`EXISTS (
+      SELECT 1 FROM knn_edges k
+      WHERE k.src_type = 'image' AND k.dst_type = 'image'
+        AND ((k.src_id = ${pathTraffic.srcId} AND k.dst_id = ${pathTraffic.dstId})
+          OR (k.src_id = ${pathTraffic.dstId} AND k.dst_id = ${pathTraffic.srcId}))
+    )`);
 
   const now = Date.now();
   return dbRows
