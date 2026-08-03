@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { jobs } from '../schema';
 import type { Job, NewJob } from '../schema';
@@ -156,6 +156,36 @@ export async function inFlightRunJobCount(type: string, runStamp: number): Promi
       AND (payload->>'runStamp')::bigint = ${runStamp}
   `);
   return Number(res.rows?.[0]?.n ?? 0);
+}
+
+/**
+ * Hand claimed-but-never-started rows straight back to the queue.
+ *
+ * The drain claims a batch of 10 and runs them sequentially, so when one job
+ * eats the wall budget the rest of its batch are already marked `processing`
+ * and are simply abandoned -- unclaimable by the next tick until the five
+ * minute visibility timeout reclaims them. Releasing them explicitly turns
+ * that five-minute stall into the next tick, roughly a minute.
+ *
+ * Only ever called for rows the drain knows it did not start, so this cannot
+ * race a running handler. Guarded on status = 'processing' and the caller's
+ * own lock id regardless, so a row reclaimed and re-claimed by someone else in
+ * the meantime is left alone.
+ */
+export async function releaseUnstartedJobs(lockId: string, ids: number[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const res = await db
+    .update(jobs)
+    .set({ status: 'pending', lockedBy: null, lockedAt: null, startedAt: null })
+    .where(
+      and(
+        eq(jobs.status, 'processing'),
+        eq(jobs.lockedBy, lockId),
+        inArray(jobs.id, ids)
+      )
+    )
+    .returning({ id: jobs.id });
+  return res.length;
 }
 
 // Reclaim rows whose visibility-timeout lease expired. Runs at the top of the
