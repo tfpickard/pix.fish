@@ -63,26 +63,43 @@ export async function hasPendingJobOfType(type: string): Promise<boolean> {
   return Boolean(res.rows?.[0]?.present);
 }
 
-// True when an OLDER job of this type is currently executing -- i.e. the caller
-// lost. For handlers whose work is corpus-wide and BILLED: two concurrent sweeps
-// select overlapping rows and pay twice for the same embedding, because a SELECT
+// True when another job of this type STARTED BEFORE the caller and is still
+// executing -- i.e. the caller lost the election and must step aside. For
+// handlers whose work is corpus-wide and BILLED: two concurrent sweeps select
+// overlapping rows and pay twice for the same embedding, because a SELECT
 // predicate is not a claim.
 //
-// The `id <` is the whole mechanism, and it has to be an ordering rather than a
-// mere existence check. "Is any sibling running?" is symmetric: two handlers
-// racing each see the other, both step aside, both retry, and after enough
-// rounds both give up waiting and collide anyway. Serialising on the primary key
-// is a total order, so of any set running at once exactly one sees no elder and
-// proceeds -- an election with no protocol, no lock, and no tie to a pooled
-// connection (which is what rules out a session-scoped advisory lock here).
+// The ordering is the whole mechanism, and it has to be over START TIME, not
+// over the id. Two wrong shapes to avoid:
 //
-// Deliberately 'processing' only: a pending row is not spending anything yet,
-// and the caller's own row is excluded by the strict inequality.
-export async function olderProcessingJobOfType(type: string, selfId: number): Promise<boolean> {
+//   - "Is any sibling running?" is symmetric. Two handlers racing each see the
+//     other, both step aside, both retry together, and after enough rounds both
+//     give up waiting and collide anyway -- a livelock ending in the exact
+//     double-spend it was meant to stop.
+//   - "Is an older-id sibling running?" only elects a winner when every
+//     contender looks before any of them proceeds. claimJobs orders by run_at,
+//     not by id, so a delayed low-id job (a backoff retry) can start while a
+//     high-id sweep is already running: it looks, sees no elder, and both run.
+//
+// locked_at is stamped at claim time, so (locked_at, id) is the real start
+// order, with the id breaking the tie when two are claimed in the same
+// transaction timestamp. Whoever started first is unambiguous and never defers.
+// No lock, no protocol, and nothing tied to a pooled connection -- which is what
+// rules out a session-scoped advisory lock here, while a transaction-scoped one
+// cannot span a multi-statement sweep.
+//
+// Deliberately 'processing' only: a pending row is not spending anything yet.
+export async function earlierClaimedJobOfType(type: string, selfId: number): Promise<boolean> {
   const res = await db.execute<{ present: boolean }>(sql`
     SELECT EXISTS(
-      SELECT 1 FROM jobs
-      WHERE type = ${type} AND status = 'processing' AND id < ${Math.trunc(selfId)}
+      SELECT 1
+      FROM jobs other, jobs self
+      WHERE self.id = ${Math.trunc(selfId)}
+        AND other.id <> self.id
+        AND other.type = ${type}
+        AND other.status = 'processing'
+        AND (COALESCE(other.locked_at, other.run_at), other.id)
+          < (COALESCE(self.locked_at, self.run_at), self.id)
     ) AS present
   `);
   return Boolean(res.rows?.[0]?.present);

@@ -27,6 +27,8 @@ type Readiness = {
   needsVisual: boolean;
   retriable: number;
   abandoned: number;
+  embedderConfigured: boolean;
+  backfillInFlight: boolean;
   ready: boolean;
   blocker: string | null;
 };
@@ -112,10 +114,14 @@ export default function AdminCharactersPage() {
   // long after the queue finished and clustering resumed -- the one question
   // this panel exists to answer, answered wrongly.
   //
-  // Poll only while something is actually draining. An abandoned-only blocker
-  // cannot resolve on its own (that is what the attempt cap means), so polling
-  // it would just be a request every 15s forever.
-  const draining = !!readiness && readiness.needsVisual && readiness.retriable > 0;
+  // Poll only while something is actually draining -- which means a backfill is
+  // in flight, not merely that crops COULD be retried. Without that distinction
+  // the loop runs forever in the two states that never resolve on their own: no
+  // VOYAGE_API_KEY, or a backfill chain that ended with no successor. An
+  // abandoned-only blocker is the same case (that is what the attempt cap
+  // means), and it is covered because it leaves nothing in flight.
+  const draining =
+    !!readiness && readiness.needsVisual && readiness.retriable > 0 && readiness.backfillInFlight;
   useEffect(() => {
     if (!draining) return;
     const timer = setInterval(loadReadiness, READINESS_POLL_MS);
@@ -213,9 +219,10 @@ export default function AdminCharactersPage() {
           </h2>
           <p className="font-mono text-[11px] leading-relaxed text-ink-300">{readiness.blocker}</p>
           <p className="font-mono text-[10px] text-ink-600">
-            space={readiness.space} -- {readiness.retriable} draining, {readiness.abandoned} given
-            up on. no cluster is enqueued while this holds, so the roster is stale rather than
-            pruned.
+            space={readiness.space} -- {readiness.retriable} missing
+            {readiness.backfillInFlight ? ' (backfill running)' : ' (no backfill queued)'},{' '}
+            {readiness.abandoned} given up on. no cluster is enqueued while this holds, so the
+            roster is stale rather than pruned.
           </p>
           {readiness.abandoned > 0 ? (
             <button

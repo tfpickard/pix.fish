@@ -7,7 +7,7 @@ import {
   setCropImageVec,
   MAX_IMAGE_EMBED_ATTEMPTS
 } from '@/lib/db/queries/character-crops';
-import { enqueueJob, olderProcessingJobOfType } from '@/lib/db/queries/jobs';
+import { earlierClaimedJobOfType, enqueueJob } from '@/lib/db/queries/jobs';
 import type { Job } from '@/lib/db/schema';
 import { scheduleRecluster } from '@/lib/universe/recluster';
 
@@ -51,19 +51,22 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
   // admin button has no dedupe, and a sweep that starts late in a drain can
   // outlive its tick.
   //
-  // The check is asymmetric on purpose (older job wins, see
-  // olderProcessingJobOfType). A symmetric "is anyone else running?" would have
+  // The check is asymmetric on purpose (whoever started first wins, see
+  // earlierClaimedJobOfType). A symmetric "is anyone else running?" would have
   // both racers defer, retry together, and collide once they exhaust their
   // deferrals -- a livelock ending in the exact double-spend it was meant to
-  // stop. Ordering on the id elects one winner outright.
+  // stop. Ordering on claim time elects one winner outright, and on claim time
+  // rather than on the id because claimJobs orders by run_at: a delayed low-id
+  // retry can start while a high-id sweep is already running, and an id
+  // ordering would let it see no elder and proceed alongside.
   //
   // The loser steps aside and retries rather than dropping: the enqueue that
   // triggered it may be the only thing covering crops the winner read too early
   // to see.
   const deferrals = Number(payload.deferrals ?? 0);
-  if (deferrals < MAX_DEFERRALS && (await olderProcessingJobOfType(job.type, job.id))) {
+  if (deferrals < MAX_DEFERRALS && (await earlierClaimedJobOfType(job.type, job.id))) {
     console.log(
-      `characters.backfill-visuals: an older sweep is running; deferring (${deferrals + 1}/${MAX_DEFERRALS})`
+      `characters.backfill-visuals: an earlier sweep is running; deferring (${deferrals + 1}/${MAX_DEFERRALS})`
     );
     await enqueueJob({
       type: 'characters.backfill-visuals',
