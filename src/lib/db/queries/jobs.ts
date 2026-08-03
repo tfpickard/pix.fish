@@ -63,6 +63,23 @@ export async function hasPendingJobOfType(type: string): Promise<boolean> {
   return Boolean(res.rows?.[0]?.present);
 }
 
+// True when a DIFFERENT job of this type is currently executing. Deliberately
+// 'processing' only and excluding the caller's own row, so a running handler can
+// ask "is a sibling of mine already working?" -- which neither of the two checks
+// above can answer (both would match the asker itself, and a pending row is not
+// yet spending anything). For handlers whose work is corpus-wide and BILLED:
+// two concurrent sweeps select overlapping rows and pay twice for the same
+// embedding, because a SELECT predicate is not a claim.
+export async function otherProcessingJobOfType(type: string, excludeId: number): Promise<boolean> {
+  const res = await db.execute<{ present: boolean }>(sql`
+    SELECT EXISTS(
+      SELECT 1 FROM jobs
+      WHERE type = ${type} AND status = 'processing' AND id <> ${Math.trunc(excludeId)}
+    ) AS present
+  `);
+  return Boolean(res.rows?.[0]?.present);
+}
+
 // True when a job of this type is pending OR already processing -- the stricter
 // counterpart to hasPendingJobOfType. Use it where an in-flight (already claimed)
 // job DOES cover the work, so a second enqueue would only duplicate it: e.g. the

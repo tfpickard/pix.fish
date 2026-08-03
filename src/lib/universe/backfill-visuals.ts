@@ -47,9 +47,13 @@ export async function backfillVisualsInline(
         ok++;
         if (ok % 20 === 0) onProgress?.(`  embedded ${ok}`);
       } catch (err) {
-        if (err instanceof ImageEmbedError && err.systemic) {
+        // Same rule as the queue handler: only a provider-classified crop fault
+        // spends an attempt. A systemic embedder failure, a malformed response,
+        // or a failed write is not evidence about this crop, and charging it
+        // would abandon healthy crops three runs later.
+        if (!(err instanceof ImageEmbedError) || err.systemic) {
           throw new Error(
-            `backfill aborted after ${ok} embedded -- the embedder is failing, not the crops: ${err.message}`
+            `backfill aborted after ${ok} embedded -- not a crop-specific failure: ${err instanceof Error ? err.message : String(err)}`
           );
         }
         fail++;

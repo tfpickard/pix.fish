@@ -28,12 +28,56 @@ export class ImageEmbedError extends Error {
   }
 }
 
-// Treat only the codes that name a fault in the REQUEST's image as per-crop.
-// Everything else -- auth, quota, throttling, server errors, transport -- is
-// assumed systemic, because charging a crop for someone else's outage is the
-// expensive mistake and assuming systemic only costs a retry.
-export function isCropFault(status: number): boolean {
-  return status === 400 || status === 404 || status === 413 || status === 415 || status === 422;
+// Content-shaped rejections: the request reached the model and the SUPPLIED
+// PAYLOAD was refused. Nothing else can produce these, so the crop is to blame.
+const CROP_FAULT_STATUSES = new Set([413, 415, 422]);
+
+// A 400 is ambiguous. Voyage returns it both for "I could not use your image"
+// and for "your request is wrong" -- a deprecated or misspelled model id, a
+// malformed body, a bad parameter. The second kind is identical for every crop,
+// so blaming the crop would abandon the whole corpus in three sweeps for a
+// one-line config mistake. Read the body: blame the crop only when the message
+// is about the image, and never when it names a request-level subject.
+const REQUEST_FAULT_MARKERS = [
+  'model',
+  'api key',
+  'api_key',
+  'apikey',
+  'authoriz',
+  'credential',
+  'quota',
+  'credit',
+  'billing',
+  'rate limit',
+  'parameter',
+  'input_type',
+  'json'
+];
+const IMAGE_FAULT_MARKERS = [
+  'image',
+  'decode',
+  'corrupt',
+  'pixel',
+  'download',
+  'unsupported media',
+  'too large',
+  'dimension',
+  'width',
+  'height'
+];
+
+// 404 is deliberately absent from both: our crop URL is fetched by Voyage
+// server-side, so a dead blob comes back as a 400 describing the fetch, while a
+// 404 from the API itself means the ENDPOINT moved -- systemic, and exactly the
+// failure that must not burn the corpus.
+export function isCropFault(status: number, body = ''): boolean {
+  if (CROP_FAULT_STATUSES.has(status)) return true;
+  if (status !== 400) return false;
+  const text = body.toLowerCase();
+  // Order matters: a request-level marker vetoes, because "invalid model, expected
+  // one of the multimodal image models" mentions the image without being about it.
+  if (REQUEST_FAULT_MARKERS.some((m) => text.includes(m))) return false;
+  return IMAGE_FAULT_MARKERS.some((m) => text.includes(m));
 }
 
 export type ImageEmbedder = {
@@ -79,7 +123,7 @@ export function getImageEmbedder(): ImageEmbedder | null {
         throw new ImageEmbedError(
           `voyage multimodal embed ${res.status}: ${body.slice(0, 200)}`,
           res.status,
-          !isCropFault(res.status)
+          !isCropFault(res.status, body)
         );
       }
       const json = (await res.json()) as { data?: { embedding?: number[] }[] };

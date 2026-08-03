@@ -8,7 +8,7 @@ import {
   setCropImageVec,
   MAX_IMAGE_EMBED_ATTEMPTS
 } from '@/lib/db/queries/character-crops';
-import { enqueueJob } from '@/lib/db/queries/jobs';
+import { enqueueJob, otherProcessingJobOfType } from '@/lib/db/queries/jobs';
 import type { Job } from '@/lib/db/schema';
 import { scheduleRecluster } from '@/lib/universe/recluster';
 
@@ -28,14 +28,45 @@ const BUDGET_MS = 25_000;
 // genuinely-poisoned crop -- blob deleted, always fails -- eventually surfaces as
 // a failed job instead of restarting forever.
 const MAX_SWEEPS = 3;
+// How many times a run will step aside for a sibling before running anyway.
+// Bounded because deferring forever would be its own outage: a wedged sibling
+// (or a reclaim race) must not be able to stop the drain permanently. Paying
+// for a few duplicate embeddings is strictly better than never embedding.
+const MAX_DEFERRALS = 3;
+// Long enough that the sibling's 25s budget plus a trailing call has elapsed,
+// so the retry usually finds the corpus clear on its first look.
+const DEFER_MS = 45_000;
 
-type Payload = { afterId?: number; sweep?: number };
+type Payload = { afterId?: number; sweep?: number; deferrals?: number };
 
 export async function charactersBackfillVisualsHandler(job: Job): Promise<void> {
   const embedder = getImageEmbedder();
   if (!embedder) throw new Error('characters.backfill-visuals: no VOYAGE_API_KEY configured');
 
   const payload = (job.payload as Payload | undefined) ?? {};
+
+  // Serialize corpus sweeps. cropsMissingImageVec is a predicate, not a claim,
+  // so two concurrent runs select the same under-cap crops and pay Voyage twice
+  // for each -- and, when they fail, charge the crop two attempts for one fault,
+  // overshooting the cap this job promises. Concurrency is reachable in practice:
+  // characters.detect deliberately enqueues even while one is processing, the
+  // admin button has no dedupe, and a sweep that starts late in a drain can
+  // outlive its tick. Step aside and retry rather than drop the run -- the
+  // enqueue that triggered this may be the only thing covering crops the sibling
+  // read too early to see.
+  const deferrals = Number(payload.deferrals ?? 0);
+  if (deferrals < MAX_DEFERRALS && (await otherProcessingJobOfType(job.type, job.id))) {
+    console.log(
+      `characters.backfill-visuals: another sweep is running; deferring (${deferrals + 1}/${MAX_DEFERRALS})`
+    );
+    await enqueueJob({
+      type: 'characters.backfill-visuals',
+      payload: { ...payload, deferrals: deferrals + 1 },
+      runAt: new Date(Date.now() + DEFER_MS),
+      maxAttempts: 3
+    });
+    return;
+  }
   // Cursor-paged by crop id. `afterId` advances past every crop we ATTEMPT
   // (success OR failure), so a poisoned prefix -- crops whose blobs were deleted
   // and always fail -- can't wedge the drain: we step past it and reach the valid
@@ -67,15 +98,19 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
         await setCropImageVec(crop.cropId, vec, embedder.name, embedder.model);
         ok++;
       } catch (err) {
-        // A systemic failure (bad key, quota, throttle, outage) says nothing
-        // about this crop, so it must NOT spend the crop's attempt budget --
-        // otherwise one Voyage outage abandons the whole corpus and the roster
-        // needs a manual reset to recover. Stop the run instead and let the
-        // queue's backoff retry it; progress already committed is kept, because
-        // each vector is written as it is earned.
-        if (err instanceof ImageEmbedError && err.systemic) {
+        // Spending an attempt requires POSITIVE evidence that this crop is the
+        // problem: an ImageEmbedError the provider classified as crop-scoped.
+        // Everything else -- a systemic embedder failure, a malformed 200 body,
+        // a failed setCropImageVec write -- is either corpus-wide or about our
+        // own infrastructure, and would charge healthy crops for it. Three of
+        // those and the crop is abandoned, blocking visual clustering until a
+        // human resets it. So abort the run and let the queue's backoff retry:
+        // vectors are written as they are earned, so nothing already embedded
+        // is lost.
+        if (!(err instanceof ImageEmbedError) || err.systemic) {
           throw new Error(
-            `characters.backfill-visuals: embedder unavailable after ${ok} embedded this run -- ${err.message}`
+            `characters.backfill-visuals: aborting after ${ok} embedded this run -- ` +
+              `not a crop-specific failure: ${err instanceof Error ? err.message : String(err)}`
           );
         }
         failed++;
