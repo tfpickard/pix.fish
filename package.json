@@ -31,6 +31,7 @@
     "@vercel/blob": "^0.27.1",
     "@vercel/postgres": "^0.10.0",
     "archiver": "^7.0.1",
+    "botid": "^1.5.11",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "compromise": "^14.15.1",

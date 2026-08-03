@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { BotIdClient } from 'botid/client';
 import { Analytics } from '@vercel/analytics/next';
 import { fontDisplay, fontMono, fontSans, fontWordmark } from '@/lib/fonts';
 import { NavBar } from '@/components/nav-bar';
@@ -8,6 +9,7 @@ import { JsonLd } from '@/components/json-ld';
 import { TemperatureHud } from '@/components/temperature-hud';
 import { PixFish } from '@/components/pix-fish/pix-fish';
 import { PisciChatMount } from '@/components/pisci-chat-mount';
+import { BOTID_PROTECTED_ROUTES } from '@/lib/botid-routes';
 import { SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION } from '@/lib/site';
 import { buildWebSiteLd } from '@/lib/seo/jsonld';
 import './globals.css';
@@ -91,6 +93,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       suppressHydrationWarning
       className={`${fontDisplay.variable} ${fontMono.variable} ${fontSans.variable} ${fontWordmark.variable}`}
     >
+      <head>
+        {/* Next 14 predates the instrumentation-client.ts hook BotID uses from
+            15.3 on, so the client half is mounted here instead. It must be in
+            <head> and ahead of any protected fetch: it instruments window.fetch
+            to attach a token, and a request that fires before it loads arrives
+            unsigned and reads as a bot. */}
+        <BotIdClient protect={[...BOTID_PROTECTED_ROUTES]} />
+      </head>
       <body className="min-h-screen font-sans antialiased">
         <Providers>
           <NavBar />

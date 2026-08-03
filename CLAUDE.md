@@ -48,7 +48,7 @@ The `dev.sh` wrapper (`./dev.sh start|stop|restart|status|logs`) launches `bun r
 - The bootstrap admin is whoever matches `OWNER_GITHUB_ID`; the JWT callback stamps their role `admin` and upserts the row on first sign-in (`auth.ts:57-99`). Role is set deterministically *before* the DB upsert so a transient DB failure can't lock the admin out.
 - URL shapes: canonical detail is `/u/<handle>/<slug>`; per-user gallery is `/u/<handle>`. The legacy bare `/<slug>` still resolves (and redirects) for back-compat. Slugs are unique **per owner** (`images_owner_slug_uniq`, `schema.ts:69`), so two users can both own `/u/*/sunset`.
 
-### Auth + three gates (`src/lib/auth.ts`, `middleware.ts`)
+### Auth + three gates (`src/lib/auth.ts`, `src/middleware.ts`)
 
 The old single `isOwner()` gate has been split. All three live in `auth.ts`:
 
@@ -56,7 +56,29 @@ The old single `isOwner()` gate has been split. All three live in `auth.ts`:
 - `isSiteAdmin(session)` (`auth.ts:130`) -- `session.user.role === 'admin'`. Use for platform-wide actions (taxonomy, prompts, ai_config, the global /about and landing config).
 - `canEdit(session, resourceOwnerId)` (`auth.ts:138`) -- per-resource ownership; site admins always pass so they can moderate/rescue any user's content. Use for image edit/delete and any per-user resource.
 
-`middleware.ts` now enforces only **"must be signed in"** for `/admin/*` (redirect) and writes to `/api/images/*` and `/api/comments/:id` (403). It deliberately does **not** check ownership -- that needs a DB read and is done inside handlers via `canEdit`/`isSiteAdmin`. Matcher: `['/admin/:path*', '/api/images/:path*', '/api/comments/:path*']`. Any admin API outside those matched paths relies entirely on its in-handler gate, so always add an explicit `isSiteAdmin`/`canEdit` check in new handlers. Non-admin users can reach `/admin/*` pages; each page self-gates.
+`src/middleware.ts` enforces only **"must be signed in"** for `/admin/*` (redirect) and writes to `/api/images/*` and `/api/comments/:id` (403). It deliberately does **not** check ownership -- that needs a DB read and is done inside handlers via `canEdit`/`isSiteAdmin`. Any admin API the auth gate doesn't cover relies entirely on its in-handler gate, so always add an explicit `isSiteAdmin`/`canEdit` check in new handlers. Non-admin users can reach `/admin/*` pages; each page self-gates. `POST /api/images/:slug/{reactions,comments}` are carved out of the write gate: both are anonymous-public by design.
+
+**The file must live at `src/middleware.ts`.** This project has a `src` directory, so Next.js only picks up middleware from inside it; the copy that sat at the repo root through phase F compiled to nothing and never ran a single request. Anything that looks like it should be enforced at the edge needs a `.next/server/middleware-manifest.json` check before you believe it.
+
+The matcher is now a catch-all because the same file also carries the per-IP edge rate limiter (`src/lib/edge-rate-limit.ts`). Widening it did not widen the auth gate -- `authGateFor()` still restricts that to the original three prefixes and the write methods, and everything else only passes through the limiter. Consulting it *before* invoking the NextAuth wrapper is deliberate: the wrapper verifies the session JWT before its callback runs, which is wasted on every public `GET /api/images`.
+
+Three things about that middleware are load-bearing and easy to undo by accident:
+
+- **The matcher excludes a named inventory of `public/`, never a file-extension pattern.** `/anything.png` matches no static file but still resolves through `src/app/[slug]/page.tsx`, so an `*.png` exclusion silently hands out a family of DB-backed paths that never reach the limiter. Add to the list when you add to `public/`.
+- **Prefix checks are segment-aware** (`underPath`). Bare `startsWith('/admin')` also catches `/administration`, which the legacy bare-slug route serves -- that would cost any image slug beginning "admin" its public URL.
+- **`/api/cron/*` skips the limiter only with a valid `CRON_SECRET` bearer**, not by path. All four cron routes use the identical `Bearer ${process.env.CRON_SECRET}` comparison; a path-only exemption would let anyone turn a public URL into unlimited Node invocations.
+
+See `docs/rate-limiting.md` for how the three limiter layers relate.
+
+### BotID (`botid`, `src/lib/botid-routes.ts`, `next.config.mjs`, root layout)
+
+Vercel's invisible CAPTCHA, on three browser-invoked POSTs: `/api/chat` (spends LLM tokens anonymously), `/api/register` (account spam), and `/api/images/*/comments` (guest comment spam). It is **not** a rate limiter -- it answers "did a real browser session send this", which is orthogonal to volume.
+
+Three parts, all required, and the list has to agree across them: `withBotId` in `next.config.mjs` (proxies the challenge script through our origin), `<BotIdClient>` in the root layout (Next 14 predates the 15.3 `instrumentation-client.ts` hook, so it is a component; it patches `fetch`/`XHR`), and a `checkBotId()` call in each protected handler. A path on the client list but unchecked server-side is decoration; a handler checking a path the client does not instrument 403s real users.
+
+**Failure is user-facing and invisible locally.** `checkBotId()` returns `HUMAN` in dev, so a broken wiring only shows up on a deployment -- and it shows up as real people getting 403 on sign-up, chat, and comments. Verify from a real browser on a preview, never with curl (curl has no token by construction and is supposed to be rejected).
+
+`POST /api/images` is deliberately **not** protected: `/api/share-target` re-enters that handler with a synthesized `Request` that never passed through the instrumented `fetch`, so a check there would 403 every PWA share. Reactions are excluded too -- the round trip costs more than the abuse a unique index already collapses.
 
 ### AI provider abstraction (`src/lib/ai/`)
 
