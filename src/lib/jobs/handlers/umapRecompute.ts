@@ -36,35 +36,6 @@ const UMAP_SEED = 42;
  */
 type LiveParams = { nNeighbors?: unknown; minDist?: unknown; kind?: unknown };
 
-/**
- * True if it is still safe for this run to become the newest projection.
- *
- * Only meaningful for a run that INHERITED its parameters. Execution-time
- * inheritance closes the pending-job case, but not the overlapping-execution
- * one: the worker allows concurrent drains, so an automatic run can read the
- * live params, spend up to a minute inside umap.fit(), and only then save --
- * by which time an admin's tuned recompute may have started later and finished
- * first. Saving then would silently revert them with a snapshot taken before
- * they existed.
- *
- * So re-read immediately before saving and stand down if the live
- * configuration is no longer the one we inherited. Dropping this run's work is
- * the right trade: the projection that replaced it is both newer and correctly
- * configured, and the next embedding write schedules another refresh anyway.
- *
- * A run with explicit payload params is the admin, and always saves.
- */
-async function stillCurrent(resolved: Required<Payload>, inherited: boolean): Promise<boolean> {
-  if (!inherited) return true;
-  const live = ((await latestProjection())?.params ?? null) as LiveParams | null;
-  if (!live) return true;
-  return (
-    live.nNeighbors === resolved.nNeighbors &&
-    live.minDist === resolved.minDist &&
-    live.kind === resolved.kind
-  );
-}
-
 async function resolveParams(payload: Payload): Promise<Required<Payload>> {
   const needsInheritance =
     payload.nNeighbors === undefined || payload.minDist === undefined || payload.kind === undefined;
@@ -152,12 +123,13 @@ export async function umapRecomputeHandler(job: Job): Promise<void> {
     y: coords[i]![1]!
   }));
 
-  // Checked here rather than before the fit: the whole point is that the fit
-  // is slow enough for the configuration to change underneath it.
-  if (!(await stillCurrent(resolved, inherited))) {
-    console.warn('umap: live params changed during fit, discarding this run rather than reverting them');
-    return;
+  // The guard lives inside saveProjection's transaction, not out here: checking
+  // first and writing second leaves a window in which the admin's insert lands
+  // between the two. Passing resolved means "only save if the live config is
+  // still the one I inherited"; an explicit admin run passes null and always
+  // saves.
+  const saved = await saveProjection({ nNeighbors, minDist, kind }, points, inherited ? resolved : null);
+  if (!saved) {
+    console.warn('umap: live params changed during fit, discarded this run rather than reverting them');
   }
-
-  await saveProjection({ nNeighbors, minDist, kind }, points);
 }

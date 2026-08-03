@@ -26,12 +26,52 @@ export async function latestProjection(): Promise<UmapProjection | null> {
 // and the rest are there to eyeball a regression or roll back by hand.
 const KEEP_PROJECTIONS = 10;
 
-export async function saveProjection(params: UmapParams, points: UmapPoint[]): Promise<UmapProjection> {
-  const [row] = await db
-    .insert(umapProjections)
-    .values({ pointCount: points.length, points, params })
-    .returning();
-  if (!row) throw new Error('saveProjection returned no row');
+function sameParams(a: UmapParams, b: Partial<UmapParams> | null | undefined): boolean {
+  if (!b) return true; // no projection yet -- nothing to conflict with
+  return a.nNeighbors === b.nNeighbors && a.minDist === b.minDist && a.kind === b.kind;
+}
+
+/**
+ * Insert a projection, optionally only if the live configuration still matches
+ * what the caller planned around.
+ *
+ * `requireCurrent` exists for automatic refreshes, which inherit their
+ * parameters and must not overwrite an admin who retuned the atlas while the
+ * fit was running. Checking that in the handler and then calling this
+ * separately is not enough: the two statements leave a check-then-write window
+ * in which the admin's insert can land. So the comparison and the insert
+ * happen inside one transaction, serialized against every other projection
+ * write by a transaction-scoped advisory lock -- the same primitive
+ * enqueueIfNonePending uses, and for the same reason.
+ *
+ * Returns null when the guard rejected the write.
+ */
+export async function saveProjection(
+  params: UmapParams,
+  points: UmapPoint[],
+  requireCurrent?: UmapParams | null
+): Promise<UmapProjection | null> {
+  const row = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('umap.projection')::bigint)`);
+
+    if (requireCurrent) {
+      const [live] = await tx
+        .select()
+        .from(umapProjections)
+        .orderBy(desc(umapProjections.createdAt))
+        .limit(1);
+      if (!sameParams(requireCurrent, live?.params as Partial<UmapParams> | undefined)) return null;
+    }
+
+    const [inserted] = await tx
+      .insert(umapProjections)
+      .values({ pointCount: points.length, points, params })
+      .returning();
+    if (!inserted) throw new Error('saveProjection returned no row');
+    return inserted;
+  });
+
+  if (!row) return null;
 
   // Prune outside the insert, best-effort: a projection that was written but
   // not tidied is a storage problem, while a failed prune that propagated
