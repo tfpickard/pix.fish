@@ -5,6 +5,7 @@ import { firstCaptionsByImageIds, type CaptionSnippet } from '@/lib/db/queries/c
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { getTopGraphBackedPaths, getWornEdgesFor, edgeKey } from '@/lib/db/queries/path-traffic';
 import { getKnnPairsAmong, knnPairKey } from '@/lib/db/queries/knn';
+import { hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import {
   getDesirePathsBySigs,
   insertDesirePath,
@@ -232,6 +233,22 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
     unverified.flatMap((a) => a.nodeIds as number[])
   );
 
+  // ...but ONLY when the graph is actually trustworthy. knn.rebuild does
+  // clearAllKnnEdges() and insertKnnEdges() as separate awaits, and the worker
+  // permits overlapping drains, so this job can observe an empty or half-filled
+  // graph mid-rebuild. Treating that as decay would be catastrophic rather than
+  // merely wrong: with the graph empty, getTopGraphBackedPaths returns nothing,
+  // so `qualifying` is empty, EVERY active path lands in `unverified`, and the
+  // gate would retire the entire corpus of corridors in one run.
+  //
+  // When a rebuild is in flight -- or the graph is simply empty, which is the
+  // same state observed without the job row -- fall back to the traffic test
+  // alone for this run. A fabricated path surviving one extra night is a far
+  // cheaper mistake than mass-retiring paths people are walking, and the next
+  // run re-applies the gate against a settled graph.
+  const graphTrustworthy =
+    !(await hasInFlightJobOfType('knn.rebuild')) && activeKnnPairs.size > 0;
+
   const retireSigs: string[] = [];
   const stillAlive: {
     edgeSig: string;
@@ -252,7 +269,7 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
     let complete = pairs.length > 0;
 
     for (const p of pairs) {
-      if (!activeKnnPairs.has(knnPairKey(p.srcId, p.dstId))) {
+      if (graphTrustworthy && !activeKnnPairs.has(knnPairKey(p.srcId, p.dstId))) {
         complete = false; // not walkable in the current graph -- retire it
         break;
       }
@@ -266,7 +283,7 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
       if (!lastWalked || worn.lastUpdatedAt > lastWalked) lastWalked = worn.lastUpdatedAt;
     }
 
-    if (complete && minVal >= promoteFloor) {
+    if (complete && minVal >= assemblyFloor) {
       // Still genuinely worn -- keep it and refresh its metrics from its own
       // edges so /paths doesn't order by frozen values.
       stillAlive.push({
