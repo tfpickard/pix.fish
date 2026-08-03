@@ -1,12 +1,34 @@
-import { NextResponse } from 'next/server';
-import { auth, isSiteAdmin } from '@/lib/auth';
-import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
-import { countDispatchOutcomes, listRecentDispatchEvents } from '@/lib/db/queries/dispatch';
-import { dispatchMinuteForDate, driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
-import { DRIFT_ENABLED, captionCharBudget, dispatchLiveEnabled } from '@/lib/dispatch/config';
+import { NextResponse } from "next/server";
+import { auth, isSiteAdmin } from "@/lib/auth";
+import { enqueueJob, hasInFlightJobOfType } from "@/lib/db/queries/jobs";
+import {
+  countDispatchOutcomes,
+  listRecentDispatchEvents,
+  listUnresolvedAttempts,
+  liveIneligibleImageIds,
+  publiclyPostedImageIds,
+  publishedDraftIds,
+  rejectedDraftIds,
+  unpostableImageIds,
+} from "@/lib/db/queries/dispatch";
+import { EVENT_TYPE } from "@/lib/universe/events";
+import {
+  dispatchMinuteForDate,
+  driftForDate,
+  utcDateKey,
+} from "@/lib/dispatch/schedule";
+import {
+  DRIFT_ENABLED,
+  captionCharBudget,
+  dispatchLiveEnabled,
+} from "@/lib/dispatch/config";
+import {
+  getXCredentials,
+  missingXCredentialNames,
+} from "@/lib/dispatch/x-client";
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 // Review surface for the outbound X dispatch. GET returns the dispatch slice of
 // the event log (every would-be post and every skip, with its reason); POST
@@ -14,26 +36,87 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   if (!isSiteAdmin(await auth())) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const now = new Date();
   const dateKey = utcDateKey(now);
   // Bounded page SIZE plus an offset, so the whole history is reachable rather
   // than capped: limit alone made 200 a ceiling on what could ever be read.
   const params = new URL(req.url).searchParams;
-  const rawLimit = Number(params.get('limit') ?? 60);
-  const rawOffset = Number(params.get('offset') ?? 0);
+  const rawLimit = Number(params.get("limit") ?? 60);
+  const rawOffset = Number(params.get("offset") ?? 0);
   const limit = Number.isFinite(rawLimit) ? rawLimit : 60;
   const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
-  const [events, totalOutcomes] = await Promise.all([
+  const [
+    events,
+    totalOutcomes,
+    unresolvedAttempts,
+    publishedDrafts,
+    rejectedDrafts,
+    postedIds,
+    badIds,
+  ] = await Promise.all([
     listRecentDispatchEvents(limit, offset),
-    countDispatchOutcomes()
+    countDispatchOutcomes(),
+    // Fetched independently of the page. An attempt with no outcome means a post
+    // may exist with nothing recording it, and that warning must not depend on
+    // how far back the operator happens to have scrolled.
+    listUnresolvedAttempts(),
+    // Which drafts already went out. Derived from the log rather than the draft
+    // row, which keeps postId=null forever because publication appends a new
+    // event instead of mutating the draft.
+    publishedDraftIds(),
+    // Drafts X refused outright. Their bytes are fixed, so re-approving can only
+    // resend what was already rejected.
+    rejectedDraftIds(),
+    // Specimens already public (or possibly so), and specimens ruled permanently
+    // unpostable. A draft on either can never publish, so its button is withdrawn
+    // rather than left to queue jobs that only ever fail. Drafts appear in
+    // neither set, so a draft never disqualifies itself.
+    publiclyPostedImageIds(),
+    unpostableImageIds(),
+  ]);
+
+  // Specimens that stopped being publishable AFTER their draft was written --
+  // archived, basemented, reclassified, deleted.
+  //
+  // Asked about this page's drafts PLUS any the caller says it still has on
+  // screen. The page accumulates rows across load-more and then polls page 0, so
+  // a page-scoped answer covered only the newest 60 events: an older card kept
+  // offering a button the approve route could only reject, and the poll would
+  // have discarded the older page's answer seconds later anyway. Reading the
+  // caller's list is what makes the answer track what is actually rendered.
+  //
+  // Read after the page rather than alongside it: the ids are not known until
+  // the events come back. One extra round trip on an admin surface, in exchange
+  // for the button disappearing when the answer is already determined instead of
+  // after a job has run to discover it.
+  const claimedDraftIds = (params.get("drafts") ?? "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    // Bounded so a hand-made request cannot turn one GET into an unbounded IN
+    // list. Well past what any amount of paging produces.
+    .slice(0, 500);
+  const staleIds = await liveIneligibleImageIds([
+    ...events
+      .filter((e) => e.type === EVENT_TYPE.DispatchSent && !e.payload?.postId)
+      .map((e) => Number((e.payload as { imageId?: unknown })?.imageId))
+      .filter((n) => Number.isFinite(n)),
+    ...claimedDraftIds,
   ]);
   return NextResponse.json({
-    // Phase 1 has no X client, so nothing can post regardless of this flag. It is
-    // surfaced so the review page can show how the deployment is configured.
+    // How the deployment is configured. Posting needs BOTH the switch and
+    // credentials; either alone means dry run.
     liveEnvEnabled: dispatchLiveEnabled(),
-    livePostingImplemented: false,
+    livePostingImplemented: true,
+    // Whether the deployment could actually post right now. The env switch alone
+    // is not enough -- without credentials the handler degrades to a dry run, and
+    // the review page should say so rather than implying posts are going out.
+    liveCredentialsPresent: getXCredentials() !== null,
+    // Names of the absent variables, so the page can say WHICH one rather than
+    // leaving an operator to guess across four. Never values.
+    missingXCredentials: missingXCredentialNames(),
     charBudget: captionCharBudget(),
     today: {
       dateKey,
@@ -43,9 +126,20 @@ export async function GET(req: Request) {
       // page is asking -- it would announce "drift variant" for a quarter of days
       // that then ship a standard caption, and the one surface meant to tell the
       // truth about the run would be the one lying about it.
-      driftVariant: DRIFT_ENABLED && driftForDate(dateKey)
+      driftVariant: DRIFT_ENABLED && driftForDate(dateKey),
     },
     totalOutcomes,
+    publishedDrafts,
+    rejectedDrafts,
+    unapprovableImageIds: [...new Set([...postedIds, ...badIds, ...staleIds])],
+    // Complete, not a slice of `events` -- see listUnresolvedAttempts.
+    unresolvedAttempts: unresolvedAttempts.map((e) => ({
+      id: e.id,
+      type: e.type,
+      dateKey: e.subjectId,
+      payload: e.payload,
+      createdAt: e.createdAt,
+    })),
     // Echoed back so a caller (and the review page's load-more) can page without
     // re-deriving the clamp this route applied.
     offset: Math.max(Math.trunc(offset), 0),
@@ -55,31 +149,111 @@ export async function GET(req: Request) {
       type: e.type,
       dateKey: e.subjectId,
       payload: e.payload,
-      createdAt: e.createdAt
-    }))
+      createdAt: e.createdAt,
+    })),
   });
 }
 
-// A review run. It claims a suffixed slot rather than the real day's slot, so
-// generating samples for review never consumes the day's single dispatch -- and
-// never blocks the scheduled one. Always forced to dry run.
-export async function POST() {
+// A manual run produces a DRAFT. It never posts.
+//
+// Manual dispatches go out through review and approval instead: this generates
+// the artifact and writes it to the log, an admin reads it at /admin/dispatch,
+// and POST /api/admin/dispatch/approve publishes that exact draft. The two-step
+// exists because a caption is generated, not chosen -- the run that writes it is
+// the first time anyone sees it, so "post now" meant publishing something
+// unread. Approval is the point at which a human has actually looked.
+//
+// `{ live: true }` is still accepted and still validates the switch and the
+// credentials, because an operator asking to post deserves to be told when the
+// deployment cannot. It just no longer skips the reading.
+//
+// The SCHEDULED dispatch is deliberately unaffected and still posts without
+// approval: it fires at a randomized minute with nobody watching, and a daily
+// post that waits for a human is a daily post that does not happen.
+//
+// Every manual run claims a `manual:<ms>` suffixed slot, and none is capped.
+//
+// The once-per-day rule constrains the AUTOMATIC dispatch only. That is the thing
+// worth rate-limiting: an account posting itself twice in a day because a cron
+// fired twice is a bug, whereas an admin deciding to post four times today is a
+// decision. So the suffixed slot -- originally there to stop a dry review from
+// consuming the day -- is what also makes manual posting unlimited, since a slot
+// that never collides is a slot that never runs out.
+//
+// A manual LIVE post does suppress the day's automatic one (see the cron route):
+// having posted by hand, the operator should not be surprised by a second post
+// from the scheduler hours later.
+//
+// Repeated manual posts do not repeat themselves: listDispatchedImageIds()
+// excludes every already-dispatched specimen, so each run picks a new one and
+// eventually skips with no_specimen rather than reposting.
+export async function POST(req: Request) {
   if (!isSiteAdmin(await auth())) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
-  if (await hasInFlightJobOfType('x.dispatch')) {
-    return NextResponse.json({ enqueued: false, reason: 'dispatch already in flight' });
+
+  // Body is optional -- a bare POST is still a review run, which is what the
+  // existing button sends.
+  const body = (await req.json().catch(() => ({}))) as { live?: unknown };
+  const wantsLive = body.live === true;
+
+  if (wantsLive) {
+    // Refuse rather than silently degrading to a dry run. Everywhere else in this
+    // feature, "not configured" means fall back to dry -- correct there, because
+    // nothing asked to post. Here something did, explicitly, and a dry run
+    // reported as success is how an operator concludes the linkage works when it
+    // does not. That is the exact confusion this endpoint exists to end.
+    if (!dispatchLiveEnabled()) {
+      return NextResponse.json(
+        {
+          enqueued: false,
+          reason: 'X_DISPATCH_LIVE is not "true" in this environment',
+        },
+        { status: 409 },
+      );
+    }
+    const missing = missingXCredentialNames();
+    if (missing.length > 0) {
+      return NextResponse.json(
+        {
+          enqueued: false,
+          reason: `missing credentials: ${missing.join(", ")}`,
+        },
+        { status: 409 },
+      );
+    }
   }
+
+  // Not a daily cap -- a concurrency guard, and it applies to manual runs too.
+  // Two dispatches running at once would each read listDispatchedImageIds()
+  // before either wrote its attempt, so both could select the SAME specimen and
+  // post it twice. Serializing costs at most the drain interval.
+  if (await hasInFlightJobOfType("x.dispatch")) {
+    return NextResponse.json({
+      enqueued: false,
+      reason: "dispatch already in flight",
+    });
+  }
+
   const now = new Date();
   const job = await enqueueJob({
-    type: 'x.dispatch',
+    type: "x.dispatch",
     payload: {
       dateKey: utcDateKey(now),
-      trigger: 'manual',
+      trigger: "manual",
       claimSuffix: `manual:${now.getTime()}`,
-      dryRun: true
+      // Always a draft. A manual run's output is reviewed and approved before it
+      // reaches X, so the run itself has nothing to post.
+      dryRun: true,
     },
-    maxAttempts: 1
+    maxAttempts: 1,
   });
-  return NextResponse.json({ enqueued: 'x.dispatch', jobId: job.id });
+  return NextResponse.json({
+    enqueued: "x.dispatch",
+    jobId: job.id,
+    // Echoed so the UI can say "draft, then approve" rather than implying a post
+    // is on its way.
+    awaitingApproval: true,
+    liveChecked: wantsLive,
+  });
 }

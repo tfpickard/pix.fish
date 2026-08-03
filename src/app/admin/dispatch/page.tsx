@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { weightedLength } from '@/lib/dispatch/weighted-length';
 
 // Review surface for the outbound X dispatch. In dry run the assembled post is
@@ -28,6 +28,7 @@ type SentPayload = {
   distance: number;
   model: string;
   postId: string | null;
+  postUrl?: string | null;
 };
 
 type SkippedPayload = {
@@ -40,9 +41,20 @@ type SkippedPayload = {
 
 // A review sample and the day's scheduled artifact are both drafts for the same
 // date; without this they read as duplicates on the page.
-function TriggerBadge({ trigger }: { trigger?: string }) {
+//
+// Manual no longer implies dry. Now that an admin can post live by hand, calling
+// every manual row a "review run" would label real published posts as samples --
+// so the badge reads the mode, not just the trigger.
+function TriggerBadge({ trigger, mode }: { trigger?: string; mode?: string }) {
   if (trigger !== 'manual') return null;
-  return <span className="rounded border border-ink-700 px-1 text-ink-400">review run</span>;
+  const live = mode === 'live';
+  return (
+    <span
+      className={`rounded border px-1 ${live ? 'border-accent text-accent' : 'border-ink-700 text-ink-400'}`}
+    >
+      {live ? 'manual post' : 'review run'}
+    </span>
+  );
 }
 
 type Row = {
@@ -56,9 +68,24 @@ type Row = {
 type Data = {
   liveEnvEnabled: boolean;
   livePostingImplemented: boolean;
+  liveCredentialsPresent: boolean;
+  missingXCredentials: string[];
   charBudget: number;
   today: { dateKey: string; targetUtcMinute: number; driftVariant: boolean };
   totalOutcomes: number;
+  // Complete set, independent of pagination -- see the note where it is used.
+  unresolvedAttempts: Row[];
+  // Draft event ids already published (or possibly published). Their approve
+  // button is withdrawn -- clicking it could only no-op.
+  publishedDrafts: number[];
+  // Draft event ids X refused outright. The caption is immutable, so re-approving
+  // could only resend the bytes that were already rejected.
+  rejectedDrafts: number[];
+  // Specimens a draft can no longer publish: already public (or possibly so),
+  // ruled permanently unpostable, or no longer live-eligible (archived,
+  // basemented, reclassified, deleted since the draft was written). Drafts
+  // appear in none of those, so a draft never disqualifies itself.
+  unapprovableImageIds: number[];
   offset: number;
   hasMore: boolean;
   events: Row[];
@@ -80,16 +107,32 @@ function utcMinuteLabel(m: number): string {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')} UTC`;
 }
 
-function SentCard({ row }: { row: Row }) {
+function SentCard({
+  row,
+  canApprove,
+  onApprove,
+  busy
+}: {
+  row: Row;
+  canApprove: boolean;
+  onApprove: (id: number) => void;
+  busy: boolean;
+}) {
   const p = row.payload as unknown as SentPayload;
+  // An unposted draft is a proposal awaiting sign-off. Approval publishes THIS
+  // text, so the card the admin reads is exactly what goes out.
+  const awaitingApproval = !p.postId;
   return (
     <div className="rounded border border-ink-800 p-3 font-mono text-xs">
       <div className="flex flex-wrap items-center gap-2 text-ink-500">
-        <span className="text-secondary">would post</span>
+        {/* The label has to follow the row, not the page: a log holds drafts and
+            real posts side by side, and calling a post that exists "would post"
+            is the audit surface contradicting the account. */}
+        <span className="text-secondary">{p.postId ? 'posted' : 'draft'}</span>
         <span>{row.dateKey}</span>
         <span>/</span>
         <span>{p.mode}</span>
-        <TriggerBadge trigger={p.trigger} />
+        <TriggerBadge trigger={p.trigger} mode={p.mode} />
         {p.drift ? <span className="text-secondary">drift variant</span> : null}
         {p.isNsfw ? <span className="text-destructive">nsfw specimen</span> : null}
       </div>
@@ -111,6 +154,19 @@ function SentCard({ row }: { row: Row }) {
             {weightedLength(p.caption)} weighted chars /{' '}
             {p.hashtags.join(' ') || 'no hashtag'}
           </p>
+          {p.postId ? (
+            <p className="text-ink-500">
+              posted{' '}
+              <a
+                href={p.postUrl ?? `https://x.com/i/web/status/${p.postId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-secondary hover:underline"
+              >
+                {p.postId}
+              </a>
+            </p>
+          ) : null}
           <p className="text-ink-500">
             specimen {p.imageId}{' '}
             <a href={`/u/${p.handle}/${p.slug}`} className="text-secondary hover:underline">
@@ -118,6 +174,19 @@ function SentCard({ row }: { row: Row }) {
             </a>{' '}
             / cosine {p.distance.toFixed(3)} / {p.model}
           </p>
+          {/* Only offered when the deployment could actually post. Elsewhere a
+              draft is just a draft, and a button that refuses is worse than no
+              button -- that lesson is what produced this whole approval flow. */}
+          {awaitingApproval && canApprove ? (
+            <button
+              type="button"
+              onClick={() => onApprove(row.id)}
+              disabled={busy}
+              className="rounded border border-accent px-2 py-1 font-mono text-xs text-accent hover:bg-ink-800 disabled:opacity-50"
+            >
+              {busy ? 'publishing...' : 'approve and post this'}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -146,10 +215,17 @@ function SkippedCard({ row }: { row: Row }) {
   return (
     <div className="rounded border border-ink-800 p-3 font-mono text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-ink-400">no post</span>
+        {/* An indeterminate outcome must not read as "no post": the request
+            reached X and the answer was lost, so a post may exist. Saying "no
+            post" there is the audit page asserting something it does not know. */}
+        {p.reason === 'post_indeterminate' ? (
+          <span className="text-secondary">POST MAY EXIST -- check the account</span>
+        ) : (
+          <span className="text-ink-400">no post</span>
+        )}
         <span className="text-ink-500">{row.dateKey}</span>
         <span className="text-destructive">{p.reason}</span>
-        <TriggerBadge trigger={p.trigger} />
+        <TriggerBadge trigger={p.trigger} mode={p.mode} />
         {p.trendTopic ? <span className="text-ink-500">/ {p.trendTopic}</span> : null}
       </div>
       {p.detail ? <p className="mt-1 text-ink-500">{p.detail}</p> : null}
@@ -165,12 +241,39 @@ export default function AdminDispatchPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [running, setRunning] = useState(false);
+  // Event id of the draft currently being published, so only its button spins.
+  const [approving, setApproving] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
 
+  // Image ids of every unpublished draft currently on screen, sent with each
+  // request so the server can answer eligibility for all of them rather than
+  // only the page it returns.
+  //
+  // A ref, not state: `load` runs on a 10s interval and must keep a stable
+  // identity, and this is read at fetch time rather than rendered. Kept current
+  // by the effect below, which is also why the poll picks up drafts paged in
+  // since it was created.
+  const draftImageIds = useRef<number[]>([]);
+  useEffect(() => {
+    draftImageIds.current = [
+      ...new Set(
+        rows
+          .filter((r) => r.type === 'dispatch.sent')
+          .map((r) => r.payload as unknown as SentPayload)
+          .filter((p) => !p.postId)
+          .map((p) => Number(p.imageId))
+          .filter((n) => Number.isFinite(n))
+      )
+    ];
+  }, [rows]);
+
+  const draftsParam = () =>
+    draftImageIds.current.length > 0 ? `&drafts=${draftImageIds.current.join(',')}` : '';
+
   // Refreshes the newest page only. Anything already paged in stays put.
   const load = useCallback(() => {
-    fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}`)
+    fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}${draftsParam()}`)
       .then(async (r) => {
         if (r.status === 403) {
           setForbidden(true);
@@ -194,11 +297,32 @@ export default function AdminDispatchPage() {
   const loadMore = useCallback(async () => {
     setLoadingMore(true);
     try {
-      const res = await fetch(`/api/admin/dispatch?limit=${PAGE_SIZE}&offset=${rows.length}`);
+      const res = await fetch(
+        `/api/admin/dispatch?limit=${PAGE_SIZE}&offset=${rows.length}${draftsParam()}`
+      );
       if (!res.ok) return;
       const d: Data = await res.json();
       setRows((prev) => mergeRows(prev, d.events));
-      setData((prev) => (prev ? { ...prev, totalOutcomes: d.totalOutcomes } : d));
+      // Eligibility is merged, not dropped. This response is the only one that
+      // ever answers for the drafts it just delivered -- the next poll asks about
+      // them too (they are in the ref by then), but until it lands these cards
+      // would otherwise render an approve button the route can only reject.
+      // Union rather than replace: `d` answers for this page's drafts plus the
+      // ones already on screen, and taking the union costs nothing while a
+      // replace would drop anything this response happened not to cover.
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              totalOutcomes: d.totalOutcomes,
+              publishedDrafts: [...new Set([...prev.publishedDrafts, ...d.publishedDrafts])],
+              rejectedDrafts: [...new Set([...prev.rejectedDrafts, ...d.rejectedDrafts])],
+              unapprovableImageIds: [
+                ...new Set([...prev.unapprovableImageIds, ...d.unapprovableImageIds])
+              ]
+            }
+          : d
+      );
     } catch {
       // A failed page is not worth an error state; the button stays available.
     } finally {
@@ -210,12 +334,19 @@ export default function AdminDispatchPage() {
     setRunning(true);
     setNotice(null);
     try {
-      const res = await fetch('/api/admin/dispatch', { method: 'POST' });
+      // A manual run never posts, so there is nothing here to confirm. The
+      // confirmation moved to approval, which is where something irreversible
+      // actually happens and where the operator has read what it will publish.
+      const res = await fetch('/api/admin/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error ?? `run failed (${res.status})`);
+      if (!res.ok && !body.reason) throw new Error(body.error ?? `run failed (${res.status})`);
       setNotice(
         body.enqueued
-          ? `queued review run (job ${body.jobId}); drains within a minute`
+          ? `queued a draft (job ${body.jobId}); drains within a minute, then approve it below`
           : (body.reason ?? 'not queued')
       );
       load();
@@ -223,6 +354,39 @@ export default function AdminDispatchPage() {
       setNotice(err instanceof Error ? err.message : 'run failed');
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function approve(eventId: number) {
+    // The one irreversible action on this page, so it is the one that asks.
+    if (
+      !window.confirm(
+        'Publish this draft to X?\n\nThe caption above is posted exactly as written. This cannot be undone.'
+      )
+    ) {
+      return;
+    }
+    setApproving(eventId);
+    setNotice(null);
+    try {
+      const res = await fetch('/api/admin/dispatch/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId })
+      });
+      const body = await res.json().catch(() => ({}));
+      // A refusal answers 409 with a reason naming what is not configured.
+      if (!res.ok && !body.reason) throw new Error(body.error ?? `approve failed (${res.status})`);
+      setNotice(
+        body.approved
+          ? `queued publication (job ${body.jobId}); drains within a minute`
+          : (body.reason ?? 'not approved')
+      );
+      load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'approve failed');
+    } finally {
+      setApproving(null);
     }
   }
 
@@ -238,6 +402,19 @@ export default function AdminDispatchPage() {
 
   const sent = rows.filter((e) => e.type === 'dispatch.sent');
   const skipped = rows.filter((e) => e.type === 'dispatch.skipped');
+  // An attempt is written immediately before the X call. One with no outcome of
+  // its own means a post was started and never confirmed -- the post may well be
+  // public, and this is the only surviving trace when the outcome write itself
+  // fails.
+  //
+  // Taken from the API's own query, NOT filtered out of `rows`. Deriving it from
+  // the loaded page tied the warning to how far back the operator had scrolled:
+  // once an attempt aged past the first 60 events it vanished, so the page
+  // dropped its single most important claim exactly as the incident got older.
+  // The server correlates attempts to outcomes by slot -- one date can hold many
+  // independent runs, so a date match would let any one of them vouch for the
+  // rest.
+  const unconfirmed = data?.unresolvedAttempts ?? [];
   const total = data?.totalOutcomes ?? 0;
   const hasMore = rows.length < total;
 
@@ -245,17 +422,52 @@ export default function AdminDispatchPage() {
     <div className="max-w-3xl space-y-6">
       <h1 className="font-display text-3xl text-ink-100">dispatch</h1>
 
+      {/*
+        Loudest thing on the page, and first. Every other row describes something
+        that definitely happened or definitely did not; these describe a post that
+        may be live on the account with nothing recording it. That is the only
+        state here a human has to go and reconcile by hand.
+      */}
+      {unconfirmed.length > 0 ? (
+        <section className="rounded border border-accent p-3 font-mono text-xs text-accent">
+          <p className="font-bold">
+            {unconfirmed.length} unconfirmed attempt{unconfirmed.length === 1 ? '' : 's'} -- check
+            the account
+          </p>
+          <p className="mt-1 text-ink-400">
+            A post was started and no outcome was ever recorded for it. The post may be public.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {unconfirmed.map((e) => (
+              <li key={e.id}>
+                {e.dateKey} -- {String(e.payload.slug ?? `image ${e.payload.imageId}`)}{' '}
+                <span className="text-ink-500">
+                  ({String(e.payload.trigger ?? 'cron')}, slot {String(e.payload.slotKey)})
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-3">
         <p className="font-mono text-xs text-ink-500">
-          outbound X dispatch. one per day, dry run only.
+          outbound X dispatch. scheduled posts once a day on its own; manual
+          drafts are unlimited and post only when approved.{' '}
+          {data?.liveEnvEnabled && data?.liveCredentialsPresent
+            ? 'LIVE -- approving a draft posts it to X.'
+            : 'dry run only -- drafts cannot be published.'}
         </p>
+        {/* One button, because a manual run has one behaviour now: it drafts.
+            Publishing lives on the draft itself, where the caption being
+            published is on screen next to the button that publishes it. */}
         <button
           type="button"
-          onClick={runNow}
+          onClick={() => runNow()}
           disabled={running}
           className="rounded border border-ink-700 px-2 py-1 font-mono text-xs text-ink-300 hover:bg-ink-800 disabled:opacity-50"
         >
-          {running ? 'queueing...' : 'run a review dispatch'}
+          {running ? 'queueing...' : 'generate a draft'}
         </button>
         {notice ? <span className="font-mono text-xs text-secondary">{notice}</span> : null}
       </div>
@@ -265,7 +477,14 @@ export default function AdminDispatchPage() {
           <p>
             live posting:{' '}
             <span className="text-ink-300">
-              {data.livePostingImplemented ? 'implemented' : 'not implemented (phase 2)'}
+              {data.livePostingImplemented ? 'implemented' : 'not implemented'}
+              {data.livePostingImplemented && !data.liveCredentialsPresent
+                ? ` (runs stay dry -- missing: ${
+                    data.missingXCredentials?.length
+                      ? data.missingXCredentials.join(', ')
+                      : 'unknown'
+                  })`
+                : ''}
             </span>
             {' / '}X_DISPATCH_LIVE:{' '}
             <span className="text-ink-300">{data.liveEnvEnabled ? 'true' : 'unset'}</span>
@@ -286,7 +505,23 @@ export default function AdminDispatchPage() {
         ) : sent.length === 0 ? (
           <p className="font-mono text-xs text-ink-500">nothing dispatched yet</p>
         ) : (
-          sent.map((row) => <SentCard key={row.id} row={row} />)
+          sent.map((row) => (
+            <SentCard
+              key={row.id}
+              row={row}
+              canApprove={Boolean(
+                data?.liveEnvEnabled &&
+                  data?.liveCredentialsPresent &&
+                  !data?.publishedDrafts?.includes(row.id) &&
+                  !data?.rejectedDrafts?.includes(row.id) &&
+                  !data?.unapprovableImageIds?.includes(
+                    (row.payload as unknown as SentPayload).imageId
+                  )
+              )}
+              onApprove={approve}
+              busy={approving === row.id}
+            />
+          ))
         )}
       </section>
 
