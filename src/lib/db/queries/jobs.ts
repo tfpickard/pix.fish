@@ -63,18 +63,26 @@ export async function hasPendingJobOfType(type: string): Promise<boolean> {
   return Boolean(res.rows?.[0]?.present);
 }
 
-// True when a DIFFERENT job of this type is currently executing. Deliberately
-// 'processing' only and excluding the caller's own row, so a running handler can
-// ask "is a sibling of mine already working?" -- which neither of the two checks
-// above can answer (both would match the asker itself, and a pending row is not
-// yet spending anything). For handlers whose work is corpus-wide and BILLED:
-// two concurrent sweeps select overlapping rows and pay twice for the same
-// embedding, because a SELECT predicate is not a claim.
-export async function otherProcessingJobOfType(type: string, excludeId: number): Promise<boolean> {
+// True when an OLDER job of this type is currently executing -- i.e. the caller
+// lost. For handlers whose work is corpus-wide and BILLED: two concurrent sweeps
+// select overlapping rows and pay twice for the same embedding, because a SELECT
+// predicate is not a claim.
+//
+// The `id <` is the whole mechanism, and it has to be an ordering rather than a
+// mere existence check. "Is any sibling running?" is symmetric: two handlers
+// racing each see the other, both step aside, both retry, and after enough
+// rounds both give up waiting and collide anyway. Serialising on the primary key
+// is a total order, so of any set running at once exactly one sees no elder and
+// proceeds -- an election with no protocol, no lock, and no tie to a pooled
+// connection (which is what rules out a session-scoped advisory lock here).
+//
+// Deliberately 'processing' only: a pending row is not spending anything yet,
+// and the caller's own row is excluded by the strict inequality.
+export async function olderProcessingJobOfType(type: string, selfId: number): Promise<boolean> {
   const res = await db.execute<{ present: boolean }>(sql`
     SELECT EXISTS(
       SELECT 1 FROM jobs
-      WHERE type = ${type} AND status = 'processing' AND id <> ${Math.trunc(excludeId)}
+      WHERE type = ${type} AND status = 'processing' AND id < ${Math.trunc(selfId)}
     ) AS present
   `);
   return Boolean(res.rows?.[0]?.present);

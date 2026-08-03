@@ -190,7 +190,6 @@ describe('isCropFault', () => {
   });
 
   test('an ambiguous 4xx blames the crop only when the body is about the image', () => {
-    expect(isCropFault(400, '{"detail":"Failed to download image from the provided url"}')).toBe(true);
     expect(isCropFault(400, '{"detail":"Unable to decode the image"}')).toBe(true);
     expect(isCropFault(413, '{"detail":"Image is too large"}')).toBe(true);
     expect(isCropFault(422, '{"detail":"The image dimensions are out of range"}')).toBe(true);
@@ -209,6 +208,20 @@ describe('isCropFault', () => {
     expect(isCropFault(422, '{"detail":"invalid parameter: inputs[0].content"}')).toBe(false);
     expect(isCropFault(400, '{"detail":"Invalid api key"}')).toBe(false);
     expect(isCropFault(400, '{"detail":"You have exceeded your quota"}')).toBe(false);
+  });
+
+  test('a fetch failure convicts the crop only when the blob is stated to be gone', () => {
+    // Voyage fetches our Blob URL, so "could not download" is what a Blob/CDN
+    // outage says about EVERY crop. Charging them for it abandons the corpus in
+    // three sweeps for something that fixed itself in ten minutes.
+    expect(isCropFault(400, '{"detail":"Failed to download image from the provided url"}')).toBe(
+      false
+    );
+    expect(isCropFault(400, '{"detail":"timed out fetching the image"}')).toBe(false);
+    expect(isCropFault(400, '{"detail":"could not load image: upstream 503"}')).toBe(false);
+    // Permanently gone is a real crop fault -- retrying cannot resurrect a blob.
+    expect(isCropFault(400, '{"detail":"Failed to download image: 404 Not Found"}')).toBe(true);
+    expect(isCropFault(400, '{"detail":"could not fetch image, object does not exist"}')).toBe(true);
   });
 
   test('an unrecognized ambiguous body defaults to systemic', () => {

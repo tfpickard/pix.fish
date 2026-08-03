@@ -61,13 +61,21 @@ const IMAGE_FAULT_MARKERS = [
   'decode',
   'corrupt',
   'pixel',
-  'download',
   'unsupported media',
   'too large',
   'dimension',
   'width',
   'height'
 ];
+
+// "Could not download the image" is NOT an image fault by itself. Voyage fetches
+// our Blob URL, so a Blob/CDN outage, a timeout, or a 5xx on their fetch path
+// produces that same sentence for every crop in the corpus -- three sweeps of it
+// and the whole corpus is abandoned for something that fixed itself in ten
+// minutes. A fetch failure only convicts the crop when the message establishes
+// the URL is permanently gone.
+const FETCH_MARKERS = ['download', 'fetch', 'retriev', 'could not load', 'unable to load'];
+const PERMANENTLY_GONE_MARKERS = ['404', 'not found', 'no such', 'does not exist', 'deleted'];
 
 // Everything not listed as ambiguous -- 401/403 (auth), 429 (throttle), 404
 // (the endpoint moved), 5xx -- is systemic outright and never reaches the body
@@ -80,6 +88,13 @@ export function isCropFault(status: number, body = ''): boolean {
   // Order matters: a request-level marker vetoes, because "invalid model, expected
   // one of the multimodal image models" mentions the image without being about it.
   if (REQUEST_FAULT_MARKERS.some((m) => text.includes(m))) return false;
+  // A failure to fetch our URL convicts the crop only when the blob is stated to
+  // be gone. Everything else -- timeout, connection reset, a 5xx from the CDN --
+  // is an outage wearing an image-shaped message, and outages must not be billed
+  // to crops.
+  if (FETCH_MARKERS.some((m) => text.includes(m))) {
+    return PERMANENTLY_GONE_MARKERS.some((m) => text.includes(m));
+  }
   return IMAGE_FAULT_MARKERS.some((m) => text.includes(m));
 }
 

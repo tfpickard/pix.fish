@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getImageEmbedder } from '@/lib/ai/imageEmbed';
 import { auth, isSiteAdmin } from '@/lib/auth';
 import { resetAbandonedImageVecAttempts } from '@/lib/db/queries/character-crops';
 import { enqueueJob } from '@/lib/db/queries/jobs';
@@ -32,6 +33,24 @@ export async function POST(req: Request) {
   if (!isSiteAdmin(await auth())) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 });
   }
+  // No key, no backfill -- the handler throws on its first line. Refusing here
+  // is the same rule the cron follows, but a reset makes it sharper than tidiness:
+  // clearing the counters would move every abandoned crop to "retriable", where
+  // the panel reports it as draining and polls for a drain that cannot start,
+  // and the cron will not enqueue another backfill without a key either. That
+  // trades an accurate, actionable blocker for a permanent lie.
+  if (!getImageEmbedder()) {
+    return NextResponse.json(
+      {
+        error: 'no image embedder configured',
+        blocker:
+          'VOYAGE_API_KEY is not set, so no crop can be embedded. Set it before running the ' +
+          'backfill or releasing the attempt cap.'
+      },
+      { status: 409 }
+    );
+  }
+
   const body = (await req.json().catch(() => ({}))) as { reset?: unknown };
   const released = body?.reset === true ? await resetAbandonedImageVecAttempts() : 0;
   const job = await enqueueJob({ type: 'characters.backfill-visuals', payload: {}, maxAttempts: 3 });
