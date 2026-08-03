@@ -69,10 +69,18 @@ export async function clusterReadiness(
   // One snapshot, not separate counts: the backfill increments the column these
   // are partitioned on, so independent reads can miss a crop crossing the cap
   // between them and report full coverage for a corpus that has none.
-  const [{ retriable, abandoned, embedded }, backfillInFlight] = await Promise.all([
-    imageVecCoverage(),
-    hasInFlightJobOfType('characters.backfill-visuals')
-  ]);
+  // Sequenced, not concurrent, and the job state is read FIRST. These are two
+  // tables, so a single snapshot would need a repeatable-read transaction -- but
+  // only one interleaving actually lies, and ordering rules it out. Run them
+  // together and the last backfill can finish in between: coverage sees the
+  // final crop still missing, the job query (landing after) sees nothing in
+  // flight, and the pair reads "blocked with nothing draining it" for a corpus
+  // that is complete -- which also switches OFF the panel's poll, so the lie
+  // persists until someone reloads. Reading the job first inverts that: coverage
+  // is then always at least as fresh as the drain state it is paired with, so
+  // "retriable and nothing in flight" describes a moment that really happened.
+  const backfillInFlight = await hasInFlightJobOfType('characters.backfill-visuals');
+  const { retriable, abandoned, embedded } = await imageVecCoverage();
   const embedderConfigured = !!getImageEmbedder();
 
   if (retriable === 0 && abandoned === 0) {

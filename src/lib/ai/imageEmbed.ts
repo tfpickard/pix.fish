@@ -41,20 +41,32 @@ export class ImageEmbedError extends Error {
 // Hence: an ambiguous 4xx is decided by the BODY. Blame the crop only when the
 // message is about the image, and never when it names a request-level subject.
 const AMBIGUOUS_STATUSES = new Set([400, 413, 415, 422]);
-const REQUEST_FAULT_MARKERS = [
-  'model',
-  'api key',
-  'api_key',
-  'apikey',
-  'authoriz',
-  'credential',
-  'quota',
-  'credit',
-  'billing',
-  'rate limit',
-  'parameter',
-  'input_type',
-  'json'
+
+// The veto matches phrases where the REQUEST is the subject of the complaint,
+// not bare words that merely appear in one. A substring like `model` is too
+// blunt in both directions, and the false-veto direction is the dangerous one:
+// "image dimensions exceed this model's limit" is unambiguous crop evidence, but
+// a bare `model` marker would rule it systemic -- and a systemic verdict ABORTS
+// the run rather than spending an attempt, so one such crop would wedge the
+// whole drain permanently, with the crop's counter stuck at zero and every
+// retry re-buying the same call. Exactly the never-self-healing shape this
+// change exists to remove.
+const REQUEST_FAULT_PATTERNS = [
+  // The model is what is being complained about, either order.
+  /\b(invalid|unknown|unsupported|unrecognized|deprecated|no such|missing)\s+model\b/,
+  /\bmodel\b[^.;]{0,60}?\b(not supported|unsupported|not found|does not exist|deprecated|invalid|unknown)\b/,
+  // The request envelope: schema, parameters, content type, credentials, spend.
+  /\b(invalid|unknown|missing|unrecognized|malformed)\s+(parameter|field|argument|body|request|input)\b/,
+  /\bapi[_ ]?key\b/,
+  /\bauthoriz/,
+  /\bcredential/,
+  /\bquota\b/,
+  /\bcredit/,
+  /\bbilling\b/,
+  /\brate limit/,
+  /\binput_type\b/,
+  /\bcontent[-_ ]type\b/,
+  /application\/json/
 ];
 const IMAGE_FAULT_MARKERS = [
   'image',
@@ -88,9 +100,9 @@ const PERMANENTLY_GONE_MARKERS = ['404', 'not found', 'no such', 'does not exist
 export function isCropFault(status: number, body = ''): boolean {
   if (!AMBIGUOUS_STATUSES.has(status)) return false;
   const text = body.toLowerCase();
-  // Order matters: a request-level marker vetoes, because "invalid model, expected
+  // Order matters: a request-level phrase vetoes, because "invalid model, expected
   // one of the multimodal image models" mentions the image without being about it.
-  if (REQUEST_FAULT_MARKERS.some((m) => text.includes(m))) return false;
+  if (REQUEST_FAULT_PATTERNS.some((p) => p.test(text))) return false;
   // A failure to fetch our URL convicts the crop only when the blob is stated to
   // be gone. Everything else -- timeout, connection reset, a 5xx from the CDN --
   // is an outage wearing an image-shaped message, and outages must not be billed

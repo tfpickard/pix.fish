@@ -224,6 +224,18 @@ describe('isCropFault', () => {
     expect(isCropFault(400, '{"detail":"could not fetch image, object does not exist"}')).toBe(true);
   });
 
+  test('a generic word does not veto explicit crop evidence', () => {
+    // The veto must match the request being the SUBJECT of the complaint, not
+    // any appearance of the word. A false veto is the dangerous direction: a
+    // systemic verdict aborts the whole run instead of spending an attempt, so
+    // one such crop would wedge the drain forever with its counter at zero.
+    expect(isCropFault(400, "{\"detail\":\"image dimensions exceed this model's limit\"}")).toBe(true);
+    expect(isCropFault(413, '{"detail":"the image is too large for the model"}')).toBe(true);
+    expect(isCropFault(422, '{"detail":"could not decode image; parameter inputs[0] rejected it"}')).toBe(
+      true
+    );
+  });
+
   test('an unrecognized ambiguous body defaults to systemic', () => {
     expect(isCropFault(400, 'bad request')).toBe(false);
     expect(isCropFault(422, 'unprocessable')).toBe(false);
