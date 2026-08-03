@@ -1,5 +1,4 @@
 import { enqueueJob, hasPendingJobOfType } from '@/lib/db/queries/jobs';
-import { latestProjection } from '@/lib/db/queries/umap';
 
 // Debounce window for the atlas refresh fired after a new caption vector lands.
 // Long enough that an upload flurry (or a backfill run) collapses to ~one
@@ -34,7 +33,11 @@ export async function scheduleAtlasRefresh(): Promise<void> {
     if (await hasPendingJobOfType('umap.recompute')) return;
     await enqueueJob({
       type: 'umap.recompute',
-      payload: await inheritedParams(),
+      // Deliberately empty. The handler resolves parameters at execution time,
+      // inheriting whatever projection is live then -- see resolveParams in
+      // umapRecompute. Capturing them here instead would let this delayed job
+      // land after an admin's tuned recompute carrying pre-tuning values.
+      payload: {},
       runAt: new Date(Date.now() + UMAP_DEBOUNCE_MS),
       // Not 1. This is the self-healing path: nothing re-triggers it, because
       // the embedding write that asked for it has already happened. A single
@@ -47,38 +50,5 @@ export async function scheduleAtlasRefresh(): Promise<void> {
     });
   } catch (err) {
     console.error('failed to enqueue umap.recompute', err);
-  }
-}
-
-/**
- * Carry the current projection's UMAP parameters into the automatic job.
- *
- * An empty payload is NOT equivalent to "whatever is live": umapRecompute
- * falls back to nNeighbors 15 / minDist 0.1, and latestProjection() hands
- * /map, /drift and universe/coords.ts the newest row regardless of params.
- * So an admin who tuned the atlas through /admin/map would have had it
- * silently reset to defaults by the next upload -- a refresh quietly becoming
- * a reconfiguration.
- *
- * Refreshing means the same projection over newer data, so read back what is
- * live and reuse it. Falls back to an empty payload (handler defaults) when
- * there is no projection yet or the read fails.
- */
-async function inheritedParams(): Promise<Record<string, unknown>> {
-  try {
-    const latest = await latestProjection();
-    const params = latest?.params as
-      | { nNeighbors?: unknown; minDist?: unknown; kind?: unknown }
-      | null
-      | undefined;
-    if (!params) return {};
-    const payload: Record<string, unknown> = {};
-    if (typeof params.nNeighbors === 'number') payload.nNeighbors = params.nNeighbors;
-    if (typeof params.minDist === 'number') payload.minDist = params.minDist;
-    if (typeof params.kind === 'string') payload.kind = params.kind;
-    return payload;
-  } catch (err) {
-    console.error('could not read live umap params, falling back to defaults', err);
-    return {};
   }
 }

@@ -87,6 +87,11 @@ async function loadSource(url: string): Promise<string | null> {
     if (!res.ok) throw new Error(`blob fetch ${res.status}`);
     const sharp = (await import('sharp')).default;
     const jpeg = await sharp(Buffer.from(await res.arrayBuffer()))
+      // Before resizing, not after: sharp works on raw sensor pixels and drops
+      // EXIF on re-encode, so a portrait phone upload would be baked sideways
+      // into the card with the orientation tag that explained it thrown away.
+      // Same reason charactersDetect, generate and mosaic all call rotate().
+      .rotate()
       .resize(OG_SIZE.width, OG_SIZE.height, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
       .toBuffer();
