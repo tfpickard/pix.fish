@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
+import { getImageEmbedder } from '@/lib/ai/imageEmbed';
 import { nextClusterRunStamp } from '@/lib/db/queries/events';
 import { enqueueJob, hasInFlightJobOfType } from '@/lib/db/queries/jobs';
+import { clusterReadiness } from '@/lib/universe/visual-coverage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,6 +30,41 @@ async function tick(req: Request) {
   if (await hasInFlightJobOfType('characters.cluster')) {
     return NextResponse.json({ enqueued: false, reason: 'cluster already in flight' });
   }
+
+  // Don't fire a run that is guaranteed to abort. When the saved identity space
+  // needs visual vectors some crops lack, produceCandidates refuses to cluster
+  // the embedded subset (a partial roster prunes characters out of the canon) --
+  // so an unconditional enqueue here turns one unfinished backfill into a failed
+  // job every six hours, forever, with the roster frozen the whole time and
+  // nothing in the loop repairing the coverage. Remediate instead: fill the gap
+  // when it is fillable, and report it when it is not.
+  const readiness = await clusterReadiness();
+  if (!readiness.ready) {
+    let backfillJobId: number | null = null;
+    // Only worth queuing when there is something retriable AND a key to try it
+    // with; a backfill with no VOYAGE_API_KEY fails on its first line, which is
+    // the same manufactured-red-job problem one level down.
+    if (readiness.retriable > 0 && getImageEmbedder()) {
+      if (!(await hasInFlightJobOfType('characters.backfill-visuals'))) {
+        const job = await enqueueJob({
+          type: 'characters.backfill-visuals',
+          payload: {},
+          maxAttempts: 3
+        });
+        backfillJobId = job.id;
+      }
+    }
+    return NextResponse.json({
+      enqueued: false,
+      reason: 'visual coverage incomplete',
+      blocker: readiness.blocker,
+      space: readiness.space,
+      retriable: readiness.retriable,
+      abandoned: readiness.abandoned,
+      backfillJobId
+    });
+  }
+
   // Stamp the run at enqueue (like /api/admin/characters/cluster) so a reclaimed
   // cluster reuses the same runStamp and collapses through the census dedupe key
   // rather than fanning out a duplicate. maxAttempts:1 matches that route; a

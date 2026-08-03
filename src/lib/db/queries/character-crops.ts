@@ -93,12 +93,23 @@ export async function setCropImageVec(
     .where(and(eq(characterCrops.id, cropId), isNull(characterCrops.vecImage)));
 }
 
-// Crops still missing a visual vector (for the backfill job/script), oldest
-// first (by id) for a deterministic, stable drain order. `afterId` is an
-// exclusive cursor (id > afterId) so callers can page PAST crops they already
-// attempted -- a poisoned prefix (blobs deleted, so every embed fails) would
+// How many times one crop may fail to embed before it is abandoned. Every
+// attempt is a paid multimodal call, and the failures that actually occur in
+// practice -- a deleted blob, pixels the embedder refuses -- are permanent, so
+// an unbounded retry only converts a fixed defect into a recurring bill. Three
+// is enough to ride out a transient outage without turning a dead crop into a
+// standing charge.
+export const MAX_IMAGE_EMBED_ATTEMPTS = 3;
+
+// Crops still missing a visual vector AND still worth attempting (for the
+// backfill job/script), oldest first (by id) for a deterministic, stable drain
+// order. `afterId` is an exclusive cursor (id > afterId) so callers can page
+// PAST crops they already attempted within a sweep -- a poisoned prefix would
 // otherwise be re-fetched from the front on each pass and wedge the whole drain,
-// never reaching the valid crops behind it. Returns id + blobUrl.
+// never reaching the valid crops behind it. Crops that exhausted
+// MAX_IMAGE_EMBED_ATTEMPTS are excluded entirely: they are reported as a
+// coverage blocker instead (countCropsAbandonedImageVec), because re-running the
+// job cannot change their outcome. Returns id + blobUrl.
 export async function cropsMissingImageVec(
   limit = 10_000,
   afterId = 0
@@ -107,23 +118,91 @@ export async function cropsMissingImageVec(
     SELECT cc.id, cc.blob_url FROM character_crops cc
     JOIN images i ON i.id = cc.image_id
     WHERE cc.vec_image IS NULL AND i.archived_at IS NULL AND cc.id > ${Math.trunc(afterId)}
+      AND cc.vec_image_attempts < ${MAX_IMAGE_EMBED_ATTEMPTS}
     ORDER BY cc.id
     LIMIT ${Math.trunc(limit)}
   `);
   return res.rows.map((r) => ({ cropId: Number(r.id), blobUrl: r.blob_url }));
 }
 
-// Total count of crops still lacking a visual vector (eligible, non-archived).
-// Used to decide "is any backfill needed at all" and to surface a nonzero
-// remainder after a full drain sweep -- independent of the cursor, so it also
-// counts poisoned crops the sweep paged past.
+// Total count of crops still lacking a visual vector that the backfill would
+// still retry (eligible, non-archived, under the attempt cap). Used to decide
+// "is any backfill worth running" and to surface a nonzero remainder after a
+// full drain sweep -- independent of the cursor, so it also counts crops the
+// sweep paged past.
 export async function countCropsMissingImageVec(): Promise<number> {
   const res = await db.execute<{ n: number }>(sql`
     SELECT count(*)::int AS n FROM character_crops cc
     JOIN images i ON i.id = cc.image_id
     WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+      AND cc.vec_image_attempts < ${MAX_IMAGE_EMBED_ATTEMPTS}
   `);
   return Number(res.rows?.[0]?.n ?? 0);
+}
+
+// Crops the backfill has given up on: still no visual vector after the attempt
+// cap. Counted separately from the retriable remainder because the two demand
+// opposite responses -- a retriable crop resolves itself on the next drain, an
+// abandoned one needs a human (re-detect the image to re-cut the crop, or move
+// the identity space off visual/blend).
+export async function countCropsAbandonedImageVec(): Promise<number> {
+  const res = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM character_crops cc
+    JOIN images i ON i.id = cc.image_id
+    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+      AND cc.vec_image_attempts >= ${MAX_IMAGE_EMBED_ATTEMPTS}
+  `);
+  return Number(res.rows?.[0]?.n ?? 0);
+}
+
+// A sample of abandoned crops, for the operator-facing report. Bounded because
+// the point is to name something investigable (open the blob URL, find the
+// image), not to dump the whole set into a job error or an admin panel.
+export async function abandonedImageVecSample(
+  limit = 5
+): Promise<{ cropId: number; imageId: number; blobUrl: string }[]> {
+  const res = await db.execute<{ id: number; image_id: number; blob_url: string }>(sql`
+    SELECT cc.id, cc.image_id, cc.blob_url FROM character_crops cc
+    JOIN images i ON i.id = cc.image_id
+    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+      AND cc.vec_image_attempts >= ${MAX_IMAGE_EMBED_ATTEMPTS}
+    ORDER BY cc.id
+    LIMIT ${Math.trunc(limit)}
+  `);
+  return res.rows.map((r) => ({
+    cropId: Number(r.id),
+    imageId: Number(r.image_id),
+    blobUrl: r.blob_url
+  }));
+}
+
+// Record one failed visual-embed attempt. Counted per crop rather than per job
+// so the cap tracks the thing that actually fails; a job-level counter would
+// blame a whole batch for one dead blob. Only bumps while vec_image is still
+// NULL, so a late-arriving success is never penalised by a racing failure.
+export async function recordCropImageVecFailure(cropId: number): Promise<void> {
+  await db.execute(sql`
+    UPDATE character_crops
+    SET vec_image_attempts = vec_image_attempts + 1
+    WHERE id = ${Math.trunc(cropId)} AND vec_image IS NULL
+  `);
+}
+
+// Clear the abandonment marks so the backfill will retry these crops. The cap
+// is a spend guard, not a verdict: when the cause was environmental (an expired
+// VOYAGE key, a blob outage, a bad model id) the crops are fine and the operator
+// needs a way to say so without a forced re-detect, which would re-bill a vision
+// call per image. Returns how many crops were released.
+export async function resetAbandonedImageVecAttempts(): Promise<number> {
+  const res = await db.execute<{ id: number }>(sql`
+    UPDATE character_crops cc
+    SET vec_image_attempts = 0
+    FROM images i
+    WHERE i.id = cc.image_id AND cc.vec_image IS NULL AND i.archived_at IS NULL
+      AND cc.vec_image_attempts >= ${MAX_IMAGE_EMBED_ATTEMPTS}
+    RETURNING cc.id
+  `);
+  return res.rows.length;
 }
 
 export async function countCropsForImage(imageId: number): Promise<number> {

@@ -19,6 +19,18 @@ type Tuning = {
   blendWeight: number;
 };
 
+// Why a visual/blend cluster is (or isn't) allowed to run. Clustering aborts on
+// partial visual coverage rather than filing a roster that would prune the
+// canon, so a stalled character page is usually this, not the cluster job.
+type Readiness = {
+  space: Space;
+  needsVisual: boolean;
+  retriable: number;
+  abandoned: number;
+  ready: boolean;
+  blocker: string | null;
+};
+
 const DEFAULTS: Tuning = {
   maxDist: 0.45,
   k: 5,
@@ -71,6 +83,14 @@ export default function AdminCharactersPage() {
   const [info, setInfo] = useState<string | null>(null);
   const [tuning, setTuning] = useState<Tuning>(DEFAULTS);
   const [loaded, setLoaded] = useState(false);
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+
+  function loadReadiness() {
+    fetch('/api/admin/characters/backfill')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => setReadiness(r))
+      .catch(() => {});
+  }
 
   useEffect(() => {
     fetch('/api/admin/characters/tuning')
@@ -78,6 +98,7 @@ export default function AdminCharactersPage() {
       .then((t) => setTuning({ ...DEFAULTS, ...t }))
       .catch(() => {})
       .finally(() => setLoaded(true));
+    loadReadiness();
   }, []);
 
   function set<K extends keyof Tuning>(key: K, value: Tuning[K]) {
@@ -102,6 +123,7 @@ export default function AdminCharactersPage() {
       } catch (err) {
         setInfo(`${label} error: ${String(err)}`);
       }
+      loadReadiness(); // the action may have changed what blocks clustering
     });
   }
 
@@ -157,6 +179,33 @@ export default function AdminCharactersPage() {
           backfill visual vectors
         </button>
       </div>
+
+      {readiness && readiness.needsVisual && !readiness.ready ? (
+        <section className="space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-4">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-amber-400">
+            clustering blocked -- visual coverage
+          </h2>
+          <p className="font-mono text-[11px] leading-relaxed text-ink-300">{readiness.blocker}</p>
+          <p className="font-mono text-[10px] text-ink-600">
+            space={readiness.space} -- {readiness.retriable} draining, {readiness.abandoned} given
+            up on. no cluster is enqueued while this holds, so the roster is stale rather than
+            pruned.
+          </p>
+          {readiness.abandoned > 0 ? (
+            <button
+              type="button"
+              onClick={() =>
+                run('/api/admin/characters/backfill', 'release + backfill', { reset: true })
+              }
+              disabled={isPending}
+              className="rounded border border-amber-500/50 px-3 py-1.5 font-mono text-xs text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+              title="Clear the per-crop attempt cap and re-run the backfill. Only useful once the underlying cause (key, quota, model id) is fixed."
+            >
+              release {readiness.abandoned} + retry
+            </button>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="space-y-4 rounded border border-ink-800 p-4">
         <div className="flex items-center justify-between">

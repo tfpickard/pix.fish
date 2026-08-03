@@ -142,6 +142,21 @@ export function cropClusterVector(
   return [...t, ...i];
 }
 
+// Does a space demand a visual vector from every crop? The exact complement of
+// the cases above where cropClusterVector can return null for a missing
+// vec_image, kept adjacent to it because the two must agree: a space that
+// "needs" visuals but tolerates their absence would block clustering for no
+// reason, and one that needs them silently would drop crops. Mind the
+// degenerate weights -- a blend at 0 is pure text and demands nothing visual.
+export function spaceNeedsVisual(
+  space: 'text' | 'visual' | 'blend',
+  blendWeight: number
+): boolean {
+  if (space === 'text') return false;
+  if (space === 'blend') return Math.min(1, Math.max(0, blendWeight)) > 0;
+  return true;
+}
+
 // Build a cosine kNN graph over crop description-embeddings: each crop gets
 // edges to its `k` nearest other crops, dropping any neighbour farther than
 // maxDist. The result feeds detectCommunities() (each community = one recurring

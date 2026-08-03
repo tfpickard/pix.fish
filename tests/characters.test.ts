@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
+import { isCropFault } from '../src/lib/ai/imageEmbed';
 import { parseDetectionsJson } from '../src/lib/ai/types';
 import { detectCommunities } from '../src/lib/universe/cluster';
 import {
   buildCropEdges,
   cropClusterVector,
   parseCharacterIdentity,
-  parseVerifyGroups
+  parseVerifyGroups,
+  spaceNeedsVisual
 } from '../src/lib/universe/characters';
 
 // Pure, infra-free tests in the existing style. The DB-bound invariants
@@ -130,6 +132,54 @@ describe('cropClusterVector', () => {
     expect(cropClusterVector({ vec: [3, 4], vecImage: null }, 'blend', 0)).toEqual([3, 4]);
     // w=1 = all visual: works without a text vec
     expect(cropClusterVector({ vec: [], vecImage: [0, 5] }, 'blend', 1)).toEqual([0, 5]);
+  });
+});
+
+describe('spaceNeedsVisual', () => {
+  // The coverage gate that decides whether to enqueue a cluster at all reads
+  // this; it must agree exactly with cropClusterVector about when a missing
+  // vec_image would cause a crop to be dropped. Disagreement either blocks
+  // clustering forever on a space that never needed visuals, or lets a run
+  // through that silently prunes characters out of the canon.
+  const spaces = ['text', 'visual', 'blend'] as const;
+  const weights = [0, 0.25, 0.5, 1];
+
+  test('agrees with cropClusterVector for a crop that has no visual vec', () => {
+    const textOnly = { vec: [1, 0], vecImage: null };
+    for (const space of spaces) {
+      for (const w of weights) {
+        const dropped = cropClusterVector(textOnly, space, w) === null;
+        expect(spaceNeedsVisual(space, w)).toBe(dropped);
+      }
+    }
+  });
+
+  test('text and a zero-weight blend never need a visual vec', () => {
+    expect(spaceNeedsVisual('text', 1)).toBe(false);
+    expect(spaceNeedsVisual('blend', 0)).toBe(false);
+    expect(spaceNeedsVisual('blend', -1)).toBe(false); // clamped to 0
+  });
+
+  test('visual and any genuine blend do', () => {
+    expect(spaceNeedsVisual('visual', 0)).toBe(true);
+    expect(spaceNeedsVisual('blend', 0.01)).toBe(true);
+    expect(spaceNeedsVisual('blend', 1)).toBe(true);
+  });
+});
+
+describe('isCropFault', () => {
+  // Decides whether a failed embed spends one of a crop's bounded attempts.
+  // Getting this backwards is expensive in both directions: charge the crop for
+  // an outage and one Voyage incident abandons the whole corpus; excuse a dead
+  // blob and it is re-billed on every pass forever.
+  test('only image-specific 4xx blames the crop', () => {
+    for (const s of [400, 404, 413, 415, 422]) expect(isCropFault(s)).toBe(true);
+  });
+
+  test('auth, quota, throttling and server errors are systemic', () => {
+    for (const s of [401, 402, 403, 408, 429, 500, 502, 503, 529]) {
+      expect(isCropFault(s)).toBe(false);
+    }
   });
 });
 

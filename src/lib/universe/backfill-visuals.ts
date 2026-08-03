@@ -1,5 +1,9 @@
-import { type ImageEmbedder } from '@/lib/ai/imageEmbed';
-import { cropsMissingImageVec, setCropImageVec } from '@/lib/db/queries/character-crops';
+import { ImageEmbedError, type ImageEmbedder } from '@/lib/ai/imageEmbed';
+import {
+  cropsMissingImageVec,
+  recordCropImageVecFailure,
+  setCropImageVec
+} from '@/lib/db/queries/character-crops';
 
 export type BackfillProgress = (msg: string) => void;
 
@@ -19,8 +23,13 @@ const PAGE = 500;
 // failure), so each crop is embedded at most once and a poisoned prefix (blobs
 // deleted, so every embed fails) can't wedge the drain -- we step past it and
 // reach the valid crops behind it. A crop that fails here stays NULL and is
-// retried on the next run (which starts the cursor at 0 again). Idempotent:
+// retried on the next run (which starts the cursor at 0 again), up to the
+// per-crop attempt cap that cropsMissingImageVec enforces. Idempotent:
 // setCropImageVec only writes while vec_image is still NULL.
+//
+// A systemic embedder failure (bad key, quota, outage) aborts the sweep rather
+// than charging every crop an attempt for it -- same rule as the queue handler,
+// since a local run and a cron run share the same attempt counters.
 export async function backfillVisualsInline(
   embedder: ImageEmbedder,
   onProgress?: BackfillProgress
@@ -38,7 +47,13 @@ export async function backfillVisualsInline(
         ok++;
         if (ok % 20 === 0) onProgress?.(`  embedded ${ok}`);
       } catch (err) {
+        if (err instanceof ImageEmbedError && err.systemic) {
+          throw new Error(
+            `backfill aborted after ${ok} embedded -- the embedder is failing, not the crops: ${err.message}`
+          );
+        }
         fail++;
+        await recordCropImageVecFailure(crop.cropId).catch(() => {});
         onProgress?.(`  crop ${crop.cropId} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       afterId = crop.cropId; // advance past every attempted crop, success or fail

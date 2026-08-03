@@ -1,0 +1,1 @@
+ALTER TABLE "character_crops" ADD COLUMN "vec_image_attempts" integer DEFAULT 0 NOT NULL;

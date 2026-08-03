@@ -1,11 +1,16 @@
-import { getImageEmbedder } from '@/lib/ai/imageEmbed';
+import { ImageEmbedError, getImageEmbedder } from '@/lib/ai/imageEmbed';
 import {
+  abandonedImageVecSample,
+  countCropsAbandonedImageVec,
   countCropsMissingImageVec,
   cropsMissingImageVec,
-  setCropImageVec
+  recordCropImageVecFailure,
+  setCropImageVec,
+  MAX_IMAGE_EMBED_ATTEMPTS
 } from '@/lib/db/queries/character-crops';
 import { enqueueJob } from '@/lib/db/queries/jobs';
 import type { Job } from '@/lib/db/schema';
+import { scheduleRecluster } from '@/lib/universe/recluster';
 
 // Admin-triggered visual-vector backfill. Embeds crops that lack a vec_image
 // (Voyage multimodal) up to a wall-clock budget, then re-enqueues itself while
@@ -62,7 +67,19 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
         await setCropImageVec(crop.cropId, vec, embedder.name, embedder.model);
         ok++;
       } catch (err) {
+        // A systemic failure (bad key, quota, throttle, outage) says nothing
+        // about this crop, so it must NOT spend the crop's attempt budget --
+        // otherwise one Voyage outage abandons the whole corpus and the roster
+        // needs a manual reset to recover. Stop the run instead and let the
+        // queue's backoff retry it; progress already committed is kept, because
+        // each vector is written as it is earned.
+        if (err instanceof ImageEmbedError && err.systemic) {
+          throw new Error(
+            `characters.backfill-visuals: embedder unavailable after ${ok} embedded this run -- ${err.message}`
+          );
+        }
         failed++;
+        await recordCropImageVecFailure(crop.cropId).catch(() => {});
         console.error(`characters.backfill-visuals: crop ${crop.cropId} failed`, err);
       }
       afterId = crop.cropId; // advance the cursor past this crop, success or fail
@@ -83,19 +100,18 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
     return;
   }
 
-  // Full sweep finished. Anything still NULL is either poison (blob gone --
-  // permanent) or a crop that failed transiently somewhere in this pass.
+  // Full sweep finished. Anything still NULL and still under the per-crop
+  // attempt cap failed transiently somewhere in this pass and is worth another
+  // sweep; anything over the cap is abandoned and no longer counted here.
   const remaining = await countCropsMissingImageVec();
-  if (remaining === 0) return; // fully drained
-
-  const nextSweep = sweep + 1;
-  if (nextSweep < MAX_SWEEPS) {
+  if (remaining > 0 && sweep + 1 < MAX_SWEEPS) {
     // Restart a FRESH sweep from the front (afterId 0), not from this job's end
     // cursor. Retrying this job's payload would only re-scan ids past the cursor
     // and never revisit an earlier crop that failed transiently, so a straggler
     // before the cursor would wedge visual/blend clustering despite the one-click
     // backfill. A clean restart re-attempts every still-NULL crop; embedded ones
     // are already skipped (vec_image not NULL), so only stragglers get re-tried.
+    const nextSweep = sweep + 1;
     console.log(
       `characters.backfill-visuals: ${remaining} crop(s) still missing after sweep ${sweep}; restarting sweep ${nextSweep}`
     );
@@ -107,10 +123,31 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
     return;
   }
 
-  // Exhausted the bounded restarts and crops are still NULL -- treat the remainder
-  // as poison (or a sustained outage) and throw so it surfaces as a visible failed
-  // job, rather than silently leaving crops unembedded.
-  throw new Error(
-    `characters.backfill-visuals: ${remaining} crop(s) still lack a visual vector after ${MAX_SWEEPS} sweeps`
-  );
+  // Nothing retriable is left within this job's sweep budget. Report whatever
+  // the per-crop cap gave up on -- but do NOT throw. An abandoned crop is a
+  // STATE, not a job fault: re-running this job cannot embed it, so failing here
+  // would only manufacture a red job on every pass while fixing nothing. The
+  // blocker surfaces through the coverage report instead (/api/cron/characters
+  // and the admin panel), where it names an action a human can actually take.
+  const abandoned = await countCropsAbandonedImageVec();
+  if (abandoned > 0) {
+    const sample = await abandonedImageVecSample(5);
+    console.warn(
+      `characters.backfill-visuals: giving up on ${abandoned} crop(s) after ${MAX_IMAGE_EMBED_ATTEMPTS} ` +
+        `attempts each (${remaining} still retriable). Sample: ` +
+        sample.map((c) => `crop ${c.cropId} (image ${c.imageId}) ${c.blobUrl}`).join('; ')
+    );
+    return;
+  }
+  if (remaining > 0) {
+    console.warn(
+      `characters.backfill-visuals: ${remaining} crop(s) still retriable after ${MAX_SWEEPS} sweeps`
+    );
+    return;
+  }
+
+  // Fully drained. The crops that were blocking a visual/blend cluster now have
+  // their vectors, so close the loop here rather than making the roster wait for
+  // the next 6-hourly cron tick.
+  await scheduleRecluster();
 }

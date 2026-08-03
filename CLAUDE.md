@@ -154,6 +154,20 @@ One image a day, posted to the site's X account tagged into a currently-trending
 - **The drift variant is built but switched off** (`DRIFT_ENABLED = false`). Dry runs showed it either dropping the required wrong connection or emitting on-topic commentary about the trend, which rule 1 forbids outright; since caption generation never retries, leaving it on would cost or spoil a quarter of dispatches. `driftForDate` stays a pure predicate and the `--drift` dry-run flag still exercises the path, so iterating on the directive needs no code change. Turn it back on only after a dry run shows the variant holding the contract.
 - Events (`dispatch.claimed` / `dispatch.sent` / `dispatch.skipped`) extend the universe canon but are **not** reduced into any projection and are **not** in the chronicle's type allowlist. Surfacing them in the feed is deliberately out of scope.
 
+### Characters pipeline: visual coverage gates the cluster
+
+`characters.cluster` refuses to run when the saved identity space (`character_tuning.space`) needs a per-crop visual vector -- `visual`, or `blend` at any weight above 0 -- and some crops lack one. That abort is correct: clustering the embedded subset files a census that **prunes** every character seen only in the skipped crops out of the live canon.
+
+The rule that follows, and the reason this section exists: **nothing may enqueue a cluster it can already tell will abort.** `/api/cron/characters` fires every six hours, so an unconditional enqueue turned one unfinished backfill into a permanent red job every tick with the roster frozen the whole time and nothing in the loop repairing coverage. Every enqueue path (`/api/cron/characters`, `/api/admin/characters/cluster`, `scheduleRecluster`) now calls `clusterReadiness()` (`src/lib/universe/visual-coverage.ts`) first and either fills the gap or reports it. The cron additionally enqueues the backfill; the backfill calls `scheduleRecluster()` once it drains, so the loop closes without waiting for the next tick.
+
+Crops carry `vec_image_attempts`. Past `MAX_IMAGE_EMBED_ATTEMPTS` a crop is **abandoned** -- dropped from the backfill's query and reported as a blocker instead. The cap is a spend guard, not a verdict, so:
+
+- Only a **crop-specific** failure spends an attempt. `getImageEmbedder().embed()` throws `ImageEmbedError` with a `systemic` flag; a systemic one (auth, quota, throttle, 5xx, transport) aborts the whole run so the queue backs off. Charging crops for an outage would abandon the entire corpus in three sweeps.
+- Abandonment is a **state, not a job failure**. The backfill logs and returns rather than throwing -- re-running it cannot embed a dead blob, so failing would only manufacture a red job per pass. It surfaces at `/admin/characters`, in the cron response, and in both offline scripts.
+- Releasing the cap is an explicit human act: `POST /api/admin/characters/backfill {"reset": true}`, for once the actual cause is fixed. `partialOk` (cluster route body, or `--partial-ok`) is the other escape hatch and it accepts the pruning.
+
+`countCropsMissingImageVec()` counts only what is still **retriable**; abandoned crops need `countCropsAbandonedImageVec()`. Any new coverage check wants both, or it will read a drained retry queue as full coverage.
+
 ### Gallery sort + color pages
 
 `src/lib/sort/` holds the gallery sort/shuffle strategies (clump, anti-clump, drift, tidal, drunkard's-walk, seeded-shuffle, etc.). The `/api/images` list takes `sort`/`seed` params; without them it falls back to the site-admin's `gallery_config` defaults. `/color/<hex>` (+ `/api/color/<hex>/images`) surfaces images whose extracted palette matches a hex.
