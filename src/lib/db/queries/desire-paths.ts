@@ -157,13 +157,20 @@ export async function retireDesirePathsExcept(keepSigs: string[], now: Date): Pr
 }
 
 // Public listing: active (non-retired) routes, strongest first.
-export async function listDesirePaths(opts: { includeRetired?: boolean; limit?: number } = {}): Promise<
-  DesirePath[]
-> {
+export async function listDesirePaths(
+  opts: { includeRetired?: boolean; limit?: number; offset?: number } = {}
+): Promise<DesirePath[]> {
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
   const q = db.select().from(desirePaths);
   const filtered = opts.includeRetired ? q : q.where(isNull(desirePaths.retiredAt));
-  return filtered.orderBy(desc(desirePaths.strength)).limit(limit);
+  // id breaks ties: strength alone is not a total order, and the /paths scan
+  // pages through this with an offset, where an unstable sort silently skips
+  // and repeats rows across page boundaries.
+  return filtered
+    .orderBy(desc(desirePaths.strength), desc(desirePaths.id))
+    .limit(limit)
+    .offset(offset);
 }
 
 export async function getActiveDesirePathBySlug(slug: string): Promise<DesirePath | undefined> {

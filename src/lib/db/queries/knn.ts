@@ -166,6 +166,20 @@ export async function countKnnEdges(): Promise<number> {
   return Number(res.rows?.[0]?.n ?? 0);
 }
 
+// Whether the image-to-image graph is populated at all, independent of any
+// particular set of nodes. desire.promote needs this to decide if the kNN graph
+// is trustworthy enough to retire corridors by: asking "did these candidates
+// have adjacency?" conflates an empty graph with candidates that genuinely have
+// none, which is exactly the case the retirement gate must catch. Filtered to
+// image-to-image because that is the only adjacency a corridor is made of --
+// a graph holding nothing but 'lore' edges is, for this purpose, empty.
+export async function hasImageKnnEdges(): Promise<boolean> {
+  const res = await db.execute<{ n: number }>(
+    sql`SELECT 1 AS n FROM knn_edges WHERE src_type = 'image' AND dst_type = 'image' LIMIT 1`
+  );
+  return (res.rows?.length ?? 0) > 0;
+}
+
 // Delete all existing edges before a rebuild so the table never accumulates
 // stale rows when k changes or images are removed. TRUNCATE RESTART IDENTITY
 // is faster than DELETE for a full clear and resets the serial counter so id

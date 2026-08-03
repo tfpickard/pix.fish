@@ -4,6 +4,7 @@ import { readNsfwMode } from '@/lib/nsfw';
 import { listDesirePaths } from '@/lib/db/queries/desire-paths';
 import { hydrateVisibleNodeMap } from '@/lib/db/queries/path-hydrate';
 import type { PathNode } from '@/lib/knn-path-types';
+import type { DesirePath } from '@/lib/db/schema';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -15,36 +16,42 @@ export const metadata: Metadata = {
   robots: { index: false, follow: true }
 };
 
-// How many complete cards the page aims to show, and how deep into the
-// strength-ordered list we look to find them (listDesirePaths caps at 500).
+// How many complete cards the page aims to show, how many routes we pull per
+// scan step, and how deep into the strength-ordered list we are willing to go.
 const CARDS_SHOWN = 100;
-const CANDIDATE_POOL = 400;
+const SCAN_PAGE = 200;
+const SCAN_LIMIT = 1000;
 
 export default async function DesirePathsIndex() {
   const nsfwMode = await readNsfwMode();
 
-  // Over-fetch the candidate pool, then select the strongest CARDS_SHOWN that
-  // are fully visible. Fetching exactly the top 100 and filtering afterwards
-  // meant a visitor whose NSFW mode hid those routes saw a short page -- or an
-  // empty "no desire paths yet" -- while perfectly visible weaker corridors sat
-  // just past the cutoff. Hydration is one batched query regardless of pool
-  // size, so the wider pool costs a single larger IN(...) rather than N queries.
-  const paths = await listDesirePaths({ limit: CANDIDATE_POOL });
+  // Scan the strength-ordered list until we have enough fully visible cards,
+  // rather than filtering a fixed pool. Visibility is decided per visitor after
+  // hydration, so any fixed pool has a depth past which the page lies: a
+  // visitor whose mode hides the whole pool saw "no desire paths yet" while
+  // visible corridors sat one row beyond the cutoff. Paging keeps the common
+  // case at one round-trip and only digs deeper for the visitors who need it.
+  const cards: { path: DesirePath; nodes: PathNode[] }[] = [];
 
-  const allIds = [...new Set(paths.flatMap((p) => p.nodeIds as number[]))];
-  const nodeMap = await hydrateVisibleNodeMap(allIds, nsfwMode);
+  for (let offset = 0; offset < SCAN_LIMIT && cards.length < CARDS_SHOWN; offset += SCAN_PAGE) {
+    const pageRows = await listDesirePaths({ limit: SCAN_PAGE, offset });
+    if (pageRows.length === 0) break;
 
-  // A route is renderable only if all of its stops are visible to this visitor;
-  // a corridor with a hidden stop would leak a gap (or a blob URL) so we skip it
-  // wholesale rather than render a partial chain.
-  const cards = paths
-    .map((p) => {
-      const ids = p.nodeIds as number[];
-      const nodes = ids.map((id) => nodeMap.get(id)).filter((n): n is PathNode => !!n);
-      return { path: p, nodes, complete: nodes.length === ids.length && nodes.length >= 2 };
-    })
-    .filter((c) => c.complete)
-    .slice(0, CARDS_SHOWN);
+    const ids = [...new Set(pageRows.flatMap((p) => p.nodeIds as number[]))];
+    const nodeMap = await hydrateVisibleNodeMap(ids, nsfwMode);
+
+    for (const p of pageRows) {
+      if (cards.length >= CARDS_SHOWN) break;
+      // A route is renderable only if all of its stops are visible to this
+      // visitor; a corridor with a hidden stop would leak a gap (or a blob URL)
+      // so we skip it wholesale rather than render a partial chain.
+      const nodeIds = p.nodeIds as number[];
+      const nodes = nodeIds.map((id) => nodeMap.get(id)).filter((n): n is PathNode => !!n);
+      if (nodes.length === nodeIds.length && nodes.length >= 2) cards.push({ path: p, nodes });
+    }
+
+    if (pageRows.length < SCAN_PAGE) break; // exhausted the table
+  }
 
   return (
     <div className="space-y-8 pt-8">

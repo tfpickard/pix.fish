@@ -4,7 +4,7 @@ import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { firstCaptionsByImageIds, type CaptionSnippet } from '@/lib/db/queries/captions';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { getTopGraphBackedPaths, getWornEdgesFor, edgeKey } from '@/lib/db/queries/path-traffic';
-import { getKnnPairsAmong, knnPairKey } from '@/lib/db/queries/knn';
+import { getKnnPairsAmong, hasImageKnnEdges, knnPairKey } from '@/lib/db/queries/knn';
 import { hasInFlightJobOfType } from '@/lib/db/queries/jobs';
 import {
   getDesirePathsBySigs,
@@ -50,8 +50,36 @@ const SLUG_RETRIES = 5;
 // step (one sequential LLM call per newly-named route), and the worker gives
 // this job a 45s default budget -- so a first run against a mature table must
 // not try to name every corridor at once. Unnamed routes display their slug and
-// are picked up by a later run (see the retry pass below).
+// are picked up by a later run.
 const MAX_CAPTIONS_PER_RUN = 12;
+// ...but a call count alone does not bound wall time, and neither provider's
+// text() carries a deadline. Twelve calls at four seconds each overruns the
+// worker's 45s cap on their own, so the two guards below make the naming phase
+// bounded in time as well as in requests: no call may start unless it could
+// still finish before the hard deadline, and no single call may hang past its
+// own cap. Both are measured from handler entry.
+const CAPTION_CALL_TIMEOUT_MS = 8_000;
+const NAMING_HARD_DEADLINE_MS = 40_000;
+
+// Bound a single provider call. Neither Anthropic's nor OpenAI's text() takes a
+// deadline, so without this one hung request could consume the whole handler
+// budget no matter how few calls the run was allowed to make. The promise is
+// left to settle on its own; only our wait for it ends.
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`caption call exceeded ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
 
 // The ordered (src,dst) pairs a stored corridor is made of.
 function routeEdgePairs(nodeIds: number[]): { srcId: number; dstId: number }[] {
@@ -63,6 +91,7 @@ function routeEdgePairs(nodeIds: number[]): { srcId: number; dstId: number }[] {
 }
 
 export async function desirePromoteHandler(job: Job): Promise<void> {
+  const startedAt = Date.now();
   const payload = (job.payload ?? {}) as Payload;
   const promoteFloor = payload.promoteFloor ?? DEFAULT_PROMOTE_FLOOR;
   const minEdgeValue = payload.minEdgeValue ?? DEFAULT_MIN_EDGE_VALUE;
@@ -131,40 +160,26 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
     }))
   );
 
-  // Caption hydration covers both the routes we will file AND the already-filed
-  // ones still missing a name, in one query.
+  // Every corridor that will need a name once the lifecycle writes are done.
+  // Collected here, named at the very end -- see the naming phase below for why
+  // no provider call may happen before retirement has been written.
   const needName = toRefresh.filter((r) => existing.get(routeSignature(r.nodeIds))?.caption == null);
-  const capMap: Map<number, CaptionSnippet> =
-    canCaption && (toFile.length > 0 || needName.length > 0)
-      ? await firstCaptionsByImageIds([
-          ...new Set([...toFile, ...needName].flatMap((r) => r.nodeIds))
-        ])
-      : new Map();
+  const pendingNames: { edgeSig: string; nodeIds: number[] }[] = needName.map((r) => ({
+    edgeSig: routeSignature(r.nodeIds),
+    nodeIds: r.nodeIds
+  }));
 
-  // Ask the clerk to name a corridor. Returns null when captioning is off, the
-  // per-run budget is spent, or the provider call fails -- all non-fatal.
-  async function nameRoute(
-    nodeIds: number[],
-    caps: Map<number, CaptionSnippet>
-  ): Promise<string | null> {
-    if (!canCaption || captionBudget <= 0) return null;
-    captionBudget--;
-    try {
-      const stops: RouteStop[] = nodeIds.map((id) => {
-        const c = caps.get(id);
-        return { slug: c?.slug ?? String(id), caption: c?.caption ?? '' };
-      });
-      const text = (await provider!.text!(buildRouteNamePrompt(stops))).trim();
-      return text || null;
-    } catch {
-      return null; // best-effort: a later run retries this route.
-    }
-  }
-
+  // File new corridors with no caption. Naming used to happen inline here, which
+  // put twelve sequential provider calls in front of the retirement writes below
+  // -- so a slow provider blew the worker's 45s cap mid-loop and the run died
+  // having filed some routes but retired none, leaving decayed paths public and
+  // re-doing the same partial work on every retry. Filing unnamed is not a
+  // downgrade: setDesirePathCaptionIfNull backfills the name in the same run,
+  // and a route that loses its name to a blip was always going to display its
+  // slug until a later run.
   let promoted = 0;
   for (const route of toFile) {
     const sig = routeSignature(route.nodeIds);
-    const caption = await nameRoute(route.nodeIds, capMap);
 
     let filed = false;
     for (let attempt = 0; attempt < SLUG_RETRIES && !filed; attempt++) {
@@ -173,15 +188,16 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
           slug: mintCollectionSlug(),
           edgeSig: sig,
           nodeIds: route.nodeIds,
-          caption,
-          provider: caption ? cfg.descriptions.provider : null,
-          model: caption ? cfg.descriptions.model : null,
+          caption: null,
+          provider: null,
+          model: null,
           strength: route.strength,
           lifetime: route.lifetime,
           lastWalkedAt: route.lastWalkedAt
         });
         filed = true;
         promoted++;
+        pendingNames.push({ edgeSig: sig, nodeIds: route.nodeIds });
       } catch (err) {
         // Retry only slug collisions; an edge_sig collision means it now exists,
         // so stop trying to insert it.
@@ -190,23 +206,6 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
         if (attempt === SLUG_RETRIES - 1) throw err;
       }
     }
-  }
-
-  // Retry naming for routes filed earlier without a caption. Without this a
-  // route that hit a provider blip (or the budget) on its first run would show
-  // its generated slug forever -- the refresh branch never revisits the name.
-  let renamed = 0;
-  for (const route of needName) {
-    if (captionBudget <= 0) break;
-    const caption = await nameRoute(route.nodeIds, capMap);
-    if (!caption) continue;
-    await setDesirePathCaptionIfNull(
-      routeSignature(route.nodeIds),
-      caption,
-      cfg.descriptions.provider,
-      cfg.descriptions.model
-    );
-    renamed++;
   }
 
   // ---- Edge-verified retirement -------------------------------------------
@@ -241,13 +240,19 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   // so `qualifying` is empty, EVERY active path lands in `unverified`, and the
   // gate would retire the entire corpus of corridors in one run.
   //
-  // When a rebuild is in flight -- or the graph is simply empty, which is the
-  // same state observed without the job row -- fall back to the traffic test
-  // alone for this run. A fabricated path surviving one extra night is a far
-  // cheaper mistake than mass-retiring paths people are walking, and the next
-  // run re-applies the gate against a settled graph.
+  // Health is measured against the graph itself, NOT against how many of these
+  // candidates matched. Deriving it from `activeKnnPairs` inverted the gate in
+  // the one case it exists for: when the only unverified route is a fabricated
+  // corridor whose nodes have no adjacency, "no matches" is the finding, not
+  // evidence the graph is down -- yet it read as untrustworthy, skipped the
+  // check, and let forged traffic keep that route public forever.
+  //
+  // When a rebuild is in flight -- or the graph is genuinely empty -- fall back
+  // to the traffic test alone for this run. A fabricated path surviving one
+  // extra night is a far cheaper mistake than mass-retiring paths people are
+  // walking, and the next run re-applies the gate against a settled graph.
   const graphTrustworthy =
-    !(await hasInFlightJobOfType('knn.rebuild')) && activeKnnPairs.size > 0;
+    !(await hasInFlightJobOfType('knn.rebuild')) && (await hasImageKnnEdges());
 
   const retireSigs: string[] = [];
   const stillAlive: {
@@ -303,23 +308,49 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   const revived = await refreshDesirePathsBulk(stillAlive);
   const retired = await retireDesirePathsBySigs(retireSigs, now);
 
-  // Second rename pass, for the survivors above. Without it, a route that lost
-  // its first naming attempt to a provider blip and then stopped resurfacing in
-  // the greedy partition would display its generated slug forever -- which is
-  // precisely what the retry pass exists to prevent, so leaving this gap would
-  // make that guarantee true only for the routes that needed it least.
-  // Needs its own caption hydration: capMap was built from toFile + needName,
-  // and by construction none of these appear in either.
-  if (captionBudget > 0 && survivorsNeedName.length > 0) {
-    const survivorCaps = await firstCaptionsByImageIds([
-      ...new Set(survivorsNeedName.flatMap((s) => s.nodeIds))
+  // ---- Naming (best-effort, strictly last) --------------------------------
+  // Every write that decides what the public /paths page shows has now been
+  // committed. Naming is the only step that calls a provider, so running it
+  // last means overrunning the budget costs at most some slugs displayed
+  // instead of names -- never an unretired path or a half-applied run.
+  //
+  // Three groups converge here, all handled by one pass and one hydration
+  // query: newly filed routes, refreshed routes that never got a name, and
+  // survivors kept alive by edge verification alone (which never enter
+  // `qualifying`, so nothing built from it could reach them).
+  pendingNames.push(...survivorsNeedName);
+
+  let renamed = 0;
+  if (canCaption && captionBudget > 0 && pendingNames.length > 0) {
+    const caps = await firstCaptionsByImageIds([
+      ...new Set(pendingNames.flatMap((p) => p.nodeIds))
     ]);
-    for (const s of survivorsNeedName) {
+
+    for (const p of pendingNames) {
       if (captionBudget <= 0) break;
-      const caption = await nameRoute(s.nodeIds, survivorCaps);
+      // Only start a call that can still finish inside the deadline, so the
+      // handler cannot be pushed past the worker cap by its own last request.
+      if (Date.now() - startedAt + CAPTION_CALL_TIMEOUT_MS > NAMING_HARD_DEADLINE_MS) break;
+      captionBudget--;
+
+      let caption: string | null = null;
+      try {
+        const stops: RouteStop[] = p.nodeIds.map((id) => {
+          const c = caps.get(id);
+          return { slug: c?.slug ?? String(id), caption: c?.caption ?? '' };
+        });
+        const text = await withDeadline(
+          provider!.text!(buildRouteNamePrompt(stops)),
+          CAPTION_CALL_TIMEOUT_MS
+        );
+        caption = text.trim() || null;
+      } catch {
+        continue; // best-effort: a later run retries this route.
+      }
+
       if (!caption) continue;
       await setDesirePathCaptionIfNull(
-        s.edgeSig,
+        p.edgeSig,
         caption,
         cfg.descriptions.provider,
         cfg.descriptions.model
