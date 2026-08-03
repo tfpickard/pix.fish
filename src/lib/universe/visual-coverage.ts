@@ -31,8 +31,14 @@ export type ClusterReadiness = {
   blocker: string | null;
 };
 
-export async function clusterReadiness(): Promise<ClusterReadiness> {
-  const tuning = await getTuning();
+// `override` pins the check to knobs the caller has already resolved, rather
+// than re-reading the saved tuning. A queued cluster carries its own resolved
+// space (and may differ from the saved one entirely, e.g. an admin run), so
+// asking about the saved tuning would answer a question nobody asked.
+export async function clusterReadiness(
+  override?: { space: ClusterSpace; blendWeight: number }
+): Promise<ClusterReadiness> {
+  const tuning = override ?? (await getTuning());
   const needsVisual = spaceNeedsVisual(tuning.space, tuning.blendWeight);
   if (!needsVisual) {
     return {

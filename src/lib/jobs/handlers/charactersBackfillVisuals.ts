@@ -21,12 +21,6 @@ const BATCH = 25;
 // blow the 45s worker budget before scheduling the next batch. Leaves headroom
 // for one in-flight call (aborts at 15s) under the budget.
 const BUDGET_MS = 25_000;
-// How many full front-to-back sweeps to attempt before giving up. Each completed
-// sweep that still leaves crops NULL restarts a fresh sweep from id 0 to re-embed
-// stragglers (recovering transient failures anywhere in the corpus). Bounded so a
-// genuinely-poisoned crop -- blob deleted, always fails -- eventually surfaces as
-// a failed job instead of restarting forever.
-const MAX_SWEEPS = 3;
 // How many times a run will step aside for a sibling before running anyway.
 // Bounded because deferring forever would be its own outage: a wedged sibling
 // (or a reclaim race) must not be able to stop the drain permanently. Paying
@@ -157,19 +151,31 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
   }
 
   // Full sweep finished. Anything still NULL and still under the per-crop
-  // attempt cap failed transiently somewhere in this pass and is worth another
-  // sweep; anything over the cap is abandoned and no longer counted here.
-  // One snapshot for both halves -- the sweep decision and the report below read
-  // the same partition, and taking them as separate counts lets a crop crossing
-  // the cap in between fall out of both.
+  // attempt cap failed somewhere in this pass and is worth another sweep;
+  // anything over the cap is abandoned and no longer counted here. One snapshot
+  // for both halves -- the sweep decision and the report below read the same
+  // partition, and taking them as separate counts lets a crop crossing the cap
+  // in between fall out of both.
   const { retriable: remaining, abandoned } = await imageVecCoverage();
-  if (remaining > 0 && sweep + 1 < MAX_SWEEPS) {
+  if (remaining > 0) {
     // Restart a FRESH sweep from the front (afterId 0), not from this job's end
     // cursor. Retrying this job's payload would only re-scan ids past the cursor
     // and never revisit an earlier crop that failed transiently, so a straggler
     // before the cursor would wedge visual/blend clustering despite the one-click
     // backfill. A clean restart re-attempts every still-NULL crop; embedded ones
     // are already skipped (vec_image not NULL), so only stragglers get re-tried.
+    //
+    // The condition is "anything left to try", NOT a chain-wide sweep budget.
+    // A sweep counter is the wrong shape once spending is capped per crop: a
+    // crop inserted by a detection that arrives late in the chain -- which
+    // deliberately does NOT enqueue its own backfill, because a pending one
+    // covers it -- would inherit a nearly-exhausted budget, get one attempt, and
+    // then be stranded with no pending job at all until the six-hourly cron.
+    // Termination is still guaranteed, and now by the thing that actually bounds
+    // spend: each completed sweep either embeds a crop or spends one of its
+    // three attempts, after which it stops being retriable. (A systemic failure
+    // spends nothing, but it throws rather than reaching here.) `sweep` survives
+    // as a diagnostic in the logs.
     const nextSweep = sweep + 1;
     console.log(
       `characters.backfill-visuals: ${remaining} crop(s) still missing after sweep ${sweep}; restarting sweep ${nextSweep}`
@@ -182,24 +188,18 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
     return;
   }
 
-  // Nothing retriable is left within this job's sweep budget. Report whatever
-  // the per-crop cap gave up on -- but do NOT throw. An abandoned crop is a
-  // STATE, not a job fault: re-running this job cannot embed it, so failing here
-  // would only manufacture a red job on every pass while fixing nothing. The
-  // blocker surfaces through the coverage report instead (/api/cron/characters
-  // and the admin panel), where it names an action a human can actually take.
+  // Nothing retriable is left. Report whatever the per-crop cap gave up on --
+  // but do NOT throw. An abandoned crop is a STATE, not a job fault: re-running
+  // this job cannot embed it, so failing here would only manufacture a red job
+  // on every pass while fixing nothing. The blocker surfaces through the
+  // coverage report instead (/api/cron/characters and the admin panel), where it
+  // names an action a human can actually take.
   if (abandoned > 0) {
     const sample = await abandonedImageVecSample(5);
     console.warn(
       `characters.backfill-visuals: giving up on ${abandoned} crop(s) after ${MAX_IMAGE_EMBED_ATTEMPTS} ` +
-        `attempts each (${remaining} still retriable). Sample: ` +
+        `attempts each. Sample: ` +
         sample.map((c) => `crop ${c.cropId} (image ${c.imageId}) ${c.blobUrl}`).join('; ')
-    );
-    return;
-  }
-  if (remaining > 0) {
-    console.warn(
-      `characters.backfill-visuals: ${remaining} crop(s) still retriable after ${MAX_SWEEPS} sweeps`
     );
     return;
   }

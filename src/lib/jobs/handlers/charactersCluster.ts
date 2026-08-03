@@ -6,6 +6,7 @@ import { enqueueJob } from '@/lib/db/queries/jobs';
 import type { Job } from '@/lib/db/schema';
 import { buildCropEdges, cropClusterVector } from '@/lib/universe/characters';
 import { detectCommunities } from '@/lib/universe/cluster';
+import { clusterReadiness } from '@/lib/universe/visual-coverage';
 
 type Payload = {
   runStamp?: number;
@@ -149,6 +150,31 @@ export async function produceCandidates(knobs: ResolvedKnobs): Promise<number> {
 // treated as one group).
 export async function charactersClusterHandler(job: Job): Promise<void> {
   const knobs = await resolveKnobs((job.payload ?? {}) as Payload);
+
+  // Re-check coverage against the knobs this run actually resolved, not the ones
+  // the enqueuer checked. Every enqueue path verifies readiness first, but that
+  // verdict can go stale before the job runs: scheduleRecluster debounces by two
+  // minutes, the cron's job waits for a drain slot, and in between an admin can
+  // switch the saved space to visual/blend while coverage is incomplete. The
+  // payload carries no knobs in those paths, so resolveKnobs picks up the NEW
+  // tuning and the run aborts -- the red job every enqueue path exists to avoid.
+  //
+  // Re-checking here rather than pinning the tuning into the payload: pinning
+  // would make a debounced run silently cluster with knobs the admin has since
+  // changed, which is a worse answer than not clustering. partialOk still
+  // overrides, and a skip is a no-op -- nothing is staged, so there is nothing
+  // to clean up and no census to strand.
+  if (!knobs.partialOk) {
+    const readiness = await clusterReadiness({
+      space: knobs.space,
+      blendWeight: knobs.blendWeight
+    });
+    if (!readiness.ready) {
+      console.log(`characters.cluster: skipping -- ${readiness.blocker}`);
+      return;
+    }
+  }
+
   const count = await produceCandidates(knobs);
 
   if (knobs.verifyEnabled) {

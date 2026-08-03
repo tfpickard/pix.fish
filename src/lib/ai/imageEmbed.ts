@@ -61,7 +61,10 @@ const IMAGE_FAULT_MARKERS = [
   'decode',
   'corrupt',
   'pixel',
-  'unsupported media',
+  // NB: "unsupported media type" is deliberately absent -- it is the literal
+  // HTTP 415 reason phrase, so a bare request-level rejection of our
+  // application/json content type would read as evidence about the crop. A
+  // genuinely unusable format still matches via 'image' or 'decode'.
   'too large',
   'dimension',
   'width',
