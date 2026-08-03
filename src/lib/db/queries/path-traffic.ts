@@ -87,14 +87,26 @@ export async function getDecayedPathTrafficMap(
   return out;
 }
 
-export type WornEdge = { srcId: number; dstId: number; value: number; lifetime: number };
+// `lastUpdatedAt` is the real wall-clock moment this edge was last traversed.
+// It rides along so desire-path promotion can record when a corridor was
+// genuinely last walked, instead of stamping the promotion run's own clock and
+// making an idle-but-slowly-decaying route look freshly walked every night.
+export type WornEdge = {
+  srcId: number;
+  dstId: number;
+  value: number;
+  lifetime: number;
+  lastUpdatedAt: Date;
+};
 
-// getTopPaths(): the most-walked edges by CURRENT (decayed) traffic, descending.
-// The natural reader for desire-paths promotion. The path_traffic table is
+// getTopGraphBackedPaths(): the most-walked GRAPH-BACKED edges by CURRENT
+// (decayed) traffic, descending. The reader for desire-paths promotion; the
+// name states the guarantee because the cap makes it load-bearing (see the
+// EXISTS below). The path_traffic table is
 // small (bounded by walked edges over a few-hundred-image corpus), so we scan
 // it and rank in JS with the shared decay function rather than approximate the
 // decay in SQL. `limit` caps the returned rows, not the scan.
-export async function getTopPaths(limit = 100): Promise<WornEdge[]> {
+export async function getTopGraphBackedPaths(limit = 100): Promise<WornEdge[]> {
   const dbRows = await db
     .select({
       srcId: pathTraffic.srcId,
@@ -103,7 +115,23 @@ export async function getTopPaths(limit = 100): Promise<WornEdge[]> {
       lifetime: pathTraffic.lifetime,
       lastUpdatedAt: pathTraffic.lastUpdatedAt
     })
-    .from(pathTraffic);
+    .from(pathTraffic)
+    // The kNN gate belongs HERE, before the cap -- not in the caller after it.
+    // /api/traffic accepts client-supplied walks, so ranking raw rows first let
+    // anyone flood enough high-value non-kNN pairs to fill the whole top-N;
+    // filtering afterwards then removed every one of them and left assembly
+    // with nothing, blocking promotion entirely. Fabrication was already
+    // blocked; this closes the starvation that blocking it created.
+    //
+    // EXISTS rather than a join: the graph is written symmetrically, so a join
+    // would match twice and duplicate the traffic row. Either orientation
+    // counts, for the same reason.
+    .where(sql`EXISTS (
+      SELECT 1 FROM knn_edges k
+      WHERE k.src_type = 'image' AND k.dst_type = 'image'
+        AND ((k.src_id = ${pathTraffic.srcId} AND k.dst_id = ${pathTraffic.dstId})
+          OR (k.src_id = ${pathTraffic.dstId} AND k.dst_id = ${pathTraffic.srcId}))
+    )`);
 
   const now = Date.now();
   return dbRows
@@ -111,7 +139,8 @@ export async function getTopPaths(limit = 100): Promise<WornEdge[]> {
       srcId: r.srcId,
       dstId: r.dstId,
       value: decayed(r.value, r.lastUpdatedAt.getTime(), now),
-      lifetime: r.lifetime
+      lifetime: r.lifetime,
+      lastUpdatedAt: r.lastUpdatedAt
     }))
     .filter((r) => r.value > 0)
     .sort((a, b) => b.value - a.value)
@@ -131,6 +160,55 @@ export type VisiblePath = {
   value: number;
   lifetime: number;
 };
+
+// Current decayed stats for an EXPLICIT set of edges, regardless of whether
+// they rank inside getTopPaths' sample. Desire-path retirement needs this: a
+// promoted corridor must be judged on its own edges, not on whether it happened
+// to resurface in this run's top-N slice or survive greedy re-partitioning.
+// Edges with no row (or fully decayed) are simply absent from the Map.
+export async function getWornEdgesFor(
+  pairs: { srcId: number; dstId: number }[]
+): Promise<Map<string, WornEdge>> {
+  const out = new Map<string, WornEdge>();
+  if (pairs.length === 0) return out;
+
+  // De-dupe first: corridors overlap heavily, so the same edge is asked for
+  // many times across a run's active set.
+  const seen = new Map<string, { srcId: number; dstId: number }>();
+  for (const p of pairs) seen.set(edgeKey(p.srcId, p.dstId), p);
+  const unique = [...seen.values()];
+
+  const now = Date.now();
+  const CHUNK = 200;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const chunk = unique.slice(i, i + CHUNK);
+    const dbRows = await db
+      .select({
+        srcId: pathTraffic.srcId,
+        dstId: pathTraffic.dstId,
+        value: pathTraffic.value,
+        lifetime: pathTraffic.lifetime,
+        lastUpdatedAt: pathTraffic.lastUpdatedAt
+      })
+      .from(pathTraffic)
+      .where(
+        or(...chunk.map((e) => and(eq(pathTraffic.srcId, e.srcId), eq(pathTraffic.dstId, e.dstId))))
+      );
+
+    for (const r of dbRows) {
+      const value = decayed(r.value, r.lastUpdatedAt.getTime(), now);
+      if (value <= 0) continue;
+      out.set(edgeKey(r.srcId, r.dstId), {
+        srcId: r.srcId,
+        dstId: r.dstId,
+        value,
+        lifetime: r.lifetime,
+        lastUpdatedAt: r.lastUpdatedAt
+      });
+    }
+  }
+  return out;
+}
 
 // getTopPathsVisible(): the most-walked edges by CURRENT (decayed) traffic,
 // like getTopPaths but joined to BOTH endpoint images so an edge only counts

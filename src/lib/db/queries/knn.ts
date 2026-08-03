@@ -10,6 +10,50 @@ import { images, knnEdges } from '../schema';
 
 export type KnnNeighbor = { dstId: number; dist: number };
 
+// Which of the given nodes are genuinely adjacent in the kNN graph. Returns a
+// Set of "min:max" pair keys (order-normalized) for every image-to-image edge
+// found among `nodeIds`, so callers can ask "is this traversal backed by a real
+// graph edge?" with a single round-trip and O(1) lookups.
+//
+// Used by desire.promote to gate promotion on graph-backed traffic: /api/traffic
+// accepts client-supplied walks, so without this an unauthenticated caller could
+// post arbitrary real image ids and manufacture a public desire path between
+// images that were never actually walkable. Every legitimate walk comes from a
+// completed /connect journey, which findPath built out of these very edges, so
+// requiring kNN backing drops no real traffic.
+//
+// Keys are order-normalized because the graph is written symmetrically (see
+// above); normalizing means a corridor is accepted whenever the pair is
+// adjacent, without depending on which direction a given rebuild happened to
+// leave behind. It does not weaken the check -- an attacker still cannot invent
+// a pair that is not semantically adjacent.
+export function knnPairKey(a: number, b: number): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+export async function getKnnPairsAmong(nodeIds: number[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  const unique = [...new Set(nodeIds)];
+  if (unique.length === 0) return out;
+
+  const rows = await db
+    .select({ srcId: knnEdges.srcId, dstId: knnEdges.dstId })
+    .from(knnEdges)
+    .where(
+      and(
+        inArray(knnEdges.srcId, unique),
+        inArray(knnEdges.dstId, unique),
+        // 'lore' nodes share the id space with images; a desire path is a
+        // corridor of images, so only image-to-image adjacency counts.
+        eq(knnEdges.srcType, 'image'),
+        eq(knnEdges.dstType, 'image')
+      )
+    );
+
+  for (const r of rows) out.add(knnPairKey(r.srcId, r.dstId));
+  return out;
+}
+
 // Load all outgoing edges for a set of node ids in one round-trip. Returns
 // a Map keyed by srcId so the pathfinder avoids a separate lookup per node
 // when expanding the frontier.
@@ -120,6 +164,20 @@ export async function countKnnEdges(): Promise<number> {
     sql`SELECT count(*)::int AS n FROM knn_edges`
   );
   return Number(res.rows?.[0]?.n ?? 0);
+}
+
+// Whether the image-to-image graph is populated at all, independent of any
+// particular set of nodes. desire.promote needs this to decide if the kNN graph
+// is trustworthy enough to retire corridors by: asking "did these candidates
+// have adjacency?" conflates an empty graph with candidates that genuinely have
+// none, which is exactly the case the retirement gate must catch. Filtered to
+// image-to-image because that is the only adjacency a corridor is made of --
+// a graph holding nothing but 'lore' edges is, for this purpose, empty.
+export async function hasImageKnnEdges(): Promise<boolean> {
+  const res = await db.execute<{ n: number }>(
+    sql`SELECT 1 AS n FROM knn_edges WHERE src_type = 'image' AND dst_type = 'image' LIMIT 1`
+  );
+  return (res.rows?.length ?? 0) > 0;
 }
 
 // Delete all existing edges before a rebuild so the table never accumulates

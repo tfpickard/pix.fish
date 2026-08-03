@@ -20,6 +20,49 @@ export async function enqueueJob(row: {
   return inserted;
 }
 
+/**
+ * Enqueue a job only if no job of the same type is pending OR processing,
+ * atomically.
+ *
+ * hasInFlightJobOfType() followed by enqueueJob() is check-then-act: two
+ * overlapping ticks (the scheduled GET racing an ad-hoc POST) can both observe
+ * "none in flight" before either INSERT commits, and the jobs table has no
+ * constraint tying the two together. For a corpus-wide job the duplicate is not
+ * free -- each copy spends the same provider budget and redoes the same writes.
+ *
+ * A transaction-scoped advisory lock keyed on the job type serializes the check
+ * and the insert without a migration. Returns null when one was already in
+ * flight.
+ */
+export async function enqueueIfNoneInFlight(row: {
+  type: string;
+  payload: unknown;
+  runAt?: Date;
+  maxAttempts?: number;
+}): Promise<Job | null> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${row.type})::bigint)`);
+
+    const res = await tx.execute<{ present: boolean }>(sql`
+      SELECT EXISTS(
+        SELECT 1 FROM jobs
+        WHERE type = ${row.type} AND status IN ('pending', 'processing')
+      ) AS present
+    `);
+    if (res.rows?.[0]?.present) return null;
+
+    const values: NewJob = {
+      type: row.type,
+      payload: row.payload as Job['payload'],
+      runAt: row.runAt ?? new Date(),
+      ...(row.maxAttempts !== undefined ? { maxAttempts: row.maxAttempts } : {})
+    };
+    const [inserted] = await tx.insert(jobs).values(values).returning();
+    if (!inserted) throw new Error('enqueueIfNoneInFlight returned no row');
+    return inserted;
+  });
+}
+
 // Image ids that already have an in-flight (pending or processing) job of a
 // given type, read from the jsonb payload. Used to dedupe characters.detect
 // enqueues so repeated detect-all clicks / overlapping runs don't pile up
