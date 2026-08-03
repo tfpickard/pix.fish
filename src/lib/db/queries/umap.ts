@@ -26,41 +26,48 @@ export async function latestProjection(): Promise<UmapProjection | null> {
 // and the rest are there to eyeball a regression or roll back by hand.
 const KEEP_PROJECTIONS = 10;
 
-function sameParams(a: UmapParams, b: Partial<UmapParams> | null | undefined): boolean {
-  if (!b) return true; // no projection yet -- nothing to conflict with
-  return a.nNeighbors === b.nNeighbors && a.minDist === b.minDist && a.kind === b.kind;
-}
-
 /**
- * Insert a projection, optionally only if the live configuration still matches
- * what the caller planned around.
+ * Insert a projection, optionally only if the projection the caller planned
+ * around is still the live one.
  *
- * `requireCurrent` exists for automatic refreshes, which inherit their
- * parameters and must not overwrite an admin who retuned the atlas while the
- * fit was running. Checking that in the handler and then calling this
- * separately is not enough: the two statements leave a check-then-write window
- * in which the admin's insert can land. So the comparison and the insert
- * happen inside one transaction, serialized against every other projection
- * write by a transaction-scoped advisory lock -- the same primitive
- * enqueueIfNonePending uses, and for the same reason.
+ * `requireCurrentId` exists for automatic refreshes, which inherit their
+ * parameters and must not overwrite a projection written while the fit was
+ * running. Checking that in the handler and then calling this separately is not
+ * enough: the two statements leave a check-then-write window in which the other
+ * insert can land. So the comparison and the insert happen inside one
+ * transaction, serialized against every other projection write by a
+ * transaction-scoped advisory lock -- the same primitive enqueueIfNonePending
+ * uses, and for the same reason.
+ *
+ * The guard is on row IDENTITY, not on parameter equality. Comparing parameters
+ * only caught a retune: an admin recompute using the SAME settings was
+ * indistinguishable from the projection this run inherited, so a long automatic
+ * fit could land after it, pass the guard, and become latestProjection() while
+ * carrying older vectors -- restoring stale coordinates that nothing else
+ * detects, since the map's freshness check is on point count and a replacement
+ * need not change it. Identity makes any newer projection a conflict.
+ *
+ * Pass `undefined` to skip the guard (an explicit admin request always saves).
+ * Pass `null` to mean "there was no projection when I started, and there must
+ * still be none".
  *
  * Returns null when the guard rejected the write.
  */
 export async function saveProjection(
   params: UmapParams,
   points: UmapPoint[],
-  requireCurrent?: UmapParams | null
+  requireCurrentId?: number | null
 ): Promise<UmapProjection | null> {
   const row = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('umap.projection')::bigint)`);
 
-    if (requireCurrent) {
+    if (requireCurrentId !== undefined) {
       const [live] = await tx
-        .select()
+        .select({ id: umapProjections.id })
         .from(umapProjections)
         .orderBy(desc(umapProjections.createdAt))
         .limit(1);
-      if (!sameParams(requireCurrent, live?.params as Partial<UmapParams> | undefined)) return null;
+      if ((live?.id ?? null) !== requireCurrentId) return null;
     }
 
     const [inserted] = await tx

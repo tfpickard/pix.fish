@@ -27,6 +27,10 @@ export const OG_SIZE = { width: 1200, height: 630 };
 // entire point of this file.
 export const OG_CONTENT_TYPE = 'image/jpeg';
 const JPEG_QUALITY = 86;
+// Ceiling on the blob read. Well above a healthy fetch, well under the function
+// wall, so a stalled upstream degrades to the text-only card while there is
+// still budget left to render and return one.
+const SOURCE_FETCH_TIMEOUT_MS = 6_000;
 
 // Not `immutable`. The card is rendered from mutable rows: PATCH /api/images/
 // [slug] can rewrite the text of the slug-source caption without changing the
@@ -83,7 +87,13 @@ function cardResponse(bytes: Buffer, contentType: string, degraded: boolean): Re
 async function loadSource(url: string): Promise<string | null> {
   if (!url) return null;
   try {
-    const res = await fetch(url);
+    // Bounded, because "returns null rather than throwing" only holds for a
+    // blob that fails. One that accepts the connection and then stalls never
+    // reaches the catch at all: the platform kills the whole invocation, the
+    // scraper gets no card instead of the degraded one, and because a killed
+    // invocation emits nothing cacheable every retry during the outage costs
+    // another one. The abort converts a stall into an ordinary failure.
+    const res = await fetch(url, { signal: AbortSignal.timeout(SOURCE_FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`blob fetch ${res.status}`);
     const sharp = (await import('sharp')).default;
     const jpeg = await sharp(Buffer.from(await res.arrayBuffer()))

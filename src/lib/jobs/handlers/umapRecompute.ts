@@ -36,7 +36,9 @@ const UMAP_SEED = 42;
  */
 type LiveParams = { nNeighbors?: unknown; minDist?: unknown; kind?: unknown };
 
-async function resolveParams(payload: Payload): Promise<Required<Payload>> {
+async function resolveParams(
+  payload: Payload
+): Promise<{ params: Required<Payload>; liveId: number | null }> {
   const needsInheritance =
     payload.nNeighbors === undefined || payload.minDist === undefined || payload.kind === undefined;
 
@@ -47,17 +49,22 @@ async function resolveParams(payload: Payload): Promise<Required<Payload>> {
   // AND mark the job done, spending none of the three attempts that exist for
   // exactly this. latestProjection() already returns null for the empty case,
   // so anything it throws is the second case -- let it reach the retry loop.
-  const live = needsInheritance
-    ? (((await latestProjection())?.params ?? null) as LiveParams | null)
-    : null;
+  const row = needsInheritance ? await latestProjection() : null;
+  const live = (row?.params ?? null) as LiveParams | null;
 
   const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
   const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
   return {
-    nNeighbors: payload.nNeighbors ?? num(live?.nNeighbors) ?? 15,
-    minDist: payload.minDist ?? num(live?.minDist) ?? 0.1,
-    kind: payload.kind ?? str(live?.kind) ?? 'caption'
+    params: {
+      nNeighbors: payload.nNeighbors ?? num(live?.nNeighbors) ?? 15,
+      minDist: payload.minDist ?? num(live?.minDist) ?? 0.1,
+      kind: payload.kind ?? str(live?.kind) ?? 'caption'
+    },
+    // The exact row this run inherited from, so the save can require it to
+    // still be current. Null when there was none -- a meaningful value, not a
+    // missing one: it asserts the table was empty and must still be.
+    liveId: row?.id ?? null
   };
 }
 
@@ -76,11 +83,14 @@ function mulberry32(seed: number) {
 
 export async function umapRecomputeHandler(job: Job): Promise<void> {
   const payload = job.payload as Payload;
-  const resolved = await resolveParams(payload);
+  const { params: resolved, liveId } = await resolveParams(payload);
   const { nNeighbors, minDist, kind } = resolved;
   // An automatic refresh inherits; an admin request states its own.
   const inherited =
     payload.nNeighbors === undefined && payload.minDist === undefined && payload.kind === undefined;
+  // undefined disables the guard entirely (an explicit admin run always saves);
+  // liveId -- including null -- arms it against the row this run started from.
+  const requireCurrentId = inherited ? liveId : undefined;
 
   const all = await allCaptionVectors();
   if (all.length < 4) {
@@ -90,7 +100,7 @@ export async function umapRecomputeHandler(job: Job): Promise<void> {
     // latestProjection() and is still what later runs inherit from, so letting
     // this one path skip the check would leave the exact reversion the guard
     // exists to stop, just on a corpus small enough to look unimportant.
-    await saveProjection({ nNeighbors, minDist, kind }, [], inherited ? resolved : null);
+    await saveProjection({ nNeighbors, minDist, kind }, [], requireCurrentId);
     return;
   }
 
@@ -128,12 +138,14 @@ export async function umapRecomputeHandler(job: Job): Promise<void> {
   }));
 
   // The guard lives inside saveProjection's transaction, not out here: checking
-  // first and writing second leaves a window in which the admin's insert lands
-  // between the two. Passing resolved means "only save if the live config is
-  // still the one I inherited"; an explicit admin run passes null and always
-  // saves.
-  const saved = await saveProjection({ nNeighbors, minDist, kind }, points, inherited ? resolved : null);
+  // first and writing second leaves a window in which the other insert lands
+  // between the two. It compares row identity, so a recompute that happened to
+  // use the same parameters still counts as a conflict -- otherwise this fit,
+  // holding older vectors, would pass and quietly become the live atlas.
+  const saved = await saveProjection({ nNeighbors, minDist, kind }, points, requireCurrentId);
   if (!saved) {
-    console.warn('umap: live params changed during fit, discarded this run rather than reverting them');
+    console.warn(
+      'umap: a newer projection landed during this fit, discarded this run rather than reverting it'
+    );
   }
 }
