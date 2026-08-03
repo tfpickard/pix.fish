@@ -8,6 +8,7 @@ import { captions, descriptions, images, tags, type Image } from '@/lib/db/schem
 import { cropBlobKeysForImage } from '@/lib/db/queries/character-crops';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { lookupRedirect, pushSlugToHistory, uniquifySlug } from '@/lib/db/queries/slugs';
+import { scheduleAtlasRefresh } from '@/lib/jobs/atlas';
 import { slugify } from '@/lib/slug';
 import { emit } from '@/lib/webhooks/emit';
 
@@ -248,6 +249,13 @@ export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   } catch (err) {
     console.error('blob delete failed for image', img.id, err);
   }
+
+  // A delete removes a caption vector, which makes it an embedding writer like
+  // any other -- the projection keeps drawing the orphaned point until some
+  // later upload or a manual recompute. /map's own staleness check cannot
+  // notice, because it compares pointCount against the embedded total and a
+  // shrinking corpus makes that comparison read as healthy.
+  await scheduleAtlasRefresh();
 
   return new NextResponse(null, { status: 204 });
 }

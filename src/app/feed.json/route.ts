@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { listImages, getOwnerHandlesForImages } from '@/lib/db/queries/images';
+import { listActiveImagesNewest, getOwnerHandlesForImages } from '@/lib/db/queries/images';
 import { SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION, absoluteUrl } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
@@ -27,13 +27,14 @@ export async function GET(req: Request) {
   const pageSize =
     Number.isFinite(sizeRaw) && sizeRaw > 0 ? Math.min(sizeRaw, MAX_PAGE_SIZE) : PAGE_SIZE;
 
-  let items: Awaited<ReturnType<typeof listImages>> = [];
+  let items: Awaited<ReturnType<typeof listActiveImagesNewest>> = [];
   try {
     // Fetch one extra row to detect "there is another page" without a count query.
-    items = await listImages({
+    // listActiveImagesNewest, not listImages: paging the whole back catalogue
+    // means archived and basement rows would otherwise resurface here.
+    items = await listActiveImagesNewest({
       limit: pageSize + 1,
       offset: (page - 1) * pageSize,
-      sort: 'newest',
       nsfwMode: 'hide'
     });
   } catch (err) {
