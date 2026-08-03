@@ -60,7 +60,15 @@ The old single `isOwner()` gate has been split. All three live in `auth.ts`:
 
 **The file must live at `src/middleware.ts`.** This project has a `src` directory, so Next.js only picks up middleware from inside it; the copy that sat at the repo root through phase F compiled to nothing and never ran a single request. Anything that looks like it should be enforced at the edge needs a `.next/server/middleware-manifest.json` check before you believe it.
 
-The matcher is now a catch-all (everything except `_next/*` and static asset extensions) because the same file also carries the per-IP edge rate limiter (`src/lib/edge-rate-limit.ts`). Widening it did not widen the auth gate -- `needsAuthGate()` still restricts that to the original three prefixes, and everything else only passes through the limiter. See `docs/rate-limiting.md` for how the three limiter layers relate.
+The matcher is now a catch-all because the same file also carries the per-IP edge rate limiter (`src/lib/edge-rate-limit.ts`). Widening it did not widen the auth gate -- `authGateFor()` still restricts that to the original three prefixes and the write methods, and everything else only passes through the limiter. Consulting it *before* invoking the NextAuth wrapper is deliberate: the wrapper verifies the session JWT before its callback runs, which is wasted on every public `GET /api/images`.
+
+Three things about that middleware are load-bearing and easy to undo by accident:
+
+- **The matcher excludes a named inventory of `public/`, never a file-extension pattern.** `/anything.png` matches no static file but still resolves through `src/app/[slug]/page.tsx`, so an `*.png` exclusion silently hands out a family of DB-backed paths that never reach the limiter. Add to the list when you add to `public/`.
+- **Prefix checks are segment-aware** (`underPath`). Bare `startsWith('/admin')` also catches `/administration`, which the legacy bare-slug route serves -- that would cost any image slug beginning "admin" its public URL.
+- **`/api/cron/*` skips the limiter only with a valid `CRON_SECRET` bearer**, not by path. All four cron routes use the identical `Bearer ${process.env.CRON_SECRET}` comparison; a path-only exemption would let anyone turn a public URL into unlimited Node invocations.
+
+See `docs/rate-limiting.md` for how the three limiter layers relate.
 
 ### AI provider abstraction (`src/lib/ai/`)
 
