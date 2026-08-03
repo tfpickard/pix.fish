@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { auth, isSiteAdmin } from '@/lib/auth';
-import { enqueueJob } from '@/lib/db/queries/jobs';
+import { enqueueIfNoneInFlight } from '@/lib/db/queries/jobs';
 import { countDesirePaths } from '@/lib/db/queries/desire-paths';
 import { countTrafficEdges } from '@/lib/db/queries/path-traffic';
 
@@ -44,6 +44,20 @@ export async function POST(req: Request) {
     // No body / non-JSON is fine; the handler uses its defaults.
   }
 
-  const job = await enqueueJob({ type: 'desire.promote', payload, maxAttempts: 2 });
+  // Same guard as the nightly cron. Without it this endpoint could start a
+  // second corpus-wide run alongside one already pending or processing, and the
+  // two would duplicate caption calls and race each other's lifecycle writes --
+  // the cron's atomic enqueue only ever protected against another cron.
+  //
+  // Reported rather than swallowed: an admin who set custom thresholds should
+  // learn their run was not queued, instead of watching for an effect that is
+  // never coming.
+  const job = await enqueueIfNoneInFlight({ type: 'desire.promote', payload, maxAttempts: 2 });
+  if (!job) {
+    return NextResponse.json(
+      { error: 'a desire.promote run is already in flight', skipped: true },
+      { status: 409 }
+    );
+  }
   return NextResponse.json({ jobId: job.id });
 }

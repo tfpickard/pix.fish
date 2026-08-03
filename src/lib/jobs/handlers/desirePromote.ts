@@ -228,9 +228,18 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   // before this gate existed, or one whose edges vanished in a later kNN
   // rebuild, would otherwise be kept alive indefinitely by anyone continuing to
   // post its pairs -- the gate above only ever sees freshly assembled routes.
+  const rebuildBeforePairs = await hasInFlightJobOfType('knn.rebuild');
   const activeKnnPairs = await getKnnPairsAmong(
     unverified.flatMap((a) => a.nodeIds as number[])
   );
+
+  // Re-read after the pair query, not just before it. A rebuild that was in
+  // flight while the pairs were read but finished before the health check would
+  // otherwise report a settled, populated graph while `activeKnnPairs` still
+  // holds the partial set it saw -- and every edge inserted after that read
+  // would look like decay, retiring routes people are walking. Requiring the
+  // rebuild to be absent on BOTH sides means none overlapped the read.
+  const rebuildAfterPairs = await hasInFlightJobOfType('knn.rebuild');
 
   // ...but ONLY when the graph is actually trustworthy. knn.rebuild does
   // clearAllKnnEdges() and insertKnnEdges() as separate awaits, and the worker
@@ -252,7 +261,7 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   // extra night is a far cheaper mistake than mass-retiring paths people are
   // walking, and the next run re-applies the gate against a settled graph.
   const graphTrustworthy =
-    !(await hasInFlightJobOfType('knn.rebuild')) && (await hasImageKnnEdges());
+    !rebuildBeforePairs && !rebuildAfterPairs && (await hasImageKnnEdges());
 
   const retireSigs: string[] = [];
   const stillAlive: {
@@ -318,15 +327,27 @@ export async function desirePromoteHandler(job: Job): Promise<void> {
   // query: newly filed routes, refreshed routes that never got a name, and
   // survivors kept alive by edge verification alone (which never enter
   // `qualifying`, so nothing built from it could reach them).
-  pendingNames.push(...survivorsNeedName);
+  // Deduped by signature, because a route filed earlier in this run reaches
+  // here twice: `actives` is read after filing, so a new route is in it, is
+  // absent from refreshedSigs, lands in `unverified`, passes edge verification
+  // (it was just assembled from qualifying edges) and -- having been filed with
+  // a null caption -- is collected as a survivor needing a name. Appending
+  // blindly meant every new route burned two provider calls for one name,
+  // halving how many the budget could actually cover.
+  const seenNames = new Set<string>();
+  const nameQueue = [...pendingNames, ...survivorsNeedName].filter((p) => {
+    if (seenNames.has(p.edgeSig)) return false;
+    seenNames.add(p.edgeSig);
+    return true;
+  });
 
   let renamed = 0;
-  if (canCaption && captionBudget > 0 && pendingNames.length > 0) {
+  if (canCaption && captionBudget > 0 && nameQueue.length > 0) {
     const caps = await firstCaptionsByImageIds([
-      ...new Set(pendingNames.flatMap((p) => p.nodeIds))
+      ...new Set(nameQueue.flatMap((p) => p.nodeIds))
     ]);
 
-    for (const p of pendingNames) {
+    for (const p of nameQueue) {
       if (captionBudget <= 0) break;
       // Only start a call that can still finish inside the deadline, so the
       // handler cannot be pushed past the worker cap by its own last request.
