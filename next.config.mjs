@@ -11,6 +11,11 @@ const withSerwist = withSerwistInit({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: {
+    // AVIF first, WebP fallback. Next only negotiates the formats listed here,
+    // and the default is WebP-only -- AVIF is typically another ~30% off the
+    // wire for the same visual quality on this kind of dense illustration.
+    // Ordering matters: the optimizer picks the first format the client accepts.
+    formats: ['image/avif', 'image/webp'],
     remotePatterns: [
       { protocol: 'https', hostname: '*.public.blob.vercel-storage.com' },
       { protocol: 'https', hostname: '*.blob.vercel-storage.com' }

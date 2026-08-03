@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { listImages, getOwnerHandlesForImages } from '@/lib/db/queries/images';
+import { listActiveImagesNewest, getOwnerHandlesForImages } from '@/lib/db/queries/images';
 import { SITE_NAME, SITE_URL, DEFAULT_DESCRIPTION, absoluteUrl } from '@/lib/site';
 
 export const dynamic = 'force-dynamic';
@@ -9,10 +9,34 @@ export const revalidate = 0;
 // Picked over RSS because it's a JSON object (no XML escaping
 // landmines) and the major readers (NetNewsWire, Feedbin, FreshRSS,
 // Inoreader, Are.na's importers) all parse it.
-export async function GET() {
-  let items: Awaited<ReturnType<typeof listImages>> = [];
+// Readers fetch the top of the feed; archivists want the whole collection. A
+// hard 50 meant the back catalogue simply wasn't syndicable, so the feed now
+// pages: `?page=N` walks back through the archive and emits JSON Feed's
+// `next_url` so a crawler can follow it to the end on its own.
+// Default stays 50 so existing subscribers see an unchanged first page.
+// MAX is 99 rather than a round number because listImages clamps `limit` to
+// 100 and we fetch pageSize + 1 to look ahead for another page.
+const PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 99;
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const pageRaw = Number.parseInt(url.searchParams.get('page') ?? '1', 10);
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1;
+  const sizeRaw = Number.parseInt(url.searchParams.get('limit') ?? '', 10);
+  const pageSize =
+    Number.isFinite(sizeRaw) && sizeRaw > 0 ? Math.min(sizeRaw, MAX_PAGE_SIZE) : PAGE_SIZE;
+
+  let items: Awaited<ReturnType<typeof listActiveImagesNewest>> = [];
   try {
-    items = await listImages({ limit: 50, sort: 'newest', nsfwMode: 'hide' });
+    // Fetch one extra row to detect "there is another page" without a count query.
+    // listActiveImagesNewest, not listImages: paging the whole back catalogue
+    // means archived and basement rows would otherwise resurface here.
+    items = await listActiveImagesNewest({
+      limit: pageSize + 1,
+      offset: (page - 1) * pageSize,
+      nsfwMode: 'hide'
+    });
   } catch (err) {
     console.error('feed.json failed to load images', err);
     return NextResponse.json(
@@ -20,6 +44,11 @@ export async function GET() {
       { status: 503 }
     );
   }
+
+  // Drop the lookahead row before rendering; its only job was to tell us
+  // whether a further page exists.
+  const hasMore = items.length > pageSize;
+  if (hasMore) items = items.slice(0, pageSize);
 
   const handles = await getOwnerHandlesForImages(items.map((i) => i.id)).catch(
     () => new Map<number, string>()
@@ -57,7 +86,12 @@ export async function GET() {
           }
         ]
       };
-    })
+    }),
+    // JSON Feed 1.1 pagination. Readers that only take the first page are
+    // unaffected; anything walking the archive follows this to the end.
+    ...(hasMore
+      ? { next_url: absoluteUrl(`/feed.json?page=${page + 1}&limit=${pageSize}`) }
+      : {})
   };
 
   return NextResponse.json(feed, {

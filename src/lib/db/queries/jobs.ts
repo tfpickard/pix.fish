@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { jobs } from '../schema';
 import type { Job, NewJob } from '../schema';
@@ -18,6 +18,56 @@ export async function enqueueJob(row: {
   const [inserted] = await db.insert(jobs).values(values).returning();
   if (!inserted) throw new Error('enqueueJob returned no row');
   return inserted;
+}
+
+/**
+ * Enqueue a job only if no job of the same type is already pending, atomically.
+ *
+ * The obvious shape -- hasPendingJobOfType() then enqueueJob() -- is a
+ * check-then-act race. Two callers can both observe "none pending" before
+ * either INSERT commits, and the jobs table has no uniqueness constraint to
+ * catch it. That was tolerable when the only debounced enqueue came from a
+ * cron tick, but the atlas refresh now fires from four call sites including
+ * per-upload, and the upload UI deliberately runs N uploads in parallel -- so
+ * the burst the debounce exists to collapse is exactly the burst that defeats
+ * it, and each duplicate is a corpus-wide UMAP eating most of a worker budget.
+ *
+ * INSERT ... WHERE NOT EXISTS would not fix it: under READ COMMITTED the
+ * subquery cannot see the other transaction's uncommitted row. A transaction-
+ * scoped advisory lock serializes the check and the insert regardless of MVCC
+ * visibility, and needs no migration -- worth preferring over a partial unique
+ * index while the jobs table has no other uniqueness requirements.
+ *
+ * Returns the inserted job, or null when one was already pending.
+ */
+export async function enqueueIfNonePending(row: {
+  type: string;
+  payload: unknown;
+  runAt?: Date;
+  maxAttempts?: number;
+}): Promise<Job | null> {
+  return db.transaction(async (tx) => {
+    // Lock is keyed on the job type, so unrelated types never contend. Released
+    // automatically when the transaction ends, including on error.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${row.type})::bigint)`);
+
+    const res = await tx.execute<{ present: boolean }>(sql`
+      SELECT EXISTS(
+        SELECT 1 FROM jobs WHERE type = ${row.type} AND status = 'pending'
+      ) AS present
+    `);
+    if (res.rows?.[0]?.present) return null;
+
+    const values: NewJob = {
+      type: row.type,
+      payload: row.payload as Job['payload'],
+      runAt: row.runAt ?? new Date(),
+      ...(row.maxAttempts !== undefined ? { maxAttempts: row.maxAttempts } : {})
+    };
+    const [inserted] = await tx.insert(jobs).values(values).returning();
+    if (!inserted) throw new Error('enqueueIfNonePending returned no row');
+    return inserted;
+  });
 }
 
 // Image ids that already have an in-flight (pending or processing) job of a
@@ -179,6 +229,36 @@ export async function inFlightRunJobCount(type: string, runStamp: number): Promi
       AND (payload->>'runStamp')::bigint = ${runStamp}
   `);
   return Number(res.rows?.[0]?.n ?? 0);
+}
+
+/**
+ * Hand claimed-but-never-started rows straight back to the queue.
+ *
+ * The drain claims a batch of 10 and runs them sequentially, so when one job
+ * eats the wall budget the rest of its batch are already marked `processing`
+ * and are simply abandoned -- unclaimable by the next tick until the five
+ * minute visibility timeout reclaims them. Releasing them explicitly turns
+ * that five-minute stall into the next tick, roughly a minute.
+ *
+ * Only ever called for rows the drain knows it did not start, so this cannot
+ * race a running handler. Guarded on status = 'processing' and the caller's
+ * own lock id regardless, so a row reclaimed and re-claimed by someone else in
+ * the meantime is left alone.
+ */
+export async function releaseUnstartedJobs(lockId: string, ids: number[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const res = await db
+    .update(jobs)
+    .set({ status: 'pending', lockedBy: null, lockedAt: null, startedAt: null })
+    .where(
+      and(
+        eq(jobs.status, 'processing'),
+        eq(jobs.lockedBy, lockId),
+        inArray(jobs.id, ids)
+      )
+    )
+    .returning({ id: jobs.id });
+  return res.length;
 }
 
 // Reclaim rows whose visibility-timeout lease expired. Runs at the top of the

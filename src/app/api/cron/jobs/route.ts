@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { claimJobs, reclaimStuckJobs } from '@/lib/db/queries/jobs';
+import { claimJobs, reclaimStuckJobs, releaseUnstartedJobs } from '@/lib/db/queries/jobs';
 import { runJob } from '@/lib/jobs/worker';
 
 export const runtime = 'nodejs';
@@ -29,22 +29,37 @@ async function drain(req: Request) {
   let failed = 0;
   let retried = 0;
 
-  while (Date.now() - started < WALL_BUDGET_MS) {
+  // Rows we claimed but never got to, handed straight back rather than left
+  // marked `processing` for the visibility timeout to rescue. A batch is
+  // claimed all at once and run sequentially, so a single job allowed most of
+  // the wall budget (umap.recompute gets 55s) can strand the nine behind it for
+  // five minutes -- and since an atlas refresh is now scheduled by ordinary
+  // uploads rather than an admin clicking recompute, that head-of-line stall
+  // would land on routine enrichment and webhook delivery.
+  let released = 0;
+
+  outer: while (Date.now() - started < WALL_BUDGET_MS) {
     const batch = await claimJobs(lockId, BATCH);
     if (batch.length === 0) break;
-    for (const job of batch) {
+    for (let i = 0; i < batch.length; i++) {
       // The deadline that actually matters is this invocation's, not each
       // handler's. A handler starting 40s in has ~15s of function left, however
       // fresh its own clock looks.
-      const result = await runJob(job, { invocationDeadlineAt: started + WALL_BUDGET_MS });
+      const result = await runJob(batch[i]!, { invocationDeadlineAt: started + WALL_BUDGET_MS });
       if (result === 'done') drained++;
       else if (result === 'failed') failed++;
       else retried++;
-      if (Date.now() - started >= WALL_BUDGET_MS) break;
+      if (Date.now() - started >= WALL_BUDGET_MS) {
+        released += await releaseUnstartedJobs(
+          lockId,
+          batch.slice(i + 1).map((j) => j.id)
+        );
+        break outer;
+      }
     }
   }
 
-  return NextResponse.json({ reclaimed, drained, retried, failed });
+  return NextResponse.json({ reclaimed, drained, retried, failed, released });
 }
 
 // Vercel Cron invokes the path with HTTP GET; ad-hoc triggers (curl,

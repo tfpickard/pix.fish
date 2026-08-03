@@ -4,6 +4,7 @@ import { captions, descriptions, images, tags } from '@/lib/db/schema';
 import { getEmbedder, type AiConfigMap, type UserProviderKeys } from '@/lib/ai';
 import { upsertEmbedding } from '@/lib/db/queries/embeddings';
 import { enqueueJob } from '@/lib/db/queries/jobs';
+import { scheduleAtlasRefresh } from '@/lib/jobs/atlas';
 import { uniquifySlug, pushSlugToHistory } from '@/lib/db/queries/slugs';
 import { getImageBySlug } from '@/lib/db/queries/images';
 import { slugify } from '@/lib/slug';
@@ -227,6 +228,15 @@ export async function persistEnrichment(args: {
     } catch (err) {
       console.error('failed to enqueue entropy.recompute for image', imageId, err);
     }
+
+    // Refresh the UMAP atlas for the same reason, and at the same moment: the
+    // projection is built from caption vectors, so it can only include this
+    // image once the vector above exists.
+    //
+    // Nothing used to trigger this at all -- umap.recompute only ever ran when
+    // someone hit /admin/map by hand -- so the map drifted badly out of date
+    // and covered a fraction of the gallery while new uploads kept landing.
+    await scheduleAtlasRefresh();
   }
 
   // Webhook fan-out -- also best effort; emit() only enqueues delivery jobs.

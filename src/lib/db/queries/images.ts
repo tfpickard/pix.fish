@@ -69,6 +69,45 @@ export async function listImages(opts: ListImagesOpts): Promise<ImageWithRelatio
   return hydrateImages(imageRows);
 }
 
+/**
+ * Newest active images, for the syndication feed.
+ *
+ * Deliberately NOT listImages({ sort: 'newest' }). That path applies only the
+ * NSFW predicate -- it does not filter `archivedAt` or `basement` -- which was
+ * survivable while /feed.json was hard-capped at the 50 newest rows, since an
+ * archived image had to be very recent to appear at all. Paginating the feed
+ * makes the entire back catalogue reachable, so an image soft-archived
+ * precisely to pull it out of circulation would be republished, caption and
+ * public blob URL included, from some later page.
+ *
+ * Kept as its own query rather than an `activeOnly` flag threaded through
+ * listImages: fetchInSortOrder fans out across a dozen sort branches plus the
+ * in-memory reorder modes, and a flag that silently fails to reach one of them
+ * is exactly the bug this is meant to close. The feed only ever wants newest,
+ * so it states its own predicates.
+ */
+export async function listActiveImagesNewest(opts: {
+  limit?: number;
+  offset?: number;
+  nsfwMode?: NsfwMode;
+}): Promise<ImageWithRelations[]> {
+  const limit = clampInt(opts.limit, 24, 1, 100);
+  const offset = clampInt(opts.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const nsfw = nsfwPredicate(opts.nsfwMode ?? 'hide');
+
+  const clauses = [isNull(images.archivedAt), eq(images.basement, false)];
+  if (nsfw) clauses.push(nsfw);
+
+  const rows = await db
+    .select()
+    .from(images)
+    .where(and(...clauses))
+    .orderBy(sql`${images.uploadedAt} DESC, ${images.id} DESC`)
+    .limit(limit)
+    .offset(offset);
+  return hydrateImages(rows);
+}
+
 // AND-composable NSFW predicate for the three filter modes.
 // Returns null for 'include' so callers skip adding a WHERE clause entirely.
 // Exported so the /api/random query reuses the exact same NSFW clause rather

@@ -62,15 +62,17 @@ export function buildImageDetailMetadata(
   const description = buildImageDescription(img);
   const keywords = buildImageKeywords(img);
   const canonical = canonicalImagePath(img, ownerHandle);
-  const caption = pickSlugCaption(img);
 
-  const ogImage = {
-    url: img.blobUrl,
-    width: img.width ?? 1200,
-    height: img.height ?? 630,
-    alt: caption
-  };
-
+  // NOTE: og:image / twitter:image are deliberately NOT set here. Both detail
+  // routes ship an `opengraph-image.tsx`, and Next only injects that file-based
+  // card when metadata leaves the images fields empty -- setting them here would
+  // silently win and put us back on the raw blob.
+  //
+  // What we used to emit: `url: img.blobUrl` (the original, up to ~3.4 MB) with
+  // `width: img.width ?? 1200, height: img.height ?? 630`. Since images.width /
+  // height are never populated (no dimension probing -- see CLAUDE.md), that
+  // advertised a 1200x630 card while serving a full-size PNG of some other
+  // aspect. The generated card is correctly sized and a fraction of the bytes.
   return {
     title,
     description,
@@ -81,7 +83,6 @@ export function buildImageDetailMetadata(
       url: absoluteUrl(canonical),
       title,
       description,
-      images: [ogImage],
       publishedTime: (img.takenAt ?? img.uploadedAt).toISOString(),
       modifiedTime: img.uploadedAt.toISOString(),
       tags: img.tags.map((t) => t.tag)
@@ -89,8 +90,7 @@ export function buildImageDetailMetadata(
     twitter: {
       card: 'summary_large_image',
       title,
-      description,
-      images: [img.blobUrl]
+      description
     }
   };
 }
