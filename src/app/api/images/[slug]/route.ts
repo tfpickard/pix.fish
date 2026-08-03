@@ -233,6 +233,19 @@ export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   // appears in the gallery.
   await db.delete(images).where(eq(images.id, img.id));
 
+  // Scheduled immediately after the DB delete, BEFORE the blob cleanup below.
+  // A delete removes a caption vector, which makes it an embedding writer like
+  // any other -- the projection keeps drawing the orphaned point until some
+  // later upload or a manual recompute, and /map's own staleness check cannot
+  // notice, because it compares pointCount against the embedded total and a
+  // shrinking corpus makes that comparison read as healthy.
+  //
+  // Ordering matters because `del` is a remote call that can hang until the
+  // serverless invocation is killed. Behind it, this enqueue would simply never
+  // run, and the row it needs to account for is already gone -- so the atlas
+  // would be left orphaned by exactly the slow-blob case most likely to happen.
+  await scheduleAtlasRefresh();
+
   // Best-effort blob cleanup: the original, any generated WebP derivatives, and
   // any character-crop headshots, so deleting an image doesn't orphan its blob
   // objects (or leave crops of a now-private image publicly reachable). `del`
@@ -249,13 +262,6 @@ export async function DELETE(_req: Request, ctx: { params: { slug: string } }) {
   } catch (err) {
     console.error('blob delete failed for image', img.id, err);
   }
-
-  // A delete removes a caption vector, which makes it an embedding writer like
-  // any other -- the projection keeps drawing the orphaned point until some
-  // later upload or a manual recompute. /map's own staleness check cannot
-  // notice, because it compares pointCount against the embedded total and a
-  // shrinking corpus makes that comparison read as healthy.
-  await scheduleAtlasRefresh();
 
   return new NextResponse(null, { status: 204 });
 }
