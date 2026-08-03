@@ -172,40 +172,48 @@ describe('isCropFault', () => {
   // Getting this backwards is expensive in both directions: charge the crop for
   // an outage and one Voyage incident abandons the whole corpus; excuse a dead
   // blob and it is re-billed on every pass forever.
-  test('content-shaped rejections blame the crop regardless of body', () => {
-    for (const s of [413, 415, 422]) expect(isCropFault(s, '')).toBe(true);
+  test('no status alone blames the crop -- we send a URL, not the pixels', () => {
+    // 415 is about our application/json content type, 422 about the body schema,
+    // 413 about a few hundred bytes of JSON. All identical for every crop, so
+    // trusting the status would abandon the whole corpus on one config mistake.
+    for (const s of [400, 413, 415, 422]) expect(isCropFault(s, '')).toBe(false);
   });
 
   test('auth, quota, throttling and server errors are systemic', () => {
     for (const s of [401, 402, 403, 408, 429, 500, 502, 503, 529]) {
-      expect(isCropFault(s, 'anything at all')).toBe(false);
+      expect(isCropFault(s, 'the image could not be decoded')).toBe(false);
     }
   });
 
   test('a 404 is the endpoint, not the image -- our crop URL is fetched by Voyage', () => {
-    expect(isCropFault(404, 'not found')).toBe(false);
+    expect(isCropFault(404, 'image not found')).toBe(false);
   });
 
-  test('a 400 blames the crop only when the body is about the image', () => {
+  test('an ambiguous 4xx blames the crop only when the body is about the image', () => {
     expect(isCropFault(400, '{"detail":"Failed to download image from the provided url"}')).toBe(true);
     expect(isCropFault(400, '{"detail":"Unable to decode the image"}')).toBe(true);
-    expect(isCropFault(400, '{"detail":"Image is too large"}')).toBe(true);
+    expect(isCropFault(413, '{"detail":"Image is too large"}')).toBe(true);
+    expect(isCropFault(422, '{"detail":"The image dimensions are out of range"}')).toBe(true);
   });
 
-  test('a request-level 400 is systemic even when it mentions the image', () => {
+  test('a request-level body is systemic even when it mentions the image', () => {
     // The exact failure that must never burn the corpus: one bad model id
     // charging every crop an attempt and abandoning all of them in three sweeps.
     expect(isCropFault(400, '{"detail":"Model voyage-multimodal-3.5 is not supported"}')).toBe(false);
     expect(
       isCropFault(400, '{"detail":"invalid model, expected one of the multimodal image models"}')
     ).toBe(false);
+    expect(isCropFault(415, '{"detail":"Unsupported media type: expected application/json"}')).toBe(
+      false
+    );
+    expect(isCropFault(422, '{"detail":"invalid parameter: inputs[0].content"}')).toBe(false);
     expect(isCropFault(400, '{"detail":"Invalid api key"}')).toBe(false);
     expect(isCropFault(400, '{"detail":"You have exceeded your quota"}')).toBe(false);
   });
 
-  test('an unrecognized 400 defaults to systemic', () => {
-    expect(isCropFault(400, '')).toBe(false);
+  test('an unrecognized ambiguous body defaults to systemic', () => {
     expect(isCropFault(400, 'bad request')).toBe(false);
+    expect(isCropFault(422, 'unprocessable')).toBe(false);
   });
 });
 

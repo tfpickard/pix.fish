@@ -21,6 +21,11 @@ export type ClusterReadiness = {
   retriable: number;
   // Crops with no visual vector that the backfill has given up on.
   abandoned: number;
+  // Crops that DO have a visual vector. Zero means even a partialOk run is
+  // doomed: produceCandidates hard-aborts on a nonempty corpus with no usable
+  // nodes, and that guard has no override -- filing an empty census would wipe
+  // the roster outright.
+  embedded: number;
   ready: boolean;
   // Operator-facing sentence naming the blocker and the way out. Null when ready.
   blocker: string | null;
@@ -35,18 +40,27 @@ export async function clusterReadiness(): Promise<ClusterReadiness> {
       needsVisual: false,
       retriable: 0,
       abandoned: 0,
+      embedded: 0, // not consulted for a text space; nothing can be missing
       ready: true,
       blocker: null
     };
   }
 
-  // One snapshot, not two counts: the backfill increments the column these are
-  // partitioned on, so separate reads can miss a crop crossing the cap between
-  // them and report full coverage for a corpus that has none.
-  const { retriable, abandoned } = await imageVecCoverage();
+  // One snapshot, not separate counts: the backfill increments the column these
+  // are partitioned on, so independent reads can miss a crop crossing the cap
+  // between them and report full coverage for a corpus that has none.
+  const { retriable, abandoned, embedded } = await imageVecCoverage();
 
   if (retriable === 0 && abandoned === 0) {
-    return { space: tuning.space, needsVisual, retriable, abandoned, ready: true, blocker: null };
+    return {
+      space: tuning.space,
+      needsVisual,
+      retriable,
+      abandoned,
+      embedded,
+      ready: true,
+      blocker: null
+    };
   }
 
   // Two blockers, two different actions. Retriable crops fix themselves once the
@@ -62,5 +76,5 @@ export async function clusterReadiness(): Promise<ClusterReadiness> {
       : `${retriable} crop(s) still lack a visual vector; the backfill is draining them. ` +
         `Clustering resumes automatically once coverage is complete.`;
 
-  return { space: tuning.space, needsVisual, retriable, abandoned, ready: false, blocker };
+  return { space: tuning.space, needsVisual, retriable, abandoned, embedded, ready: false, blocker };
 }

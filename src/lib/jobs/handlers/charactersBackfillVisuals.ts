@@ -36,7 +36,12 @@ const MAX_DEFERRALS = 3;
 // so the retry usually finds the corpus clear on its first look.
 const DEFER_MS = 45_000;
 
-type Payload = { afterId?: number; sweep?: number; deferrals?: number };
+// `wrote` is carried across the whole continuation chain, not derived per run:
+// the run that DRAINS the corpus is usually the one that embedded nothing (the
+// work happened in its predecessors), so a per-run check would suppress exactly
+// the recluster the chain exists to trigger. Sticky-true from the first vector
+// written until the chain ends.
+type Payload = { afterId?: number; sweep?: number; deferrals?: number; wrote?: boolean };
 
 export async function charactersBackfillVisualsHandler(job: Job): Promise<void> {
   const embedder = getImageEmbedder();
@@ -73,6 +78,7 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
   // already completed (budget continuations keep the same sweep number).
   let afterId = Number(payload.afterId ?? 0);
   const sweep = Number(payload.sweep ?? 0);
+  const inheritedWrote = payload.wrote === true;
   const startedAt = Date.now();
   let ok = 0;
   let failed = 0;
@@ -125,6 +131,8 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
       afterId = crop.cropId; // advance the cursor past this crop, success or fail
     }
   }
+  // Sticky across the chain: this run's vectors OR any earlier run's.
+  const wrote = inheritedWrote || ok > 0;
   console.log(
     `characters.backfill-visuals: sweep ${sweep} embedded ${ok}, failed ${failed} of ${attempted} attempted (cursor ${afterId})`
   );
@@ -134,7 +142,7 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
     // same sweep number.
     await enqueueJob({
       type: 'characters.backfill-visuals',
-      payload: { afterId, sweep },
+      payload: { afterId, sweep, wrote },
       maxAttempts: 3
     });
     return;
@@ -160,7 +168,7 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
     );
     await enqueueJob({
       type: 'characters.backfill-visuals',
-      payload: { afterId: 0, sweep: nextSweep },
+      payload: { afterId: 0, sweep: nextSweep, wrote },
       maxAttempts: 3
     });
     return;
@@ -188,8 +196,13 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
     return;
   }
 
-  // Fully drained. The crops that were blocking a visual/blend cluster now have
-  // their vectors, so close the loop here rather than making the roster wait for
-  // the next 6-hourly cron tick.
+  // Fully drained. Recluster only if this chain actually wrote a vector: a
+  // backfill fired against an already-complete corpus (a second admin click, a
+  // stale duplicate) changed nothing, and scheduleRecluster deliberately ignores
+  // a currently-processing cluster, so a no-op run would fan out a redundant
+  // corpus-wide verify + census -- paid LLM work for a crop set nobody touched.
+  // When it did write, close the loop here rather than making the roster wait
+  // for the next 6-hourly cron tick.
+  if (!wrote) return;
   await scheduleRecluster();
 }

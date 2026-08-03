@@ -140,6 +140,11 @@ export default function AdminCharactersPage() {
       } catch (err) {
         setInfo(`tuning error: ${String(err)}`);
       }
+      // Readiness is a function of the SAVED space: switching from text (or a
+      // zero-weight blend) to visual/blend is what blocks the cron, so the panel
+      // has to re-read here or it keeps showing "ready" for defaults that no
+      // longer are.
+      loadReadiness();
     });
   }
 

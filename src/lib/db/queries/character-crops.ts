@@ -155,25 +155,42 @@ export async function countCropsAbandonedImageVec(): Promise<number> {
   return Number(res.rows?.[0]?.n ?? 0);
 }
 
-// Both halves of the coverage picture from ONE snapshot. The two counts above
-// partition the same rows on a column the backfill is concurrently
-// incrementing, so reading them as separate statements can observe a crop in
-// NEITHER half: the abandoned count lands before the crop crosses the cap and
-// the retriable count lands after. Both return 0, coverage reads complete, and
-// a cluster gets enqueued for a corpus that still has a crop without a vector
-// -- reproducing the exact failed job this whole change exists to prevent.
-// A single aggregate cannot tear that way.
-export async function imageVecCoverage(): Promise<{ retriable: number; abandoned: number }> {
-  const res = await db.execute<{ retriable: number; abandoned: number }>(sql`
+// The whole coverage picture from ONE snapshot: every eligible crop, split into
+// embedded / still-retriable / abandoned.
+//
+// One statement, not three, because the two missing-vector counts partition the
+// same rows on a column the backfill is concurrently incrementing. Read
+// separately, a crop crossing the cap between them lands in NEITHER half -- the
+// abandoned count runs before the increment, the retriable count after -- so
+// both return 0, coverage reads complete, and a cluster is enqueued for a corpus
+// that still has an unembedded crop. That is the exact failed job this change
+// exists to prevent. A single aggregate cannot tear that way.
+export type ImageVecCoverage = {
+  embedded: number; // crops that HAVE a visual vector -- clustering has nodes
+  retriable: number; // missing, still under the attempt cap
+  abandoned: number; // missing, gave up
+};
+
+export async function imageVecCoverage(): Promise<ImageVecCoverage> {
+  const res = await db.execute<{ embedded: number; retriable: number; abandoned: number }>(sql`
     SELECT
-      count(*) FILTER (WHERE cc.vec_image_attempts < ${MAX_IMAGE_EMBED_ATTEMPTS})::int AS retriable,
-      count(*) FILTER (WHERE cc.vec_image_attempts >= ${MAX_IMAGE_EMBED_ATTEMPTS})::int AS abandoned
+      count(*) FILTER (WHERE cc.vec_image IS NOT NULL)::int AS embedded,
+      count(*) FILTER (
+        WHERE cc.vec_image IS NULL AND cc.vec_image_attempts < ${MAX_IMAGE_EMBED_ATTEMPTS}
+      )::int AS retriable,
+      count(*) FILTER (
+        WHERE cc.vec_image IS NULL AND cc.vec_image_attempts >= ${MAX_IMAGE_EMBED_ATTEMPTS}
+      )::int AS abandoned
     FROM character_crops cc
     JOIN images i ON i.id = cc.image_id
-    WHERE cc.vec_image IS NULL AND i.archived_at IS NULL
+    WHERE i.archived_at IS NULL
   `);
   const row = res.rows?.[0];
-  return { retriable: Number(row?.retriable ?? 0), abandoned: Number(row?.abandoned ?? 0) };
+  return {
+    embedded: Number(row?.embedded ?? 0),
+    retriable: Number(row?.retriable ?? 0),
+    abandoned: Number(row?.abandoned ?? 0)
+  };
 }
 
 // A sample of abandoned crops, for the operator-facing report. Bounded because

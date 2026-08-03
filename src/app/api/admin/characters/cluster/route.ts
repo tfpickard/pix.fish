@@ -50,15 +50,33 @@ export async function POST(req: Request) {
   // Refuse a run that would abort in produceCandidates. Reported here rather
   // than as a failed job so the admin sees the blocker (and its remedies) in the
   // response to the click that caused it, instead of having to go read
-  // /admin/jobs. partialOk is the explicit override.
-  if (!partialOk) {
-    const readiness = await clusterReadiness();
-    if (!readiness.ready) {
-      return NextResponse.json(
-        { error: 'visual coverage incomplete', blocker: readiness.blocker, readiness },
-        { status: 409 }
-      );
-    }
+  // /admin/jobs.
+  //
+  // partialOk overrides the PARTIAL-coverage guard only. produceCandidates has a
+  // second, harder guard -- a nonempty corpus where NO crop has the needed vector
+  // -- and that one takes no override, because filing the resulting empty census
+  // would wipe the roster rather than merely prune it. Selecting 'visual' before
+  // any backfill has run hits exactly that, so partialOk there would enqueue the
+  // same doomed job this route exists to refuse. Check it either way.
+  const readiness = await clusterReadiness();
+  if (readiness.needsVisual && readiness.embedded === 0 && (readiness.retriable || readiness.abandoned)) {
+    return NextResponse.json(
+      {
+        error: 'no usable visual vectors',
+        blocker:
+          `No crop has a '${readiness.space}' vector yet, so there is nothing to cluster -- ` +
+          `partialOk cannot override this. Run the visual backfill first, or switch the identity ` +
+          `space back to 'text'.`,
+        readiness
+      },
+      { status: 409 }
+    );
+  }
+  if (!partialOk && !readiness.ready) {
+    return NextResponse.json(
+      { error: 'visual coverage incomplete', blocker: readiness.blocker, readiness },
+      { status: 409 }
+    );
   }
 
   const payload = {

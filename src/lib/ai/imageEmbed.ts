@@ -28,16 +28,19 @@ export class ImageEmbedError extends Error {
   }
 }
 
-// Content-shaped rejections: the request reached the model and the SUPPLIED
-// PAYLOAD was refused. Nothing else can produce these, so the crop is to blame.
-const CROP_FAULT_STATUSES = new Set([413, 415, 422]);
-
-// A 400 is ambiguous. Voyage returns it both for "I could not use your image"
-// and for "your request is wrong" -- a deprecated or misspelled model id, a
-// malformed body, a bad parameter. The second kind is identical for every crop,
-// so blaming the crop would abandon the whole corpus in three sweeps for a
-// one-line config mistake. Read the body: blame the crop only when the message
-// is about the image, and never when it names a request-level subject.
+// NO status code identifies the image, so none of them alone can blame a crop.
+// That falls out of how this call is shaped: we send a small JSON body carrying
+// a URL, and Voyage fetches the pixels server-side. So the classic "your content
+// is bad" codes are all describing OUR REQUEST, not the crop -- 415 is about the
+// application/json content type, 422 about the body schema, 413 about a payload
+// that is a few hundred bytes, 404 about the endpoint. Every one of those is
+// identical for every crop in the corpus, so trusting the status would let one
+// config mistake charge all 1798 crops an attempt and abandon the lot in three
+// sweeps.
+//
+// Hence: an ambiguous 4xx is decided by the BODY. Blame the crop only when the
+// message is about the image, and never when it names a request-level subject.
+const AMBIGUOUS_STATUSES = new Set([400, 413, 415, 422]);
 const REQUEST_FAULT_MARKERS = [
   'model',
   'api key',
@@ -66,13 +69,13 @@ const IMAGE_FAULT_MARKERS = [
   'height'
 ];
 
-// 404 is deliberately absent from both: our crop URL is fetched by Voyage
-// server-side, so a dead blob comes back as a 400 describing the fetch, while a
-// 404 from the API itself means the ENDPOINT moved -- systemic, and exactly the
-// failure that must not burn the corpus.
+// Everything not listed as ambiguous -- 401/403 (auth), 429 (throttle), 404
+// (the endpoint moved), 5xx -- is systemic outright and never reaches the body
+// check. An ambiguous status with an unreadable or unrecognized body is systemic
+// too: the default has to be the cheap mistake, and assuming systemic only costs
+// a retry while assuming crop-fault costs the corpus.
 export function isCropFault(status: number, body = ''): boolean {
-  if (CROP_FAULT_STATUSES.has(status)) return true;
-  if (status !== 400) return false;
+  if (!AMBIGUOUS_STATUSES.has(status)) return false;
   const text = body.toLowerCase();
   // Order matters: a request-level marker vetoes, because "invalid model, expected
   // one of the multimodal image models" mentions the image without being about it.
