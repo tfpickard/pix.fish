@@ -42,7 +42,10 @@ async function drain(req: Request) {
     const batch = await claimJobs(lockId, BATCH);
     if (batch.length === 0) break;
     for (let i = 0; i < batch.length; i++) {
-      const result = await runJob(batch[i]!);
+      // The deadline that actually matters is this invocation's, not each
+      // handler's. A handler starting 40s in has ~15s of function left, however
+      // fresh its own clock looks.
+      const result = await runJob(batch[i]!, { invocationDeadlineAt: started + WALL_BUDGET_MS });
       if (result === 'done') drained++;
       else if (result === 'failed') failed++;
       else retried++;

@@ -10,6 +10,11 @@
  * on /admin/characters (or --space via characters:detect) and re-cluster.
  */
 import { getImageEmbedder } from '../src/lib/ai/imageEmbed';
+import {
+  abandonedImageVecSample,
+  countCropsAbandonedImageVec,
+  MAX_IMAGE_EMBED_ATTEMPTS
+} from '../src/lib/db/queries/character-crops';
 import { backfillVisualsInline } from '../src/lib/universe/backfill-visuals';
 
 async function main() {
@@ -24,6 +29,24 @@ async function main() {
   // at the query LIMIT, so a large backlog needs the loop).
   const { ok, fail } = await backfillVisualsInline(embedder, (m) => console.log(m));
   console.log(`done: ${ok} embedded, ${fail} failed.`);
+
+  // Crops past the attempt cap are skipped by the sweep, so "0 failed" alone
+  // would read as full coverage while a visual/blend cluster stays blocked.
+  // Name them, with a sample to open.
+  const abandoned = await countCropsAbandonedImageVec();
+  if (abandoned > 0) {
+    console.warn(
+      `\n${abandoned} crop(s) failed ${MAX_IMAGE_EMBED_ATTEMPTS} times and are no longer retried -- ` +
+        `visual/blend clustering stays blocked until they are resolved.`
+    );
+    for (const c of await abandonedImageVecSample(5)) {
+      console.warn(`  crop ${c.cropId} (image ${c.imageId}) ${c.blobUrl}`);
+    }
+    console.warn(
+      `Force re-detect those images to re-cut the crops, or release the cap from /admin/characters ` +
+        `once the underlying cause is fixed.`
+    );
+  }
 }
 
 main()

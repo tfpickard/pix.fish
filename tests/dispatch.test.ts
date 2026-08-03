@@ -6,6 +6,7 @@ import {
   CAPTION_TIMEOUT_MS,
   DEFAULT_CAPTION_CHAR_BUDGET,
   MAX_HASHTAGS,
+  MAX_TREND_CANDIDATES,
   SAFETY_MAX_TOKENS,
   SAFETY_TIMEOUT_MS,
   EMBED_TIMEOUT_MS,
@@ -13,8 +14,35 @@ import {
   WORKER_JOB_TIMEOUT_MS,
   captionCharBudget,
   dispatchLiveEnabled,
-  DRIFT_ENABLED
+  DRIFT_ENABLED,
+  LIVE_ALLOW_NSFW,
+  LIVE_STILL_MIMES,
+  MAX_MEDIA_BYTES,
+  POST_PHASE_BUDGET_MS,
+  POST_ONLY_BUDGET_MS,
+  PIPELINE_BUDGET_MS,
+  PIPELINE_DB_MARGIN_MS,
+  POST_TIMEOUT_MS,
+  POST_WRITE_MARGIN_MS,
+  canFinishPostPhase,
+  canStartPipeline,
+  canStartPostPhase,
+  liveEligible,
+  madeWithAiFlag
 } from '../src/lib/dispatch/config';
+import {
+  mediaCategoryFor,
+  sniffImageMime,
+  postRejectionIsPermanent,
+  statusIsIndeterminate
+} from '../src/lib/dispatch/x-client';
+import {
+  authorizationHeader,
+  normalizeParams,
+  percentEncode,
+  signatureBaseString,
+  signingKey
+} from '../src/lib/dispatch/x-oauth';
 import {
   buildClassifierPrompt,
   hitsDenylist,
@@ -44,7 +72,12 @@ import {
   validateCaption
 } from '../src/lib/dispatch/caption';
 import { dedupeKey } from '../src/lib/universe/events';
-import { SKIP_REASON, type SpecimenCandidate, type Trend } from '../src/lib/dispatch/types';
+import {
+  DEFINITE_FAILURE_REASONS,
+  SKIP_REASON,
+  type SpecimenCandidate,
+  type Trend
+} from '../src/lib/dispatch/types';
 
 // Pure, infra-free tests in the style of tests/pisci-cost.test.ts. The guards
 // this feature rests on -- fail-closed safety, one post per day, bounded tokens,
@@ -72,10 +105,18 @@ const TRAGEDY_TREND: Trend = {
 
 describe('cost guards', () => {
   test('LLM output budgets are tight, not just present', () => {
-    expect(SAFETY_MAX_TOKENS).toBeLessThanOrEqual(1000);
-    expect(CAPTION_MAX_TOKENS).toBeLessThanOrEqual(600);
-    expect(SAFETY_MAX_TOKENS).toBeGreaterThan(0);
-    expect(CAPTION_MAX_TOKENS).toBeGreaterThan(0);
+    // Bounded, but sufficient FIRST. These are caps against an unbounded daily
+    // job, not an attempt to shave tokens: a cap too small to finish the work
+    // gets billed anyway and loses the day, so undersizing saves nothing. Both
+    // must clear the visible output plus a thinking budget, since thinking
+    // tokens come out of the same allowance and the 'dispatch' model is
+    // repointable from /admin/ai.
+    expect(SAFETY_MAX_TOKENS).toBeGreaterThan(MAX_TREND_CANDIDATES * 40 + 1024);
+    expect(CAPTION_MAX_TOKENS).toBeGreaterThan(1024);
+    // Still capped -- an open-ended budget on an unattended job is the thing
+    // these constants exist to prevent.
+    expect(SAFETY_MAX_TOKENS).toBeLessThanOrEqual(8000);
+    expect(CAPTION_MAX_TOKENS).toBeLessThanOrEqual(4000);
   });
 
   // Both upstream deadlines must sit inside the worker's 50s per-job timeout for
@@ -451,6 +492,70 @@ describe('one dispatch per day is structural', () => {
     expect(dedupeKey.dispatchDay('2026-07-26', 'manual:123')).not.toBe(
       dedupeKey.dispatchDay('2026-07-26')
     );
+  });
+
+  test('manual runs are unlimited: every one claims a distinct slot', () => {
+    // The cap is on the SCHEDULER, not the account. Manual runs -- live or dry --
+    // take a `manual:<ms>` slot, so two on the same day never collide with each
+    // other or with cron's. This is what lets an admin post as often as they like
+    // while the automatic dispatch stays daily.
+    const day = '2026-07-26';
+    const first = dedupeKey.dispatchDay(day, 'manual:1');
+    const second = dedupeKey.dispatchDay(day, 'manual:2');
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(dedupeKey.dispatchDay(day));
+    expect(second).not.toBe(dedupeKey.dispatchDay(day));
+  });
+
+  test('the attempt key locks the SPECIMEN, so concurrent runs cannot both post it', () => {
+    // The real mutual exclusion. Per-slot selection seeding only makes a
+    // collision unlikely -- with one eligible candidate both runs must draw the
+    // same row -- so the lock has to be keyed on the image, not the slot.
+    const a = dedupeKey.dispatchAttempt(42, 0);
+    const b = dedupeKey.dispatchAttempt(42, 0);
+    expect(a).toBe(b);
+    expect(dedupeKey.dispatchAttempt(43, 0)).not.toBe(a);
+  });
+
+  test('a definite rejection releases the specimen via the generation counter', () => {
+    // Keying on the image alone would retire a specimen on its first attempt,
+    // so a 403 from a read-only token would eat one good image per run. The
+    // generation bump is what lets a released specimen be tried again.
+    expect(dedupeKey.dispatchAttempt(42, 1)).not.toBe(dedupeKey.dispatchAttempt(42, 0));
+  });
+
+  test('one approval publishes once', () => {
+    // A double-clicked button, a re-enqueued job, or two admins on the same page
+    // must collapse to a single publication of that draft.
+    expect(dedupeKey.dispatchApproval(9355, 0)).toBe(dedupeKey.dispatchApproval(9355, 0));
+    expect(dedupeKey.dispatchApproval(9355, 0)).not.toBe(dedupeKey.dispatchApproval(9356, 0));
+  });
+
+  test('a definitely-failed publication releases the approval for a retry', () => {
+    // Keying approval on the draft alone made one failure permanent: the claim
+    // stayed committed, so every later click enqueued a job that returned
+    // immediately and the draft could never be published by anyone. The
+    // generation is what distinguishes "already published" from "tried and
+    // definitely did not publish".
+    expect(dedupeKey.dispatchApproval(9355, 1)).not.toBe(dedupeKey.dispatchApproval(9355, 0));
+  });
+
+  test('an unpostable specimen is quarantined per image, not per day', () => {
+    // The verdict is about the object -- its bytes are not a postable still, or
+    // it is over the ceiling -- so the key is the image. Keying it per day would
+    // re-test the same bad row tomorrow and spend another dispatch reaching the
+    // same answer.
+    expect(dedupeKey.dispatchUnpostable(273)).toBe(dedupeKey.dispatchUnpostable(273));
+    expect(dedupeKey.dispatchUnpostable(273)).not.toBe(dedupeKey.dispatchUnpostable(274));
+  });
+
+  test('each manual run gets its own outcome slot', () => {
+    // Outcomes are keyed off the claim slot, so unlimited manual runs must not
+    // collapse into one outcome row -- otherwise the second post of the day would
+    // be silently unrecorded.
+    const a = dedupeKey.dispatchOutcome(dedupeKey.dispatchDay('2026-07-26', 'manual:1'));
+    const b = dedupeKey.dispatchOutcome(dedupeKey.dispatchDay('2026-07-26', 'manual:2'));
+    expect(a).not.toBe(b);
   });
 
   test('one claim yields at most one outcome', () => {
@@ -904,5 +1009,399 @@ describe('caption validation enforces the tone contract', () => {
 
   test('hashtag extraction handles unicode topics', () => {
     expect(extractHashtags('filed #Café2 and #b')).toEqual(['#Café2', '#b']);
+  });
+});
+
+describe('OAuth 1.0a signing', () => {
+  // X's own published worked example for "Creating a signature". Pinning the
+  // whole vector means percent-encoding, parameter sorting, the base string and
+  // the HMAC are all verified together against a value we did not compute -- the
+  // only way to know this is right without posting to a live account.
+  const CREDS = {
+    apiKey: 'xvz1evFS4wEEPTGEFPHBog',
+    apiSecret: 'kAcSOqF21Fu85e7zjz7ZN2U4ZRhfV3WpwPAoE3Z7kBw',
+    accessToken: '370773112-GmHxMAgYyLbNEtIKZeRNFsMKPR9EyMZeS9weJAEb',
+    accessTokenSecret: 'LswwdoUaIvS8ltyTt5jkRh4J50vUPVVHtR2YPi5kE'
+  };
+  const VECTOR = {
+    nonce: 'kYjzVBB8Y0ZFabxSWbWovY3uYSQ2pTgmZeNu2VS4cg',
+    timestamp: '1318622958',
+    url: 'https://api.twitter.com/1.1/statuses/update.json',
+    params: {
+      status: 'Hello Ladies + Gentlemen, a signed OAuth request!',
+      include_entities: 'true'
+    },
+    signature: 'hCtSmYh+iHYCEqBWrE7C7hYmtUk='
+  };
+
+  test('reproduces the published signature exactly', () => {
+    const header = authorizationHeader({
+      method: 'POST',
+      baseUrl: VECTOR.url,
+      creds: CREDS,
+      signedParams: VECTOR.params,
+      nonce: VECTOR.nonce,
+      timestamp: VECTOR.timestamp
+    });
+    expect(header).toContain(`oauth_signature="${percentEncode(VECTOR.signature)}"`);
+  });
+
+  test('percent-encodes the five characters encodeURIComponent leaves alone', () => {
+    // !*'() are the difference between a valid signature and an opaque 401.
+    expect(percentEncode("!*'()")).toBe('%21%2A%27%28%29');
+    expect(percentEncode('Ladies + Gentlemen')).toBe('Ladies%20%2B%20Gentlemen');
+    // Unreserved characters must survive untouched.
+    expect(percentEncode('aZ09-._~')).toBe('aZ09-._~');
+  });
+
+  test('sorts parameters by encoded key, then encoded value', () => {
+    expect(normalizeParams({ b: '2', a: '1' })).toBe('a=1&b=2');
+    expect(normalizeParams({ a: 'z', A: 'y' })).toBe('A=y&a=z');
+    // Same key twice cannot happen through an object, but equal keys ordering by
+    // value is the documented tie-break; assert the value ordering path.
+    expect(normalizeParams({ k1: 'b', k0: 'a' })).toBe('k0=a&k1=b');
+  });
+
+  test('base string is METHOD&url&params, each encoded once', () => {
+    const base = signatureBaseString('post', 'https://api.x.com/2/tweets', { a: 'b c' });
+    expect(base).toBe('POST&https%3A%2F%2Fapi.x.com%2F2%2Ftweets&a%3Db%2520c');
+  });
+
+  test('signing key joins both secrets with & even when the token secret is empty', () => {
+    expect(signingKey('cs', 'ts')).toBe('cs&ts');
+    expect(signingKey('cs', '')).toBe('cs&');
+  });
+
+  test('header carries only oauth_* params, never the signed request params', () => {
+    const header = authorizationHeader({
+      method: 'POST',
+      baseUrl: VECTOR.url,
+      creds: CREDS,
+      signedParams: { status: 'secret text' },
+      nonce: 'n',
+      timestamp: '1'
+    });
+    expect(header).not.toContain('status');
+    expect(header).not.toContain('secret');
+    expect(header.startsWith('OAuth ')).toBe(true);
+  });
+
+  test('a different nonce yields a different signature', () => {
+    const mk = (nonce: string) =>
+      authorizationHeader({
+        method: 'POST',
+        baseUrl: VECTOR.url,
+        creds: CREDS,
+        nonce,
+        timestamp: '1'
+      });
+    expect(mk('a')).not.toBe(mk('b'));
+  });
+});
+
+describe('live posting guards', () => {
+  // Same rule the other dispatch guards follow: enforced by a test, not merely
+  // configured, so relaxing one is deliberate.
+  test('NSFW specimens are not posted live', () => {
+    // X API v2 has no per-post possibly_sensitive field, so an NSFW specimen
+    // cannot be marked at post time. Selection and dry runs still include them.
+    expect(LIVE_ALLOW_NSFW).toBe(false);
+  });
+
+  test('media ceiling matches the 5MB X image limit', () => {
+    expect(MAX_MEDIA_BYTES).toBe(5 * 1024 * 1024);
+  });
+
+  test('made_with_ai is unset unless explicitly configured', () => {
+    const original = process.env.X_DISPATCH_MADE_WITH_AI;
+    try {
+      delete process.env.X_DISPATCH_MADE_WITH_AI;
+      expect(madeWithAiFlag()).toBeUndefined();
+      process.env.X_DISPATCH_MADE_WITH_AI = 'yes';
+      expect(madeWithAiFlag()).toBeUndefined();
+      process.env.X_DISPATCH_MADE_WITH_AI = 'true';
+      expect(madeWithAiFlag()).toBe(true);
+      process.env.X_DISPATCH_MADE_WITH_AI = 'false';
+      expect(madeWithAiFlag()).toBe(false);
+    } finally {
+      if (original === undefined) delete process.env.X_DISPATCH_MADE_WITH_AI;
+      else process.env.X_DISPATCH_MADE_WITH_AI = original;
+    }
+  });
+});
+
+describe('the post phase never starts without time to finish and record', () => {
+  // The worst case upstream (32s) plus the post phase does not fit in the
+  // worker's 50s, and the cron function dies at 60s, so no timeout makes the sum
+  // safe. The clock check is what keeps a post from landing while the job is
+  // being killed -- which would leave a public post with no outcome on the log.
+  test('the phase budget is satisfiable at all', () => {
+    expect(POST_PHASE_BUDGET_MS).toBeLessThan(WORKER_JOB_TIMEOUT_MS);
+  });
+
+  test('posting needs the whole phase budget left before the deadline', () => {
+    const now = 1_000_000;
+    expect(canStartPostPhase(now + POST_PHASE_BUDGET_MS, now)).toBe(true);
+    expect(canStartPostPhase(now + POST_PHASE_BUDGET_MS + 1, now)).toBe(true);
+    expect(canStartPostPhase(now + POST_PHASE_BUDGET_MS - 1, now)).toBe(false);
+    expect(canStartPostPhase(now, now)).toBe(false);
+    expect(canStartPostPhase(now - 5_000, now)).toBe(false);
+  });
+
+  test('the deadline is absolute, so a nearly-spent invocation refuses', () => {
+    // The case that matters: the handler's own clock looks fresh, but the cron
+    // invocation it is running inside has almost no time left. Passing the
+    // invocation deadline is what makes that refusable at all.
+    const now = 1_000_000;
+    const handlerRelative = now + WORKER_JOB_TIMEOUT_MS;
+    const invocationNearlySpent = now + 5_000;
+    expect(canStartPostPhase(handlerRelative, now)).toBe(true);
+    expect(canStartPostPhase(Math.min(handlerRelative, invocationNearlySpent), now)).toBe(false);
+  });
+
+  test('the full upstream budget still leaves the gate reachable', () => {
+    // If this ever inverts, every live dispatch would skip on the clock and the
+    // feature would look broken rather than merely slow.
+    expect(UPSTREAM_DEADLINE_BUDGET_MS).toBeLessThan(
+      WORKER_JOB_TIMEOUT_MS - POST_PHASE_BUDGET_MS + SAFETY_TIMEOUT_MS + CAPTION_TIMEOUT_MS
+    );
+  });
+
+  test('the claim is gated too, not just the post', () => {
+    // A claim written with no time to reach an outcome is UNRECOVERABLE: the day
+    // stays claimed and the cron will not re-enqueue it, so it silently never
+    // posts. The post-phase gates are far too late for that -- they guard the
+    // side effect, and a dry run never reaches them at all.
+    expect(PIPELINE_BUDGET_MS).toBeGreaterThan(UPSTREAM_DEADLINE_BUDGET_MS);
+
+    // And it must reserve room for the DATABASE work on the claimed path, not
+    // only the four upstream calls. The config reads, the recent-topic and
+    // dispatched-image queries, the pgvector candidate query and the prompt read
+    // are all awaited after the claim and bounded by nothing.
+    expect(PIPELINE_BUDGET_MS).toBeGreaterThanOrEqual(
+      UPSTREAM_DEADLINE_BUDGET_MS + PIPELINE_DB_MARGIN_MS + POST_WRITE_MARGIN_MS
+    );
+    // Still has to leave a fresh handler able to START. If this inverts, every
+    // scheduled run declines before claiming and the feature stops entirely --
+    // the opposite failure, and a louder one.
+    expect(PIPELINE_BUDGET_MS).toBeLessThan(WORKER_JOB_TIMEOUT_MS);
+
+    const now = 1_000_000;
+    expect(canStartPipeline(now + PIPELINE_BUDGET_MS, now)).toBe(true);
+    expect(canStartPipeline(now + PIPELINE_BUDGET_MS - 1, now)).toBe(false);
+    // The case that motivates it: a drain invocation nearly spent, while the
+    // handler's own clock still looks fresh.
+    expect(canStartPipeline(now + 5_000, now)).toBe(false);
+  });
+
+  test('the post-upload gate charges only for the work that remains', () => {
+    // The gate after the upload must be STRICTLY cheaper than the one before it.
+    // Re-charging for the fetch and upload already paid for would decline runs
+    // with plenty of time for the create call -- silently costing posts, which is
+    // the failure mode that looks like nothing at all.
+    expect(POST_ONLY_BUDGET_MS).toBe(POST_TIMEOUT_MS + POST_WRITE_MARGIN_MS);
+    expect(POST_ONLY_BUDGET_MS).toBeLessThan(POST_PHASE_BUDGET_MS);
+
+    const now = 1_000_000;
+    // Mid-run: too little for the whole phase, ample for what is left.
+    const deadline = now + POST_ONLY_BUDGET_MS + 1_000;
+    expect(canStartPostPhase(deadline, now)).toBe(false);
+    expect(canFinishPostPhase(deadline, now)).toBe(true);
+  });
+
+  test('the post-upload gate still refuses when the write could not land', () => {
+    // The other direction stays closed: a post landing as the function is killed
+    // leaves something public with no outcome row.
+    const now = 1_000_000;
+    expect(canFinishPostPhase(now + POST_ONLY_BUDGET_MS, now)).toBe(true);
+    expect(canFinishPostPhase(now + POST_ONLY_BUDGET_MS - 1, now)).toBe(false);
+    expect(canFinishPostPhase(now, now)).toBe(false);
+  });
+});
+
+describe('image format is read from the bytes, not from a claim', () => {
+  // Both images.mime and the blob store's Content-Type trace back to the
+  // browser-supplied file.type at upload. A GIF uploaded declaring image/jpeg is
+  // called a JPEG by both, so the GIF exclusion could be defeated by the one
+  // party it exists to guard against. Signatures are the only source here that
+  // cannot be asserted.
+  const sig = (...bytes: number[]) => new Uint8Array(bytes);
+
+  test('identifies the postable stills', () => {
+    expect(sniffImageMime(sig(0xff, 0xd8, 0xff, 0xe0))).toBe('image/jpeg');
+    expect(sniffImageMime(sig(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))).toBe('image/png');
+    expect(
+      sniffImageMime(sig(0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50))
+    ).toBe('image/webp');
+  });
+
+  test('identifies a GIF regardless of what it claims to be', () => {
+    // 'GIF89a' and 'GIF87a'. This is the case that matters: the row and the
+    // header can both say image/jpeg, and this still returns image/gif.
+    expect(sniffImageMime(sig(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).toBe('image/gif');
+    expect(sniffImageMime(sig(0x47, 0x49, 0x46, 0x38, 0x37, 0x61))).toBe('image/gif');
+  });
+
+  test('unidentifiable bytes are null, never a guess', () => {
+    expect(sniffImageMime(sig())).toBeNull();
+    expect(sniffImageMime(sig(0x00, 0x01, 0x02, 0x03))).toBeNull();
+    // Truncated signatures must not partially match.
+    expect(sniffImageMime(sig(0xff, 0xd8))).toBeNull();
+    expect(sniffImageMime(sig(0x89, 0x50, 0x4e))).toBeNull();
+  });
+
+  test('what it identifies as postable matches the allowlist', () => {
+    // The sniffer and liveEligible have to agree, or one of them is decoration.
+    for (const m of LIVE_STILL_MIMES) {
+      expect(['image/jpeg', 'image/png', 'image/webp']).toContain(m);
+    }
+    expect(LIVE_STILL_MIMES.has('image/gif')).toBe(false);
+  });
+});
+
+describe('a failed post is only called definite when it is', () => {
+  // Getting this wrong duplicates a post: listDispatchedImageIds() releases a
+  // specimen whose attempt ended in a DEFINITE failure, so a 5xx misfiled as
+  // definite puts the same image back in the pool after X may already have
+  // published it.
+  test('client rejections are definite -- nothing was published', () => {
+    for (const status of [400, 401, 403, 404, 429]) {
+      expect(statusIsIndeterminate(status)).toBe(false);
+    }
+  });
+
+  test('server errors are indeterminate -- the post may exist', () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect(statusIsIndeterminate(status)).toBe(true);
+    }
+  });
+});
+
+describe('media category follows the specimen mime', () => {
+  // A GIF sent as tweet_image can be rejected or mishandled, turning a valid
+  // dispatch into post_failed. The upload route accepts image/gif.
+  test('GIFs get tweet_gif, stills get tweet_image', () => {
+    expect(mediaCategoryFor('image/gif')).toBe('tweet_gif');
+    expect(mediaCategoryFor('IMAGE/GIF')).toBe('tweet_gif');
+    expect(mediaCategoryFor('image/jpeg')).toBe('tweet_image');
+    expect(mediaCategoryFor('image/png')).toBe('tweet_image');
+    expect(mediaCategoryFor('image/webp')).toBe('tweet_image');
+  });
+});
+
+describe('an unknown post outcome is not reported as no-post', () => {
+  // The account is the source of truth and the log is the only record of what we
+  // believe. post_failed asserts nothing was published; post_indeterminate
+  // asserts we do not know. Collapsing the second into the first makes the audit
+  // surface state something it cannot know, on exactly the days it matters.
+  test('the two outcomes are distinct reason codes', () => {
+    expect(SKIP_REASON.PostFailed).toBe('post_failed');
+    expect(SKIP_REASON.PostIndeterminate).toBe('post_indeterminate');
+    expect(SKIP_REASON.PostIndeterminate).not.toBe(SKIP_REASON.PostFailed);
+  });
+});
+
+describe('a definite failure frees the specimen; only some free the draft', () => {
+  // Two separate questions that a single 'post_failed' comparison used to answer
+  // at once. Every guard asking "was anything published?" must accept BOTH
+  // definite reasons, or a draft_rejected attempt silently retires an image that
+  // never reached X. The approval generation asks a different question and must
+  // NOT accept draft_rejected -- that is what freezes an unpublishable draft.
+  test('both definite outcomes count as proof that nothing was published', () => {
+    expect(DEFINITE_FAILURE_REASONS).toContain(SKIP_REASON.PostFailed);
+    expect(DEFINITE_FAILURE_REASONS).toContain(SKIP_REASON.DraftRejected);
+  });
+
+  test('an unknown outcome is never definite', () => {
+    // The one member that must never join this set: if the post may be public,
+    // releasing the specimen is how it goes out twice.
+    expect(DEFINITE_FAILURE_REASONS).not.toContain(SKIP_REASON.PostIndeterminate);
+  });
+
+  test('draft_rejected is its own code, distinct from post_failed', () => {
+    expect(SKIP_REASON.DraftRejected).toBe('draft_rejected');
+    expect(SKIP_REASON.DraftRejected).not.toBe(SKIP_REASON.PostFailed);
+  });
+});
+
+describe('only the immutable half of a request can condemn a draft', () => {
+  // createPost sends the approved caption AND a media id uploaded fresh on every
+  // attempt. Reading permanence off the status alone therefore retired drafts
+  // over a media id the next approval would have replaced -- and retiring is
+  // one-way, since it removes the button.
+  test('a text-scoped 400 retires the draft', () => {
+    expect(
+      postRejectionIsPermanent(400, 'HTTP 400: {"detail":"The text field must be shorter"}')
+    ).toBe(true);
+    expect(postRejectionIsPermanent(400, 'HTTP 400: Your Tweet text is too long')).toBe(true);
+  });
+
+  test('a media-scoped 400 does not -- the id is minted per attempt', () => {
+    expect(
+      postRejectionIsPermanent(400, 'HTTP 400: {"detail":"media_ids: invalid media id"}')
+    ).toBe(false);
+    // Media prose containing "text" must not read as a caption complaint, which
+    // is why media is tested first.
+    expect(
+      postRejectionIsPermanent(400, 'HTTP 400: media entity has no text alt attached')
+    ).toBe(false);
+  });
+
+  test('an unreadable 400 stays retryable', () => {
+    // The asymmetry made explicit: not knowing costs a wasted click, guessing
+    // permanence costs a reviewed caption.
+    expect(postRejectionIsPermanent(400, 'HTTP 400')).toBe(false);
+    expect(postRejectionIsPermanent(400, 'HTTP 400: (body unreadable)')).toBe(false);
+  });
+
+  test('environmental rejections never retire a draft, however they read', () => {
+    for (const status of [401, 403, 404, 409, 429]) {
+      expect(postRejectionIsPermanent(status, 'HTTP: the text is too long')).toBe(false);
+    }
+    // Nor does anything indeterminate: a 5xx may already have published.
+    expect(postRejectionIsPermanent(500, 'HTTP 500: text')).toBe(false);
+  });
+});
+
+describe('live eligibility requires a verdict, not a default', () => {
+  const base = { isNsfw: false, nsfwSource: 'auto', mime: 'image/jpeg' };
+
+  test('an auto-classified safe still is eligible', () => {
+    expect(liveEligible(base)).toBe(true);
+  });
+
+  test('NSFW is never live-eligible while the guard is off', () => {
+    expect(liveEligible({ ...base, isNsfw: true })).toBe(false);
+  });
+
+  // The important one. enrichment-persist writes ('manual', false) when the tag
+  // provider never ran, and nsfwScan.ts documents that as the KEY-LESS DEFAULT,
+  // not a human saying the image is safe. Reading it as safe would let an
+  // entirely unclassified -- possibly NSFW -- image post unflagged.
+  test('an unclassified image is not treated as safe', () => {
+    expect(liveEligible({ ...base, nsfwSource: 'manual' })).toBe(false);
+    expect(liveEligible({ ...base, nsfwSource: null })).toBe(false);
+  });
+
+  test('GIFs are excluded: a tweet_gif id can arrive before processing finishes', () => {
+    expect(liveEligible({ ...base, mime: 'image/gif' })).toBe(false);
+    expect(liveEligible({ ...base, mime: 'IMAGE/GIF' })).toBe(false);
+  });
+
+  // The same mistake the nsfwSource case above catches, in the other column.
+  // images.mime is nullable and legacy rows carry null, so a denylist of GIF
+  // admitted every unknown type -- including an actual GIF whose type was never
+  // recorded. A missing value is not a safe value.
+  test('an unknown mime is not treated as a still image', () => {
+    expect(liveEligible({ ...base, mime: null })).toBe(false);
+    expect(liveEligible({ ...base, mime: '' })).toBe(false);
+    expect(liveEligible({ ...base, mime: 'application/octet-stream' })).toBe(false);
+  });
+
+  test('the postable types are an allowlist', () => {
+    for (const mime of ['image/jpeg', 'image/png', 'image/webp']) {
+      expect(liveEligible({ ...base, mime })).toBe(true);
+      expect(liveEligible({ ...base, mime: mime.toUpperCase() })).toBe(true);
+    }
   });
 });

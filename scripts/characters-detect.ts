@@ -13,7 +13,11 @@
  *   bun scripts/characters-detect.ts --allow-partial # cluster even if some detects failed
  */
 import { getImageEmbedder } from '../src/lib/ai/imageEmbed';
-import { countCropsMissingImageVec } from '../src/lib/db/queries/character-crops';
+import {
+  countCropsMissingImageVec,
+  imageVecCoverage,
+  MAX_IMAGE_EMBED_ATTEMPTS
+} from '../src/lib/db/queries/character-crops';
 import { listDetectableImageIds } from '../src/lib/db/queries/images';
 import type { Job } from '../src/lib/db/schema';
 import {
@@ -106,6 +110,9 @@ async function main() {
   // weight 0, which cropClusterVector treats as pure text) needs no Voyage call,
   // so don't require VOYAGE_API_KEY for those.
   if (needsVisualVec(knobs.space, knobs.blendWeight)) {
+    // Count only what the backfill will still attempt. Crops past the per-crop
+    // attempt cap are reported separately below -- a sweep that re-attempted
+    // them would spend a paid call per crop to fail again.
     const missing = await countCropsMissingImageVec();
     if (missing > 0) {
       const embedder = getImageEmbedder();
@@ -128,6 +135,31 @@ async function main() {
         );
         process.exit(1);
       }
+    }
+    // Abandoned crops are invisible to the backfill (that is the point of the
+    // cap), so check them explicitly -- otherwise a fully-drained retry queue
+    // reads as success here and produceCandidates aborts a step later with no
+    // mention of why those crops are unreachable.
+    const { embedded, retriable, abandoned } = await imageVecCoverage();
+    if (abandoned > 0 && !knobs.partialOk) {
+      console.error(
+        `\naborting before clustering: ${abandoned} crop(s) failed to embed ${MAX_IMAGE_EMBED_ATTEMPTS} times and are no longer retried. ` +
+          `Force re-detect the affected images to re-cut them, release the cap from /admin/characters once the cause is fixed, ` +
+          `or pass --partial-ok to cluster without them (their characters get pruned from the canon).`
+      );
+      process.exit(1);
+    }
+    // --partial-ok waives the partial-coverage guard, not the harder one:
+    // produceCandidates refuses a nonempty corpus in which NO crop has the
+    // needed vector, because the empty census that would follow wipes the roster
+    // instead of merely pruning it. Say so here rather than letting the run die
+    // one step later.
+    if (embedded === 0 && retriable + abandoned > 0) {
+      console.error(
+        `\naborting before clustering: no crop has a '${knobs.space}' vector yet, so there is nothing to cluster ` +
+          `(--partial-ok cannot override this). Run characters:backfill-visuals first, or use --space=text.`
+      );
+      process.exit(1);
     }
   }
 

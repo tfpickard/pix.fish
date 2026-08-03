@@ -1,15 +1,26 @@
 import type { Job } from '@/lib/db/schema';
+import type { JobContext } from '@/lib/jobs/worker';
 import { appendEvent } from '@/lib/db/queries/events';
-import { listDispatchCandidates, listDispatchedImageIds } from '@/lib/db/queries/dispatch';
+import {
+  currentPostState,
+  definiteFailureGeneration,
+  recentTrendTopics,
+  listDispatchCandidates,
+  listDispatchedImageIds,
+  livePostAttemptedOnDate,
+  unpostableImageIds
+} from '@/lib/db/queries/dispatch';
 import { getDispatchEmbedder } from '@/lib/ai/dispatch-embed';
 import { loadAiConfig } from '@/lib/ai/loadConfig';
 import { loadUserProviderKeys } from '@/lib/ai/keys';
 import { getSiteAdminId } from '@/lib/db/queries/users';
 import { EVENT_TYPE, SUBJECT_TYPE, dedupeKey } from '@/lib/universe/events';
 import type {
+  DispatchAttemptedPayload,
   DispatchClaimedPayload,
   DispatchSentPayload,
-  DispatchSkippedPayload
+  DispatchSkippedPayload,
+  DispatchUnpostablePayload
 } from '@/lib/universe/events';
 import {
   BAND_MAX_DISTANCE,
@@ -17,42 +28,76 @@ import {
   DRIFT_ENABLED,
   EMBED_TIMEOUT_MS,
   MAX_POOL_CANDIDATES,
+  RECENT_TREND_MEMORY,
   WIDE_BAND_MAX_DISTANCE,
   WIDE_BAND_MIN_DISTANCE,
+  IMAGE_FETCH_TIMEOUT_MS,
+  LIVE_ALLOW_NSFW,
+  LIVE_STILL_MIMES,
+  liveEligible,
+  POST_PHASE_BUDGET_MS,
+  POST_ONLY_BUDGET_MS,
+  PIPELINE_BUDGET_MS,
+  WORKER_JOB_TIMEOUT_MS,
+  canFinishPostPhase,
+  canStartPipeline,
+  canStartPostPhase,
   captionCharBudget,
-  dispatchLiveEnabled
+  dispatchLiveEnabled,
+  madeWithAiFlag
 } from '@/lib/dispatch/config';
+import { createPost, fetchSpecimenImage, getXCredentials, uploadMedia } from '@/lib/dispatch/x-client';
 import { googleTrendsSource, trendText } from '@/lib/dispatch/trends';
 import { screenTrends } from '@/lib/dispatch/safety';
 import { pickSpecimen } from '@/lib/dispatch/select';
+import { mulberry32, seedFromString } from '@/lib/sort/reorder';
 import { generateCaption } from '@/lib/dispatch/caption';
 import { driftForDate, utcDateKey } from '@/lib/dispatch/schedule';
-import { SKIP_REASON, type SkipReason, type Trend } from '@/lib/dispatch/types';
+import { SKIP_REASON, type SkipReason, type SpecimenCandidate, type Trend } from '@/lib/dispatch/types';
 
-// The daily outbound dispatch, start to finish. Runs at most once per UTC day and
-// never retries: the cron enqueues it with maxAttempts 1, and the day-claim event
-// makes a second run structurally impossible even if something else enqueues one.
+// The outbound dispatch, start to finish. Never retries: every enqueue uses
+// maxAttempts 1, and the day-claim event makes a second run on the same slot
+// structurally impossible even if something else enqueues one.
+//
+// "At most once per UTC day" binds the SCHEDULED dispatch specifically. Cron
+// enqueues with no claimSuffix, so every scheduled run competes for the one
+// `x.dispatch:<date>` slot. Manual runs from /admin/dispatch pass a
+// `manual:<ms>` suffix and are therefore uncapped by design -- an admin posting
+// several times in a day is a decision, whereas a scheduler doing it is a bug.
+// A manual LIVE post additionally cancels that day's scheduled run, which the
+// cron route enforces by looking for the attempt event.
 //
 // Every failure path is a logged skip, not a thrown error. The handler only
 // throws when it cannot log at all (a dead database), because that is the one
 // case where retrying is the right behaviour.
 //
-// PHASE 1 SCOPE: everything up to and including the assembled post. There is no
-// X client yet, so `mode` is always 'dry-run' and postId is always null. The
-// live switch and the posting call land in phase 2.
+// Dry run is the default and stays the default: `mode` is only 'live' when the
+// X_DISPATCH_LIVE switch is on, credentials resolve, and the job was not queued
+// with dryRun. Everything up to the post is identical in both modes, so a dry run
+// exercises the whole pipeline.
 
 type DispatchPayload = {
   dateKey?: string;
   trigger?: 'cron' | 'manual';
   // A review run claims a distinct slot so it does not consume the real day.
   claimSuffix?: string;
-  // Forces dry run regardless of env. Phase 2 honours this alongside the live switch.
+  // Forces dry run regardless of env. Honoured alongside the live switch.
   dryRun?: boolean;
+  // Set when an admin explicitly asked for a live post. Carried through the queue
+  // so the handler can tell "nobody asked to post" (degrade to dry, correct) from
+  // "someone asked and we cannot" (refuse and say so).
+  requestedLive?: boolean;
 };
 
-export async function xDispatchHandler(job: Job): Promise<void> {
+export async function xDispatchHandler(job: Job, ctx: JobContext): Promise<void> {
   const payload = (job.payload ?? {}) as DispatchPayload;
   const now = new Date();
+  // The earliest thing that can stop this work. Two clocks can: this handler's
+  // own per-job timeout, and the enclosing cron invocation -- which runs several
+  // jobs sequentially and may already be nearly spent. Taking the minimum is the
+  // whole point; measuring against the handler alone would let a post start with
+  // the function about to be terminated.
+  const postDeadlineAt = Math.min(Date.now() + WORKER_JOB_TIMEOUT_MS, ctx.invocationDeadlineAt);
   const trigger = payload.trigger === 'manual' ? 'manual' : 'cron';
 
   // Claim the EXECUTION date, not the date stamped at enqueue. A job queued at
@@ -70,11 +115,54 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   const seedKey = payload.dateKey ?? dateKey;
   const slotKey = dedupeKey.dispatchDay(dateKey, payload.claimSuffix);
 
-  // Phase 1 is dry run unconditionally. The env switch is read here so the value
-  // recorded on the event is honest about how the deployment is configured, but
-  // it cannot produce a live post until phase 2 wires a client.
-  const mode: 'dry-run' | 'live' = 'dry-run';
-  const liveConfigured = dispatchLiveEnabled() && payload.dryRun !== true;
+  // Selection is seeded per SLOT, not per day. Seeding on the date alone meant
+  // two runs sharing a date and a trend drew the same specimen deterministically
+  // -- every overlap a duplicate, by construction rather than by bad luck.
+  //
+  // This is a mitigation, NOT the safety property, and the distinction matters:
+  // distinct seeds make a collision unlikely, not impossible. Weighted draws over
+  // a large pool can still coincide, and when the eligible pool holds exactly one
+  // row both seeds must return it -- precisely the case where the pool is tight
+  // and the stakes are highest. The actual mutual exclusion is the attempt event
+  // further down, whose dedupe key is the specimen; this only keeps runs from
+  // walking the corpus in lockstep, and makes repeated manual runs varied.
+  //
+  // The drift predicate deliberately keeps using seedKey: drift is a property of
+  // the day, not of the run, and a replay of a given date must reproduce it.
+  const selectionSeed = payload.claimSuffix ? `${seedKey}:${payload.claimSuffix}` : seedKey;
+
+  // Live requires all three: the env switch, a job that did not ask for a dry
+  // run, and credentials actually present. Missing credentials degrade to a dry
+  // run rather than to a failure -- a deployment with the switch on but no keys
+  // should still produce a reviewable draft, not a claimed day with nothing on it.
+  const liveConfigured =
+    dispatchLiveEnabled() && payload.dryRun !== true && getXCredentials() !== null;
+  const mode: 'dry-run' | 'live' = liveConfigured ? 'live' : 'dry-run';
+
+  // Do not CLAIM a day this invocation has no time to finish.
+  //
+  // The claim is what makes a day un-runnable a second time, and the cron
+  // declines to re-enqueue a claimed day. So a handler that claims and is then
+  // terminated before writing an outcome leaves that day permanently claimed
+  // with nothing on the log -- the silent no-post day this design exists to
+  // prevent, reached without a single thing going wrong except starting late.
+  // The drain runs jobs sequentially inside one 60s function, so starting with
+  // most of it already spent is ordinary, not exceptional.
+  //
+  // The existing budget checks all sit in the POST phase, which is far too late:
+  // they protect the side effect, not the claim, and a dry run never reaches
+  // them at all. Declining BEFORE the claim is what keeps the day recoverable --
+  // it stays unclaimed, so the next tick simply runs it.
+  //
+  // Throwing rather than returning quietly: the day is intact either way, but a
+  // failed job row is visible at /admin/jobs, and "the invocation had no room
+  // for me" is exactly what a failed job should mean. maxAttempts is 1, so this
+  // does not retry.
+  if (!canStartPipeline(postDeadlineAt)) {
+    throw new Error(
+      `declined before claiming ${dateKey}: ${postDeadlineAt - Date.now()}ms left in the invocation, ${PIPELINE_BUDGET_MS}ms needed to reach an outcome`
+    );
+  }
 
   // ---- the day-claim. This, not the cron schedule, is the once-per-day cap.
   const claim = await appendEvent({
@@ -90,15 +178,56 @@ export async function xDispatchHandler(job: Job): Promise<void> {
     return;
   }
 
+  // The gate above was taken BEFORE the claim write, which is a database round
+  // trip of unknown duration. A run that passed with a slim margin can arrive
+  // here with the margin gone -- and now the day is committed, so returning
+  // quietly would leave exactly the claimed-with-no-outcome day the gate exists
+  // to prevent.
+  //
+  // Recording a skip is the recovery, not returning: the day is spent either way,
+  // and a spent day with a reason on the log is an operator's problem to read
+  // rather than a silent gap. The skip write is one insert, which is the smallest
+  // thing that can still be done here.
+  const budgetLostAfterClaim = !canStartPipeline(postDeadlineAt);
+
   const skip = async (reason: SkipReason, detail: string, trendTopic: string | null = null) => {
     await appendEvent({
       type: EVENT_TYPE.DispatchSkipped,
       subjectType: SUBJECT_TYPE.Dispatch,
       subjectId: dateKey,
-      payload: { mode, trigger, reason, detail: detail.slice(0, 500), trendTopic } satisfies DispatchSkippedPayload,
+      payload: {
+        slotKey,
+        mode,
+        trigger,
+        reason,
+        detail: detail.slice(0, 500),
+        trendTopic
+      } satisfies DispatchSkippedPayload,
       dedupeKey: dedupeKey.dispatchOutcome(slotKey)
     });
   };
+
+  if (budgetLostAfterClaim) {
+    await skip(
+      SKIP_REASON.InternalError,
+      `budget ran out while claiming ${dateKey}: ${postDeadlineAt - Date.now()}ms left, ${PIPELINE_BUDGET_MS}ms needed`
+    );
+    return;
+  }
+
+  // An explicit live request that can no longer post is refused, not downgraded.
+  // The admin endpoint validated the switch and the credentials before queuing,
+  // but a deployment or a credential rotation can land in between, and by then
+  // the operator has been told a LIVE job is queued. Filing a draft under that
+  // promise is the same class of mistake as the review button reporting success
+  // while doing nothing: the surface says posted, the account says otherwise.
+  if (payload.requestedLive === true && !liveConfigured) {
+    await skip(
+      SKIP_REASON.LiveUnavailable,
+      `live was requested but the deployment cannot post now (switch ${dispatchLiveEnabled() ? 'on' : 'off'}, credentials ${getXCredentials() ? 'present' : 'missing'})`
+    );
+    return;
+  }
 
   // Everything past the claim runs inside this guard. The claim is what makes a
   // day un-runnable a second time, so a throw between here and the outcome event
@@ -110,9 +239,36 @@ export async function xDispatchHandler(job: Job): Promise<void> {
   // them precise reason codes. This is only the backstop for the unexpected: a
   // transient DB read in the candidate queries or in getPromptByKey, a missing
   // OWNER_GITHUB_ID, a provider that cannot embed.
+  const runState: RunState = { specimenLocked: false };
   try {
-    await runDispatch({ dateKey, seedKey, slotKey, mode, trigger, liveConfigured, skip });
+    await runDispatch({ dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip, runState });
   } catch (err) {
+    // A post that may be public keeps its indeterminate label however the
+    // recording failed. Filing internal_error here would have the review page
+    // render "no post" for something on the account, and would resolve the
+    // attempt warning that is the only remaining trace.
+    if (err instanceof PostMayExistError) {
+      await skip(
+        SKIP_REASON.PostIndeterminate,
+        err.postId
+          ? `posted ${err.postId} but recording it failed twice: ${errText(err.cause)}`
+          : `the post may exist and recording the outcome failed twice: ${errText(err.cause)}`
+      );
+      return;
+    }
+    // Nothing was posted. If the specimen lock was already taken, this MUST be
+    // one of DEFINITE_FAILURE_REASONS: those are the only outcomes
+    // listDispatchedImageIds accepts as releasing a specimen, so internal_error
+    // would leave an image that certainly never posted locked out of every
+    // future dispatch. post_failed is the right member here -- draft_rejected
+    // is about a draft's bytes and this path has no draft.
+    if (runState.specimenLocked) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `failed after locking the specimen, before posting: ${errText(err)}`
+      );
+      return;
+    }
     // Fail closed, but audibly. If the skip write ALSO throws we genuinely
     // cannot record anything, and that is the one case where letting the job
     // fail is right -- the queue surfaces it at /admin/jobs.
@@ -122,18 +278,37 @@ export async function xDispatchHandler(job: Job): Promise<void> {
 
 // The pipeline proper. Split out so the handler above can wrap the whole thing in
 // one guard; `skip` is injected because it closes over the claim's slot key.
+// Thrown by runDispatch when a post may already be public and it could not
+// record that. The handler-level catch reads it rather than filing
+// internal_error, which the page renders as "no post" -- the audit surface
+// denying something that exists.
+// What runDispatch has committed by the time an exception escapes it. The
+// handler-level catch is where the outcome gets written, and it cannot choose the
+// right reason without knowing whether the specimen lock was taken.
+type RunState = { specimenLocked: boolean };
+
+class PostMayExistError extends Error {
+  constructor(readonly postId: string | null, readonly cause: unknown) {
+    super('post may exist but the outcome could not be recorded');
+  }
+}
+
 async function runDispatch(ctx: {
   dateKey: string;
   // Drives the drift variant and the selection seed; equals dateKey unless a
   // replay explicitly asked for another day. Never used for the claim.
   seedKey: string;
+  // Seeded per slot so concurrent runs cannot draw the same specimen.
+  selectionSeed: string;
   slotKey: string;
   mode: 'dry-run' | 'live';
   trigger: 'cron' | 'manual';
   liveConfigured: boolean;
+  postDeadlineAt: number;
   skip: (reason: SkipReason, detail: string, trendTopic?: string | null) => Promise<void>;
+  runState: RunState;
 }): Promise<void> {
-  const { dateKey, seedKey, slotKey, mode, trigger, liveConfigured, skip } = ctx;
+  const { dateKey, seedKey, selectionSeed, slotKey, mode, trigger, liveConfigured, postDeadlineAt, skip, runState } = ctx;
   const now = new Date();
 
   // ---- 1. trend acquisition -------------------------------------------------
@@ -163,9 +338,25 @@ async function runDispatch(ctx: {
     return;
   }
 
-  // Prefer the most confidently dumb trend: the gate already rejected everything
-  // else, so this is a ranking among safe options, not a second safety decision.
-  const chosen = screened.cleared[0]!;
+  // Which cleared trend to ride. Every candidate here already passed the gate, so
+  // this is a variety decision and never a second safety decision.
+  //
+  // Taking cleared[0] made the account monotonous. The feed is not a stream of
+  // novelty -- Google Trends carries perennials, "stock market news today" and
+  // its relatives turn up most days -- and the gate clears them *reliably*
+  // precisely because they are low-stakes, so a fixed index rides the same topic
+  // run after run. Several consecutive posts under one hashtag reads as a bot
+  // with a single subject.
+  //
+  // Two changes, in order. Drop topics the account has used recently, and then
+  // pick from what remains on the run's own seed rather than by rank.
+  const recent = new Set((await recentTrendTopics(RECENT_TREND_MEMORY)).map(normalizeTopic));
+  const unused = screened.cleared.filter((c) => !recent.has(normalizeTopic(c.trend.topic)));
+  // Falling back to the full cleared list matters: on a quiet day every safe
+  // trend may be one already ridden, and a repeat is a far better outcome than a
+  // skipped day. Novelty is a preference, posting is the job.
+  const pool = unused.length > 0 ? unused : screened.cleared;
+  const chosen = pool[Math.floor(mulberry32(seedFromString(selectionSeed))() * pool.length)]!;
 
   // ---- 3. specimen selection ------------------------------------------------
   const cfg = await loadAiConfig();
@@ -202,36 +393,66 @@ async function runDispatch(ctx: {
     return;
   }
 
-  const excludeImageIds = await listDispatchedImageIds();
+  // Already dispatched, plus anything ruled permanently unpostable. The second
+  // list matters most when the band is narrow: one bad row would otherwise be
+  // drawn every day forever.
+  const excludeImageIds = [...(await listDispatchedImageIds()), ...(await unpostableImageIds())];
   // Only rows embedded by the same provider/model are comparable to `vec`.
   let candidates = await listDispatchCandidates({
     vec,
     embedProvider: embedder.name,
     embedModel: embedder.model,
-    sampleSeed: `${seedKey}:${chosen.trend.topic}`,
+    sampleSeed: `${selectionSeed}:${chosen.trend.topic}`,
     minDistance: BAND_MIN_DISTANCE,
     maxDistance: BAND_MAX_DISTANCE,
     limit: MAX_POOL_CANDIDATES,
-    excludeImageIds
+    excludeImageIds,
+    liveOnly: liveConfigured
   });
+  // Live mode drops NSFW rows (see below). The widening decision has to be made
+  // on what is actually SELECTABLE, not on the raw count -- a narrow band holding
+  // three NSFW rows is empty for a live run, and testing the raw count there
+  // skipped the widening pass and reported no_specimen while usable specimens sat
+  // in the wide band.
+  const selectable = (rows: SpecimenCandidate[]) =>
+    liveConfigured ? rows.filter(liveEligible) : rows;
+
   // One widening pass. Two would be a loop dressed as a policy.
-  if (candidates.length === 0) {
+  if (selectable(candidates).length === 0) {
     candidates = await listDispatchCandidates({
       vec,
       embedProvider: embedder.name,
       embedModel: embedder.model,
-      sampleSeed: `${seedKey}:${chosen.trend.topic}`,
+      sampleSeed: `${selectionSeed}:${chosen.trend.topic}`,
       minDistance: WIDE_BAND_MIN_DISTANCE,
       maxDistance: WIDE_BAND_MAX_DISTANCE,
       limit: MAX_POOL_CANDIDATES,
-      excludeImageIds
+      excludeImageIds,
+      liveOnly: liveConfigured
     });
   }
-  const specimen = pickSpecimen(candidates, { seed: `${seedKey}:${chosen.trend.topic}`, now });
+  // NSFW rows stay in the band for dry runs and for selection generally -- that
+  // was a deliberate product call. They are filtered only for a LIVE post, and
+  // only because X API v2 dropped the per-post sensitivity flag that v1.1 had:
+  // there is no way to mark an individual post as sensitive at post time, so an
+  // unflagged NSFW post would put the account itself at risk. Filtering here
+  // rather than at the post call means the day picks another specimen instead of
+  // being spent on a skip.
+  const eligible = selectable(candidates);
+  const specimen = pickSpecimen(eligible, { seed: `${selectionSeed}:${chosen.trend.topic}`, now });
   if (!specimen) {
+    // Say which of the two emptied the pool. "Nothing in the band" and "the band
+    // held only NSFW rows on a live day" call for completely different responses
+    // -- widen the band, or reconsider LIVE_ALLOW_NSFW -- and the event log is
+    // the only place that distinction survives. Reporting the band for an
+    // NSFW-filtered day would send a reader after a corpus problem that is not
+    // there, on precisely the days this filter is doing something.
+    const filteredOut = candidates.length - eligible.length;
     await skip(
       SKIP_REASON.NoSpecimen,
-      'no embedded specimen fell in the similarity band',
+      eligible.length === 0 && filteredOut > 0
+        ? `all ${filteredOut} specimen(s) in the band are ineligible for live posting (NSFW, unclassified, or GIF)`
+        : 'no embedded specimen fell in the similarity band',
       chosen.trend.topic
     );
     return;
@@ -255,10 +476,271 @@ async function runDispatch(ctx: {
   }
 
   // ---- 5. dispatch ----------------------------------------------------------
-  // Phase 2 posts here when `liveConfigured` is true and credentials resolve.
-  // Until then the assembled post IS the deliverable: it goes on the event log
-  // in full and is reviewed at /admin/dispatch.
+  // In dry run the assembled post IS the deliverable: it goes on the event log
+  // in full and is reviewed at /admin/dispatch. Live mode posts it first and
+  // records the resulting id alongside.
+  let postId: string | null = null;
+  let postUrl: string | null = null;
+  // "Cannot rule out a post" -- broader than postId, because an INDETERMINATE
+  // create (timeout, 5xx) is exactly the case where a post may exist and there
+  // is no id to record.
+  let postMayExist = false;
+  if (liveConfigured) {
+    // Do not START a post there is not time to finish AND record. The worst case
+    // upstream (32s) plus this phase (31s) exceeds the worker's 50s timeout, and
+    // the cron function itself dies at 60s, so no timeout value makes the sum
+    // safe. Checking the clock does: a day skipped because the upstream ran slow
+    // costs one post, whereas a post landing as the job is killed leaves a public
+    // post with no outcome on the log.
+    if (!canStartPostPhase(postDeadlineAt)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `not enough budget left to post safely: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_PHASE_BUDGET_MS}ms needed`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Fetch and upload FIRST. Neither can publish anything, so a blob 404 or an
+    // oversized image must not retire the specimen -- it is still perfectly good
+    // for another day.
+    const media = await prepareMedia(specimen);
+    if (!media.ok) {
+      // A PERMANENT media failure is about the image, not about today. Without
+      // this the row stays eligible forever: in a narrow band it is drawn again
+      // every day and consumes dispatch after dispatch, each one failing at the
+      // same byte for the same reason, posting nothing.
+      if (media.permanent) {
+        await appendEvent({
+          type: EVENT_TYPE.DispatchUnpostable,
+          subjectType: SUBJECT_TYPE.Dispatch,
+          subjectId: dateKey,
+          payload: {
+            imageId: specimen.imageId,
+            slug: specimen.slug,
+            reason: media.reason
+          } satisfies DispatchUnpostablePayload,
+          dedupeKey: dedupeKey.dispatchUnpostable(specimen.imageId)
+        });
+      }
+      await skip(SKIP_REASON.PostFailed, media.reason, chosen.trend.topic);
+      return;
+    }
+
+    // Re-check the clock. The gate above was taken before an image fetch, an
+    // upload, and (below) a database write, none of which are instant; a stale
+    // "yes" is exactly how a post lands after the worker has already given up on
+    // the job.
+    //
+    // canFinishPostPhase, not canStartPostPhase: the fetch and upload are done,
+    // so requiring their budget again would decline runs that have ample time for
+    // the work that actually remains.
+    if (!canFinishPostPhase(postDeadlineAt)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `budget exhausted after media upload: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_ONLY_BUDGET_MS}ms needed`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Last look at the image itself. Selection read its archived/basement state
+    // tens of seconds ago, before a caption call and a media upload; an admin can
+    // archive an image inside that window and archiving leaves the blob intact,
+    // so nothing else here would notice. The query layer treats archived and
+    // basement rows as never-publishable, and that invariant has to hold at the
+    // moment of publishing, not merely at the moment of choosing.
+    const current = await currentPostState(specimen.imageId);
+    if (!current || current.gated || !liveEligible(current)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        !current
+          ? `specimen ${specimen.imageId} no longer exists`
+          : `specimen ${specimen.imageId} stopped being postable after selection (gated=${current.gated}, nsfw=${current.isNsfw}, source=${current.nsfwSource})`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // A run that started before midnight can arrive here after it. The claim was
+    // written against the date at START, so posting now would publish into a day
+    // this run never claimed -- and that day's own scheduled dispatch will still
+    // fire hours later, putting two automatic posts inside one UTC day. The
+    // guarantee is about the day the post LANDS in, and this is the last moment
+    // that day is still knowable.
+    //
+    // Scheduled runs only. Manual dispatches are deliberately uncapped, so a
+    // manual run crossing midnight breaks nothing: there is no per-day budget for
+    // it to overspend.
+    if (trigger === 'cron' && utcDateKey(new Date()) !== dateKey) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `crossed into ${utcDateKey(new Date())} while preparing ${dateKey}'s dispatch; that day gets its own run`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Has a human already posted today by hand?
+    //
+    // The rule is that a manual live post stands down the day's automatic one,
+    // and until now the only place that was enforced was /api/cron/dispatch, at
+    // ENQUEUE time. That is check-then-act across two processes: an approval and
+    // a cron tick can pass their separate guards, and the approval can publish
+    // while this job is still generating a caption. The specimen lock does not
+    // help -- the two runs hold DIFFERENT specimens, which is exactly the case it
+    // is designed to permit -- so nothing downstream would have caught it and the
+    // account gets two posts in a day.
+    //
+    // Read here, immediately before the claim, because it is the last point where
+    // the answer is still fresh. Definite failures do not count (see the query):
+    // a manual attempt X rejected published nothing and must not cost the day its
+    // scheduled post.
+    //
+    // Scheduled runs only, and only on the live path. Manual dispatches are
+    // uncapped by product decision, and a dry run posts nothing to collide with.
+    if (trigger === 'cron' && (await livePostAttemptedOnDate(dateKey))) {
+      await skip(
+        SKIP_REASON.AlreadyDispatched,
+        `a live post already went out on ${dateKey}; the scheduled dispatch stands down`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Claim the specimen immediately before the ONE call that can make something
+    // public. This marker does two jobs, and the second is the load-bearing one.
+    //
+    // First: if the post succeeds and the dispatch.sent write below then fails,
+    // only this row stops the same specimen going out again.
+    //
+    // Second, and the reason it is keyed on the image rather than the slot: it is
+    // the mutual exclusion for concurrent runs. Everything upstream -- the
+    // enqueue guards, the per-slot selection seed -- makes a collision unlikely
+    // without making it impossible, and with a single eligible candidate the seed
+    // cannot help at all, since both runs must draw the one row. The unique index
+    // on dedupe_key is the only true lock here, so whoever inserts wins and the
+    // loser stops before posting.
+    const generation = await definiteFailureGeneration(specimen.imageId);
+    const attempt = await appendEvent({
+      type: EVENT_TYPE.DispatchAttempted,
+      subjectType: SUBJECT_TYPE.Dispatch,
+      subjectId: dateKey,
+      payload: {
+        slotKey,
+        trigger,
+        imageId: specimen.imageId,
+        slug: specimen.slug
+      } satisfies DispatchAttemptedPayload,
+      dedupeKey: dedupeKey.dispatchAttempt(specimen.imageId, generation)
+    });
+    if (!attempt.inserted) {
+      // Another run holds this specimen. Stop here rather than posting: it may
+      // already be public, and a duplicate is the one outcome worse than a
+      // skipped day.
+      await skip(
+        SKIP_REASON.PostFailed,
+        `specimen ${specimen.imageId} was claimed by a concurrent dispatch`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    runState.specimenLocked = true;
+
+    // Re-read the image one last time, AFTER the lock. The check above ran before
+    // two database round trips (the generation count and the attempt write), and
+    // an archive or an nsfw.scan landing inside that window would otherwise reach
+    // X: the earlier verdict is stale the moment anything blocking follows it.
+    //
+    // The lock is what makes this the authoritative check rather than a repeat of
+    // the first. Before the lock the answer could still change under us; after it,
+    // nothing else can take this specimen, so what we read here is what we post.
+    //
+    // Filed as post_failed, which is definite and therefore RELEASES the specimen
+    // -- correct, because nothing was published and the image is fine, it simply
+    // stopped being postable. The generation bump lets it be tried again later.
+    const atPost = await currentPostState(specimen.imageId);
+    if (!atPost || atPost.gated || !liveEligible(atPost)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        !atPost
+          ? `specimen ${specimen.imageId} was deleted between the lock and the post`
+          : `specimen ${specimen.imageId} stopped being postable between the lock and the post (gated=${atPost.gated}, nsfw=${atPost.isNsfw}, source=${atPost.nsfwSource}, mime=${atPost.mime})`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    const creds = getXCredentials();
+    if (!creds) {
+      await skip(SKIP_REASON.PostFailed, 'X credentials disappeared mid-run', chosen.trend.topic);
+      return;
+    }
+    // Last look at the DATE, for the same reason as the clock below: the earlier
+    // midnight check now sits in front of the generation read, the attempt insert
+    // and the re-read. A scheduled run crossing midnight in that window would
+    // publish into a day it never claimed, and that day's own dispatch still
+    // fires later. Manual runs stay exempt -- they have no per-day budget to
+    // overspend.
+    if (trigger === 'cron' && utcDateKey(new Date()) !== dateKey) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `crossed into ${utcDateKey(new Date())} while locking ${dateKey}'s specimen; that day gets its own run`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    // Last look at the clock, after the generation read, the attempt insert and
+    // the authoritative re-read -- three round trips that POST_ONLY_BUDGET_MS
+    // does not account for, because it budgets the POST, not the queries in front
+    // of it. Every one of those gates was taken before work that can outlast it.
+    if (!canFinishPostPhase(postDeadlineAt)) {
+      await skip(
+        SKIP_REASON.PostFailed,
+        `budget ran out between the lock and the post: ${postDeadlineAt - Date.now()}ms to deadline, ${POST_ONLY_BUDGET_MS}ms needed`,
+        chosen.trend.topic
+      );
+      return;
+    }
+
+    const posted = await createPost(creds, {
+      text: caption.caption,
+      mediaId: media.mediaId,
+      madeWithAi: madeWithAiFlag()
+    });
+    postMayExist = posted.ok || posted.indeterminate;
+    if (!posted.ok) {
+      // Never a retry: a retry that succeeds after a timeout has already posted.
+      // But do not claim "no post" when we do not know -- an indeterminate
+      // outcome gets its own reason so the log stays honest and an operator knows
+      // to check the account.
+      try {
+        await skip(
+          posted.indeterminate ? SKIP_REASON.PostIndeterminate : SKIP_REASON.PostFailed,
+          posted.reason,
+          chosen.trend.topic
+        );
+      } catch (err) {
+        // If this write fails on the INDETERMINATE branch, letting the exception
+        // escape unwrapped is worse than not writing at all: the handler-level
+        // catch sees a locked specimen, files post_failed, and thereby asserts
+        // nothing was published AND releases the specimen for reuse -- turning a
+        // "may be public" into a licence to post the same image again. That
+        // release is the very thing the last fix added, so this branch has to
+        // carry the state past it.
+        if (posted.indeterminate) throw new PostMayExistError(null, err);
+        throw err;
+      }
+      return;
+    }
+    postId = posted.postId;
+    postUrl = posted.url;
+  }
+
   const sent: DispatchSentPayload = {
+    slotKey,
     mode,
     trigger,
     imageId: specimen.imageId,
@@ -277,15 +759,51 @@ async function runDispatch(ctx: {
     safetyReason: chosen.verdict.reason,
     distance: specimen.distance,
     model: caption.model,
-    postId: null
+    postId,
+    postUrl
   };
-  await appendEvent({
-    type: EVENT_TYPE.DispatchSent,
-    subjectType: SUBJECT_TYPE.Dispatch,
-    subjectId: dateKey,
-    payload: { ...sent, liveConfigured },
-    dedupeKey: dedupeKey.dispatchOutcome(slotKey)
-  });
+  try {
+    await appendEvent({
+      type: EVENT_TYPE.DispatchSent,
+      subjectType: SUBJECT_TYPE.Dispatch,
+      subjectId: dateKey,
+      payload: { ...sent, liveConfigured },
+      dedupeKey: dedupeKey.dispatchOutcome(slotKey)
+    });
+  } catch (err) {
+    // The post is already public and we cannot record it. Falling through to the
+    // outer catch would file an internal_error, which the review page renders as
+    // "no post" -- the audit surface flatly denying something that exists. Try
+    // once to file the honest outcome instead, carrying the post id so the
+    // account can be reconciled. If THIS write fails too the database is gone and
+    // the outer catch is the right place to end up; the attempt row written
+    // before the post is then the only trace, which is why the page shows those.
+    if (postId || postMayExist) {
+      try {
+        await skip(
+          SKIP_REASON.PostIndeterminate,
+          postId
+            ? `posted ${postId} but recording it failed: ${errText(err)}`
+            : `the post may exist and recording the outcome failed: ${errText(err)}`,
+          chosen.trend.topic
+        );
+        return;
+      } catch (inner) {
+        // Both writes failed. Hand the fact upward rather than letting the outer
+        // catch relabel it internal_error: the specimen stays burned either way,
+        // but the page would render "no post" for something that is public.
+        throw new PostMayExistError(postId, inner);
+      }
+    }
+    throw err;
+  }
+}
+
+// Topics are compared loosely. The feed reworks the same subject across days --
+// "Stock Market News Today" and "stock market news  today" are the same story --
+// so an exact string match would let a trivial rewording defeat the check.
+function normalizeTopic(topic: string): string {
+  return topic.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 function errText(err: unknown): string {
@@ -309,4 +827,49 @@ function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
       }
     );
   });
+}
+
+// Everything needed before the post, and nothing that can publish: fetch the
+// specimen image and upload it, returning a media id. Kept separate from
+// createPost so the caller can put the attempt marker between them -- a blob 404
+// or an oversized image must not retire a specimen that never reached X.
+//
+// Every failure returns a reason string the caller turns into a definite
+// `post_failed`; nothing here is ambiguous, because nothing here is public.
+//
+// The image is fetched from the blob URL rather than passed through from
+// selection because the handler never holds the bytes -- selection deals in
+// rows, and holding a 5MB buffer across the caption call would be wasted
+// residency on the days that end in a skip before ever reaching here.
+async function prepareMedia(
+  specimen: SpecimenCandidate
+): Promise<{ ok: true; mediaId: string } | { ok: false; reason: string; permanent: boolean }> {
+  const creds = getXCredentials();
+  // Not permanent: credentials are a deployment problem, not a property of
+  // this image.
+  if (!creds) return { ok: false, reason: 'X credentials are not configured', permanent: false };
+
+  const image = await fetchSpecimenImage(specimen.blobUrl, IMAGE_FETCH_TIMEOUT_MS);
+  if (!image.ok) return { ok: false, reason: image.reason, permanent: image.permanent };
+
+  // fetchSpecimenImage identifies the format from the file signature, so this is
+  // the first point in the whole pipeline where the type is a fact rather than a
+  // claim. Both the images.mime column and the blob store's Content-Type trace
+  // back to the browser-supplied file.type at upload -- one unverified assertion
+  // reported in two places, which is why selection filtering on the column is
+  // necessary but not sufficient.
+  if (!LIVE_STILL_MIMES.has(image.mime.toLowerCase())) {
+    return {
+      ok: false,
+      reason: `specimen served ${image.mime}, which is not a postable still image`,
+      // A property of the bytes. Re-testing tomorrow reaches the same answer
+      // after spending another dispatch to get there.
+      permanent: true
+    };
+  }
+
+  // An upload failure is about X or the network, never about the image being
+  // inherently unpostable -- the image already passed every local check.
+  const up = await uploadMedia(creds, image.bytes, image.mime);
+  return up.ok ? up : { ...up, permanent: false };
 }

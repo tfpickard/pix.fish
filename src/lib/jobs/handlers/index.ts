@@ -1,4 +1,5 @@
 import type { Job } from '@/lib/db/schema';
+import type { JobContext } from '../worker';
 import { webhookDeliverHandler } from './webhookDeliver';
 import { reprocessImageHandler } from './reprocessImage';
 import { enrichImageHandler } from './enrichImage';
@@ -19,6 +20,7 @@ import { charactersCensusHandler } from './charactersCensus';
 import { charactersBackfillVisualsHandler } from './charactersBackfillVisuals';
 import { desirePromoteHandler } from './desirePromote';
 import { xDispatchHandler } from './xDispatch';
+import { xDispatchPublishHandler } from './xDispatchPublish';
 
 // Handlers are registered here; each sub-phase of Phase 4 adds its own.
 // Missing handlers cause the worker to mark the job failed immediately, so
@@ -33,7 +35,11 @@ import { xDispatchHandler } from './xDispatch';
 //   'manifold.recompute'-- feat/manifold: 3D umap projection
 //   'knn.rebuild'       -- feat/geodesics: kNN graph rebuild
 // (feat/stigmergy and feat/alive run inline/admin-triggered, no new job type.)
-export type JobHandler = (job: Job) => Promise<void>;
+// `ctx` is optional at the handler's end so the many handlers with no
+// irreversible side effect can keep ignoring it. Handlers that DO publish
+// something have to consult it: the drain runs several jobs inside one function
+// invocation, so a handler's own start time is not the deadline that matters.
+export type JobHandler = (job: Job, ctx: JobContext) => Promise<void>;
 
 export const handlers: Record<string, JobHandler> = {
   noop: async () => {
@@ -75,5 +81,9 @@ export const handlers: Record<string, JobHandler> = {
   // Outbound X dispatch: one trend fetch, one safety classification, one
   // specimen pick, one caption. Enqueued once a day by /api/cron/dispatch with
   // maxAttempts 1; the day-claim event makes a second run impossible.
-  'x.dispatch': xDispatchHandler
+  'x.dispatch': xDispatchHandler,
+  // Publish a draft an admin approved. Posts the stored draft verbatim rather
+  // than re-running the pipeline: regenerating would produce a different caption
+  // and the approval would not be of the thing published.
+  'x.dispatch.publish': xDispatchPublishHandler
 };

@@ -1044,6 +1044,14 @@ export const characterCrops = pgTable(
     // time -> backfill with scripts/backfill-crop-visuals.ts. Clustering can run
     // on the text vec, this visual vec, or a blend (see character_tuning.space).
     vecImage: vector('vec_image', { dimensions: 1024 }),
+    // Failed visual-embed attempts for this crop. Bounded retry: a crop whose
+    // blob is gone (or whose pixels the embedder always rejects) can never gain
+    // a vec_image, and re-attempting it on every backfill pass burns paid calls
+    // forever while never changing the outcome. Past the cap the crop is
+    // ABANDONED -- skipped by the backfill and reported as a coverage blocker,
+    // rather than silently re-tried. Reset by a forced re-detect, which re-cuts
+    // the crop (new row, attempts back to 0).
+    vecImageAttempts: integer('vec_image_attempts').notNull().default(0),
     imageProvider: text('image_provider'),
     imageModel: text('image_model'),
     provider: text('provider'),
