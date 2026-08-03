@@ -246,6 +246,16 @@ describe('isCropFault', () => {
     );
   });
 
+  test('a named image stated to be gone convicts without a fetch verb', () => {
+    // The blob really is missing; retrying cannot resurrect it. Reading this as
+    // systemic would abort the run without spending an attempt, wedging the
+    // drain on the same dead crop forever.
+    expect(isCropFault(400, '{"detail":"image not found"}')).toBe(true);
+    expect(isCropFault(400, '{"detail":"the image has been deleted"}')).toBe(true);
+    // ...but the subject gate still applies: a bare "not found" is the endpoint.
+    expect(isCropFault(400, '{"detail":"not found"}')).toBe(false);
+  });
+
   test('an unrecognized ambiguous body defaults to systemic', () => {
     expect(isCropFault(400, 'bad request')).toBe(false);
     expect(isCropFault(422, 'unprocessable')).toBe(false);

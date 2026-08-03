@@ -7,7 +7,7 @@ import {
   setCropImageVec,
   MAX_IMAGE_EMBED_ATTEMPTS
 } from '@/lib/db/queries/character-crops';
-import { earlierClaimedJobOfType, enqueueJob } from '@/lib/db/queries/jobs';
+import { earlierClaimedJobOfType, enqueueJob, mergeJobPayload } from '@/lib/db/queries/jobs';
 import type { Job } from '@/lib/db/schema';
 import { scheduleRecluster } from '@/lib/universe/recluster';
 
@@ -107,6 +107,14 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
         const vec = await embedder.embed(crop.blobUrl);
         await setCropImageVec(crop.cropId, vec, embedder.name, embedder.model);
         ok++;
+        // Stamp the change marker into THIS job's payload the moment the first
+        // vector lands, rather than only passing it to a continuation. Everything
+        // after this loop can fail -- the coverage read, the enqueue -- and a
+        // retry re-reads the row as enqueued, so a run that embedded crops and
+        // then died in its tail would come back with wrote=false, take the
+        // no-change path, and leave the repaired corpus with a stale roster until
+        // the next six-hourly cron. Once per run, only on the first write.
+        if (ok === 1 && !inheritedWrote) await mergeJobPayload(job.id, { wrote: true });
       } catch (err) {
         // Spending an attempt requires POSITIVE evidence that this crop is the
         // problem: an ImageEmbedError the provider classified as crop-scoped.
@@ -204,13 +212,19 @@ export async function charactersBackfillVisualsHandler(job: Job): Promise<void> 
         `attempts each. Sample: ` +
         sample.map((c) => `crop ${c.cropId} (image ${c.imageId}) ${c.blobUrl}`).join('; ')
     );
-    return;
+    // Deliberately NOT returning here. Abandoned crops block a visual/blend
+    // cluster, but they are irrelevant to 'text' (or a zero-weight blend) -- and
+    // switching the space is one of the remedies this very message recommends.
+    // scheduleRecluster re-reads the saved tuning and defers on its own when the
+    // space still needs those vectors, so letting it decide is both correct and
+    // the only way an admin who took the advice gets a roster refresh before the
+    // next six-hourly cron.
   }
 
-  // Fully drained. Recluster only if this chain actually wrote a vector: a
-  // backfill fired against an already-complete corpus (a second admin click, a
-  // stale duplicate) changed nothing, and scheduleRecluster deliberately ignores
-  // a currently-processing cluster, so a no-op run would fan out a redundant
+  // Recluster only if this chain actually wrote a vector: a backfill fired
+  // against an already-complete corpus (a second admin click, a stale duplicate)
+  // changed nothing, and scheduleRecluster deliberately ignores a
+  // currently-processing cluster, so a no-op run would fan out a redundant
   // corpus-wide verify + census -- paid LLM work for a crop set nobody touched.
   // When it did write, close the loop here rather than making the roster wait
   // for the next 6-hourly cron tick.

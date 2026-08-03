@@ -249,6 +249,19 @@ export async function claimJobs(lockId: string, limit: number): Promise<Job[]> {
   return res.rows.map(normalizeJob);
 }
 
+// Merge a patch into a running job's own payload, so a fact the handler learned
+// mid-run survives into its RETRY. A retry re-reads the row as it was enqueued,
+// which is fine for inputs and wrong for progress: a handler that committed work
+// and then failed in its tail would otherwise come back believing it had done
+// nothing. Writing the marker where the retry will look for it is what makes the
+// handler's own progress durable without a table of its own.
+export async function mergeJobPayload(id: number, patch: Record<string, unknown>): Promise<void> {
+  await db.execute(sql`
+    UPDATE jobs SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb
+    WHERE id = ${Math.trunc(id)}
+  `);
+}
+
 export async function markJobDone(id: number): Promise<void> {
   await db
     .update(jobs)

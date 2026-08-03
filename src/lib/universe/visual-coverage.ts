@@ -79,8 +79,18 @@ export async function clusterReadiness(
   // persists until someone reloads. Reading the job first inverts that: coverage
   // is then always at least as fresh as the drain state it is paired with, so
   // "retriable and nothing in flight" describes a moment that really happened.
-  const backfillInFlight = await hasInFlightJobOfType('characters.backfill-visuals');
+  let backfillInFlight = await hasInFlightJobOfType('characters.backfill-visuals');
   const { retriable, abandoned, embedded } = await imageVecCoverage();
+  // The other half of the same race: a backfill enqueued or claimed AFTER that
+  // first read still shows false, so a genuinely active drain would be reported
+  // idle -- and reporting idle is what switches the panel's poll off, so it
+  // would stay wrong until someone reloaded. One recheck closes it. It can only
+  // ever turn the flag ON, so it cannot resurrect the completion race the
+  // ordering above fixed: that one needs in-flight to read false, and a second
+  // look never makes a finished job look unfinished.
+  if (!backfillInFlight && retriable > 0) {
+    backfillInFlight = await hasInFlightJobOfType('characters.backfill-visuals');
+  }
   const embedderConfigured = !!getImageEmbedder();
 
   if (retriable === 0 && abandoned === 0) {

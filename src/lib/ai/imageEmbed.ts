@@ -119,13 +119,19 @@ export function isCropFault(status: number, body = ''): boolean {
   // the gate that makes "Payload Too Large" and "Unsupported Media Type" -- both
   // about our request -- stay systemic without needing a rule per phrase.
   if (!IMAGE_SUBJECT.test(text)) return false;
+  const gone = PERMANENTLY_GONE_MARKERS.some((m) => text.includes(m));
   // A failure to fetch our URL convicts the crop only when the blob is stated to
   // be gone. Everything else -- timeout, connection reset, a 5xx from the CDN --
   // is an outage wearing an image-shaped message, and outages must not be billed
   // to crops.
-  if (FETCH_MARKERS.some((m) => text.includes(m))) {
-    return PERMANENTLY_GONE_MARKERS.some((m) => text.includes(m));
-  }
+  if (FETCH_MARKERS.some((m) => text.includes(m))) return gone;
+  // "image not found" with no fetch verb at all. The subject gate above already
+  // established this is about the image, and a missing object is permanent, so
+  // it must convict -- otherwise a dead blob reads as systemic, aborts the run
+  // without ever spending an attempt, and wedges the drain on the same crop
+  // forever. (Checked before the complaint list because "not found" is a
+  // statement about existence, not about the pixels.)
+  if (gone) return true;
   return IMAGE_COMPLAINTS.some((m) => text.includes(m));
 }
 
