@@ -40,14 +40,16 @@ async function resolveParams(payload: Payload): Promise<Required<Payload>> {
   const needsInheritance =
     payload.nNeighbors === undefined || payload.minDist === undefined || payload.kind === undefined;
 
-  let live: LiveParams | null = null;
-  if (needsInheritance) {
-    try {
-      live = ((await latestProjection())?.params ?? null) as LiveParams | null;
-    } catch (err) {
-      console.error('umap: could not read live params, using defaults', err);
-    }
-  }
+  // Deliberately NOT wrapped in a try. "No projection exists yet" and "the
+  // projection could not be read" look identical downstream but mean opposite
+  // things: the first is a first run and defaults are right, the second is a
+  // transient failure where defaults would overwrite an admin's tuned atlas
+  // AND mark the job done, spending none of the three attempts that exist for
+  // exactly this. latestProjection() already returns null for the empty case,
+  // so anything it throws is the second case -- let it reach the retry loop.
+  const live = needsInheritance
+    ? (((await latestProjection())?.params ?? null) as LiveParams | null)
+    : null;
 
   const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
   const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
