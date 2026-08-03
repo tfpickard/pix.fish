@@ -63,6 +63,18 @@ export function edgeRateLimit(
 
   const retryAfter = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
 
+  // Move the key to the back of the insertion order on every access, so the
+  // eviction sweep below reads as least-recently-*used* rather than
+  // least-recently-*started*. Without this, ordering reflects only when each
+  // window opened, and a flood of unique keys evicts whichever active windows
+  // began earliest -- exactly the heavy hitters. An evicted key is recreated
+  // on its next request with a fresh count, so that ordering would let a
+  // sustained flooder reset itself indefinitely. Two hash lookups on the hot
+  // path is the right price; the window object itself is reused, so this
+  // allocates nothing.
+  windows.delete(key);
+  windows.set(key, existing);
+
   if (existing.count >= maxHits) {
     // Deliberately not incrementing past the limit: a sustained flood would
     // otherwise overflow the counter and the number carries no information

@@ -51,16 +51,27 @@ bunx vercel firewall rules reorder "Rate limit API" --first --yes
 bunx vercel firewall rules list --expand
 ```
 
-Before either rule, add a bypass so Vercel Cron is never throttled -- every
-cron route is already gated by `CRON_SECRET`, and a throttled cron silently
-stops the job queue:
+Cron needs its own rule, because the `/api` rule above would otherwise throttle
+it and a throttled drain silently stops the job queue. Give it a generous limit
+rather than a `bypass`:
 
 ```sh
-bunx vercel firewall rules add "Bypass cron" \
+bunx vercel firewall rules add "Rate limit cron" \
   --condition '{"type":"path","op":"pre","value":"/api/cron"}' \
-  --action bypass --yes
-bunx vercel firewall rules reorder "Bypass cron" --first --yes
+  --action rate_limit \
+  --rate-limit-window 60 \
+  --rate-limit-requests 20 \
+  --rate-limit-keys ip \
+  --rate-limit-action deny --yes
+bunx vercel firewall rules reorder "Rate limit cron" --first --yes
 ```
+
+Deliberately not `--action bypass`. These are public URLs, and a path-keyed
+bypass exempts *everyone* who requests them, not just Vercel Cron -- which
+hands an attacker a prefix with no WAF layer at all. Vercel Cron fires these
+once a minute, so 20/min is far above real use while still capping abuse. The
+edge limiter (layer 2) makes the same distinction in code: it skips the limiter
+only for a request that actually carries the `CRON_SECRET` bearer token.
 
 Rules are staged as drafts; publish them from the dashboard or with
 `bunx vercel firewall publish`.
@@ -88,8 +99,18 @@ cost of a hammered `/` actually lives.
 
 - Default 200 requests / minute / IP. Override with `RATE_LIMIT_RPM`.
 - `RATE_LIMIT_DISABLED=1` turns the gate off without a deploy.
-- `/api/cron/*` and `/api/auth/*` are exempt (see the comments in
-  `src/middleware.ts` for why).
+- `/api/auth/*` gets a separate 60/min bucket, so a client that has spent its
+  page allowance during a flood can still finish an OAuth callback rather than
+  being stranded on a 429 it cannot retry past.
+- `/api/cron/*` skips the limiter **only** when the request carries the
+  `CRON_SECRET` bearer token. Exempting the path itself would let anyone
+  hammer a public URL into unlimited Node invocations that load the whole
+  worker dependency graph before returning 403.
+- The matcher's exclusion list is an explicit inventory of `public/` plus
+  Next's build output, not a file-extension pattern. `/anything.png` matches no
+  static file but still resolves through `src/app/[slug]/page.tsx`, so an
+  extension rule would leave a family of database-backed paths uncounted. Add
+  to the list when you add to `public/`.
 
 The counters are module-scope state in one edge instance. Vercel runs many
 instances across many regions, so a client spread across regions gets roughly

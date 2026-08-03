@@ -53,4 +53,32 @@ describe('edgeRateLimit', () => {
     edgeRateLimit('post-flood', 2, WINDOW, 1_000);
     expect(edgeRateLimit('post-flood', 2, WINDOW, 1_000).ok).toBe(false);
   });
+
+  test('a key that keeps hammering is not evicted by a unique-key flood', () => {
+    // The failure this guards against: eviction ordered by when a window
+    // *opened* rather than when it was last *used*. A heavy hitter opens its
+    // window early, so it sorts oldest, so a flood of new keys evicts it --
+    // and it comes back with a fresh count. That is precisely backwards, and
+    // the many-unique-IP flood is the case the limiter exists for.
+    const hammer = () => edgeRateLimit('hammer', 10, WINDOW, 1_000);
+
+    // Open the window first, so it is the oldest by window-start ordering.
+    for (let i = 0; i < 10; i++) hammer();
+    expect(hammer().ok).toBe(false);
+
+    // Count how many times the key comes back as a *fresh* window. Asserting
+    // "still throttled at the end" would prove nothing: an evicted key that
+    // gets recreated re-accrues its 10 hits within a few hundred iterations
+    // and looks throttled again by the time the loop ends. Only the opening
+    // of a new window returns retryAfter === 0, so that is the signature of a
+    // reset, and after the first window there must never be another.
+    let resets = 0;
+    for (let i = 0; i < 30_000; i++) {
+      edgeRateLimit(`noise-${i}`, 10, WINDOW, 1_000);
+      if (i % 5 === 0 && hammer().retryAfter === 0) resets++;
+    }
+
+    expect(resets).toBe(0);
+    expect(hammer().ok).toBe(false);
+  });
 });
