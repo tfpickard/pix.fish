@@ -15,6 +15,8 @@ Package manager is **bun** (`bun.lock` is authoritative -- never introduce `npm`
 ```sh
 bun run dev         # next dev
 bun run build       # next build (runs serwist SW codegen via next.config.mjs)
+bun run start       # next start (production server; systemd unit pixfish-web)
+bun run worker      # bun src/worker/index.ts (job queue; systemd unit pixfish-worker)
 bun run lint        # next lint
 bun run typecheck   # tsc --noEmit
 bun run db:generate # drizzle-kit generate (emit a new migration)
@@ -83,7 +85,7 @@ Seeded into the `prompts` table by `scripts/seed.ts`. There are now **seven** ke
 This is the biggest change from the original design. `POST /api/images` no longer enriches inline. It:
 
 1. Authorizes any signed-in user (ownership enforced later via `canEdit`).
-2. Uploads the buffer to Vercel Blob first (URL survives enrichment failure).
+2. Uploads the buffer to Cloudflare R2 first (URL survives enrichment failure), via the `put` shim in `src/lib/blob.ts`.
 3. Extracts EXIF (`exifr`) + a 5-color palette (`node-vibrant`) from the buffer in parallel via `src/lib/image-meta.ts` (both pure-JS, no `sharp`; both swallow errors -> `null` column). EXIF supplies `takenAt`; **GPS fields are stripped before persisting** (`image-meta.ts`).
 4. Inserts the `images` row with a **placeholder slug** (`img-<blobkey-tail>`), stamped with `ownerId`.
 5. **Enqueues an `enrich.image` job** (`enqueueJob`) and returns **HTTP 202 `{ status: 'queued' }`**. It does not wait for the model.
@@ -94,7 +96,8 @@ The upload UI fires N parallel uploads and polls `GET /api/images?ids=...` to wa
 
 A DB-backed queue replaces synchronous work. The `jobs` table (`schema.ts:394`) is leased with a **visibility timeout** (`lockedAt`) rather than `FOR UPDATE`, so a function dying mid-handler doesn't orphan rows.
 
-- **Drain endpoint**: `/api/cron/jobs` (`route.ts`), invoked every minute by Vercel Cron (`vercel.json`). GET = cron, POST = ad-hoc/manual drain. Both require `Authorization: Bearer ${CRON_SECRET}`. It reclaims stuck `processing` rows older than a 5-min visibility timeout, then claims/runs batches of 10 until a 55s wall budget.
+- **Drain path**: a persistent worker process, `src/worker/index.ts` (`bun run worker`), managed by systemd. It reclaims stuck `processing` rows older than a 5-min visibility timeout, then claims and runs **one** job at a time so a shutdown never strands a partly-consumed batch. `/api/cron/jobs` still exists as a manual escape hatch (GET or POST, `Authorization: Bearer ${CRON_SECRET}`) but nothing calls it on a schedule.
+- **The 55s budget is a fossil.** `WALL_BUDGET_MS`, the batches of 10, and the "fills the tick" comments throughout `JOB_TIMEOUT_MS` all date from Vercel's 60s function ceiling. The worker has no such ceiling. The per-type budgets were deliberately NOT raised during the migration -- see the `PUBLISH_JOB_TIMEOUT_MS` comment in `worker.ts` for what a mis-measured budget cost once -- so raising them is still an open, deliberate change.
 - **Worker**: `worker.ts` dispatches by `job.type` through `handlers/index.ts`, wraps each in a per-type timeout (kept under the cron wall budget), and on failure reschedules with exponential backoff up to `maxAttempts`, then marks `failed` (visible at `/admin/jobs`).
 - **Handlers** (`src/lib/jobs/handlers/`): `enrichImage` (the real captions/descriptions/tags + embedding work, persisting via `src/lib/enrichment-persist.ts`), `reprocessImage`, `umapRecompute`, `webhookDeliver`, `backupExport`. `src/lib/enrichment.ts` is the provider-orchestration core called by the enrich/reprocess handlers (3 parallel field calls; skips any field with no key).
 
@@ -142,7 +145,7 @@ One image a day, posted to the site's X account tagged into a currently-trending
 - **One *scheduled* dispatch per day is structural, not scheduled.** The handler's first act is a `dispatch.claimed` event keyed `x.dispatch:<YYYY-MM-DD>`; `appendEvent`'s unique dedupe index makes a second claim a no-op. A double-fired cron and a reclaimed job collapse to one run. The cap binds the **scheduler**, not the account: manual runs from `/admin/dispatch` (dry review *and* live) claim a `manual:<ms>` suffixed slot and are deliberately **unlimited** -- an admin posting several times in a day is a decision, a cron doing it is a bug. A manual live post cancels that day's scheduled one, which `/api/cron/dispatch` enforces via `livePostAttemptedOnDate()` (advisory; the cron-vs-cron guarantee is still the day-claim). Concurrency, not frequency, is guarded on the manual path: `hasInFlightJobOfType` serializes runs so two cannot select the same specimen before either records its attempt.
 - **Correlate dispatch events by `payload.slotKey`, never by date.** `subjectId` is only the UTC date and a date can hold many runs, so a review run's outcome would otherwise vouch for a scheduled run's unresolved attempt. All three of `dispatch.attempted`/`sent`/`skipped` carry the slot.
 - **A live run rechecks the UTC date immediately before posting** (cron trigger only). A run starting at 23:59 and posting at 00:00 would publish into a day it never claimed, and that day's own dispatch still fires later. Manual runs are exempt because they have no per-day budget to overspend.
-- Cron fires on a coarse grid (`vercel.json`) and `schedule.ts` decides whether today's date-seeded fire time has passed -- Vercel Cron cannot jitter, and a dispatch landing at the same minute daily reads as a machine. Enqueued with `maxAttempts: 1`: **never retried.**
+- The dispatch timer fires on a coarse grid (`deploy/pixfish-cron-dispatch.timer`, UTC) and `schedule.ts` decides whether today's date-seeded fire time has passed -- a cron grid cannot jitter, and a dispatch landing at the same minute daily reads as a machine. Enqueued with `maxAttempts: 1`: **never retried.**
 - Specimen selection (`select.ts` + `src/lib/db/queries/dispatch.ts`) takes a *middle band* of cosine distance from the trend vector: nearer and the specimen is genuinely about the trend, further and there is no thread. Whole corpus eligible, NSFW included by product decision, recency a weight rather than a filter, already-dispatched images excluded from the log.
 - LLM calls go through `src/lib/ai/dispatch-text.ts`, not `AIProvider.text()`: that path hardcodes 4096 tokens and the SDK's two retries, and this job needs tight caps and `maxRetries: 0`. It speaks Anthropic only and returns null otherwise, which callers treat as skip.
 - **Two ai_config rows, not one.** `dispatch` routes the caption (the deliverable -- a better tier earns its cost, including a thinking model); `dispatchSafety` routes the trend classifier (mechanical batch-in/JSON-out under a deadline that must fit inside a 50s job, so reasoning buys nothing and costs the post). One row meant choosing a caption model silently dragged the classifier with it. Pass `field` to `dispatchText`; it defaults to `dispatch` so an unspecified call never silently picks the cheap tier for creative work.
@@ -177,7 +180,7 @@ Crops carry `vec_image_attempts`. Past `MAX_IMAGE_EMBED_ATTEMPTS` a crop is **ab
 
 ### Database (`src/lib/db/`)
 
-- Drizzle ORM on `@vercel/postgres`. Schema in `schema.ts`; migrations in `drizzle/` (`0000`-`0003`); config in `drizzle.config.ts` (reads `POSTGRES_URL`).
+- Drizzle ORM on `drizzle-orm/node-postgres` over a `pg` pool (`src/lib/db/client.ts`). **Not `neon-http`**: 100+ `db.execute()` calls read `.rows` off a pg `QueryResult`, and `neon-http` resolves to a bare array instead, which typechecks and then breaks at runtime. `client.ts` also exports a `sql` tagged template mirroring the old `@vercel/postgres` export, plus `closeDb()`. Schema in `schema.ts`; migrations in `drizzle/` (`0000`-`0003`); config in `drizzle.config.ts` (reads `POSTGRES_URL`).
 - Query helpers live one-file-per-concern under `src/lib/db/queries/` (images, slugs, tags, taxonomy, prompts, saved-prompts, ai-config, api-keys, embeddings, reactions, comments, reports, collections, jobs, webhooks, umap, users, about, gallery-config, palette, provenance, reprocess, stats). Route handlers and jobs import from here; **don't build Drizzle queries inline in handlers.**
 - `provider_keys` (outbound BYO AI creds, encrypted) is distinct from `api_keys` (inbound personal access tokens for the public REST API; only the SHA-256 hash stored).
 
@@ -198,11 +201,13 @@ Crops carry `vec_image_attempts`. Past `MAX_IMAGE_EMBED_ATTEMPTS` a crop is **ab
 - Captions/descriptions are **one JSON call returning 3 variants** per field, not 3 calls. `{{variant_number}}` is wired but unused.
 - Manual caption is **variant 4** (`locked=true, isSlugSource=true`), not a replacement for an AI variant.
 - Random caption/description **selection is server-side per request** -- no stability across refreshes. Don't add client caching that fights this.
-- No `sharp`/native image libs. EXIF + `takenAt` from `exifr`, palette from `node-vibrant`. `images.width`/`height` exist but stay null -- nothing probes dimensions.
+- EXIF + `takenAt` from `exifr`, palette from `node-vibrant` -- both pure-JS, used on the upload path so it stays cheap. `sharp` IS a dependency, but only for the offline/queued WebP derivative ladder (`src/lib/images/generate.ts`), never in the request path. `images.width`/`height` exist but stay null -- nothing probes dimensions.
 - Embedding + enrichment are **best-effort and async**: a failed model call leaves the row usable (placeholder slug / null embedding) and eligible for `/admin/reprocess` or `scripts/backfill-embeddings.ts`. A failed embedding never fails the upload.
 - **GPS EXIF is stripped before persisting** (`image-meta.ts`). `images.exif` is returned by the public list endpoint, so re-adding GPS means publishing GPS -- needs a private column or server-side redaction first.
 - Per-user BYO keys fall back to env-var keys when a user has no `provider_keys` row -- so the bootstrap admin keeps working purely on `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`.
 
 ## Required environment
 
-Beyond the README's list, the current code also reads: `CRON_SECRET` (gates `/api/cron/jobs`; the queue does nothing without it), `NEXT_PUBLIC_SITE_URL` (SEO/canonical origin), and optionally `GOOGLE_SITE_VERIFICATION`/`BING_SITE_VERIFICATION`. `AUTH_SECRET` is doubly load-bearing now: Auth.js session signing **and** the PBKDF2 root for provider-key encryption.
+Beyond the README's list, the current code also reads: `CRON_SECRET` (gates `/api/cron/jobs` and the three systemd cron timers; note the queue no longer depends on it, since the worker talks to the database directly), `NEXT_PUBLIC_SITE_URL` (SEO/canonical origin), and optionally `GOOGLE_SITE_VERIFICATION`/`BING_SITE_VERIFICATION`. `AUTH_SECRET` is doubly load-bearing now: Auth.js session signing **and** the PBKDF2 root for provider-key encryption.
+
+Storage is Cloudflare R2, not Vercel Blob: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE`. `R2_PUBLIC_BASE` is read at build time too (`next.config.mjs` derives the image optimizer's host allowlist from it), so it has to be present in the build environment and not just at runtime. `PGPOOL_MAX` optionally caps the per-process connection pool.

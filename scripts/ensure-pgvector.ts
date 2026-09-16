@@ -9,7 +9,7 @@
  *
  *   bun scripts/ensure-pgvector.ts
  */
-import { sql } from '@vercel/postgres';
+import { sql } from '../src/lib/db/client';
 
 async function main() {
   await sql`CREATE EXTENSION IF NOT EXISTS vector`;

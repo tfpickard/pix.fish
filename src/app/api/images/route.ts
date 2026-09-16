@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { inArray } from 'drizzle-orm';
-import { put } from '@vercel/blob';
+import { put } from '@/lib/blob';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { images } from '@/lib/db/schema';
@@ -157,10 +157,9 @@ export async function POST(req: Request) {
 
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  // Upload to Vercel Blob first -- we want the URL persisted even if the
-  // enrichment job later fails. A missing/invalid BLOB_READ_WRITE_TOKEN
-  // surfaces here; report it as JSON so the client doesn't choke on Next's
-  // HTML error page.
+  // Upload to R2 first -- we want the URL persisted even if the enrichment
+  // job later fails. Missing or wrong R2 credentials surface here; report it
+  // as JSON so the client doesn't choke on Next's HTML error page.
   const blobKey = `images/${crypto.randomUUID()}-${safeName(file.name)}`;
   let blob: Awaited<ReturnType<typeof put>>;
   try {

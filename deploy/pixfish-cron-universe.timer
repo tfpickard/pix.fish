@@ -1,0 +1,16 @@
+[Unit]
+Description=Timer for pixfish-cron-universe.service
+
+[Timer]
+# Replaces the Vercel cron entry "23 */6 * * *" (vercel.json): minute 23 of
+# hours 0, 6, 12, 18. Pinned to UTC explicitly rather than relying on the
+# host's local timezone being UTC, because the app's own scheduling math
+# (dispatch/schedule.ts) is UTC-seeded and every other cron here needs to
+# stay on the same clock as that.
+OnCalendar=*-*-* 0,6,12,18:23:00 UTC
+# A reboot spanning a scheduled fire runs it once on boot instead of
+# silently skipping straight to the next window.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

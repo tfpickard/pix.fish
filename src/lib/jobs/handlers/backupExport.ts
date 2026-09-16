@@ -1,7 +1,7 @@
 import archiver from 'archiver';
 import { PassThrough, Readable } from 'node:stream';
 import { eq, sql } from 'drizzle-orm';
-import { put } from '@vercel/blob';
+import { put } from '@/lib/blob';
 import { db } from '@/lib/db/client';
 import {
   aiConfig,

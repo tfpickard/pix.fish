@@ -12,7 +12,9 @@ import { invalidateGalleryCentroid } from '@/lib/playground/centroid';
 import type { EnrichmentResult } from '@/lib/enrichment';
 
 // Postgres unique-violation. Drizzle surfaces it via the underlying driver
-// error, which for @vercel/postgres carries `code: '23505'` on err.cause.
+// error. node-postgres puts `code: '23505'` directly on the error; the older
+// @vercel/postgres driver hung it off err.cause instead. Both are still checked
+// so this keeps working either way.
 function isUniqueViolation(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const candidates = [err, (err as { cause?: unknown }).cause];

@@ -12,7 +12,7 @@
  *
  *   POSTGRES_URL="<prod connection string>" bun scripts/ensure-fish-config.ts
  */
-import { sql } from '@vercel/postgres';
+import { sql } from '../src/lib/db/client';
 import { DEFAULT_FISH_MORPH_CONFIG, fishConfigToFields } from '../src/lib/fish/config';
 
 async function main() {

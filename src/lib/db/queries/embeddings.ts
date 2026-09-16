@@ -201,8 +201,8 @@ export async function countCaptionEmbeddings(): Promise<number> {
 }
 
 // pgvector's <=> operator returns cosine distance (lower is closer; 0 means
-// identical direction). We cast the driver param via `::vector` because
-// @vercel/postgres can't infer the parameter type on its own.
+// identical direction). We cast the driver param via `::vector` because the
+// driver can't infer the parameter type on its own.
 //
 // `order: 'farthest'` walks the same index in reverse and returns the most
 // dissimilar rows -- used by antibreed to find the "far territory" of a

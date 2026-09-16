@@ -1,6 +1,6 @@
 # pix.fish
 
-A multi-user image gallery with AI enrichment. Any signed-in GitHub user can upload; the rest of the world can browse, react, comment, report, and build shareable shelves. On each upload, the image is stored in Vercel Blob, EXIF and a color palette are extracted, and a background job generates three captions, three descriptions, and a tag set with a vision model plus a caption embedding for semantic search. One caption becomes the URL slug; the others rotate on display.
+A multi-user image gallery with AI enrichment. Any signed-in GitHub user can upload; the rest of the world can browse, react, comment, report, and build shareable shelves. On each upload, the image is stored in Cloudflare R2, EXIF and a color palette are extracted, and a background job generates three captions, three descriptions, and a tag set with a vision model plus a caption embedding for semantic search. One caption becomes the URL slug; the others rotate on display.
 
 The full multi-phase product spec is in [SPEC.md](./SPEC.md). Implementation context for Claude Code is in [CLAUDE.md](./CLAUDE.md) -- treat CLAUDE.md and the code as authoritative where this README lags.
 
@@ -12,7 +12,7 @@ The full multi-phase product spec is in [SPEC.md](./SPEC.md). Implementation con
 |---|---|
 | Multi-user identity, per-user galleries (`/u/<handle>`) | shipped |
 | Upload + AI captions/descriptions/tags | shipped |
-| Async, queue-backed enrichment (Vercel Cron) | shipped |
+| Async, queue-backed enrichment (persistent worker) | shipped |
 | Per-user BYO provider keys (Anthropic/OpenAI, encrypted at rest) | shipped |
 | DB-driven per-field provider routing (`/admin/ai`) | shipped |
 | EXIF + palette extraction (no `sharp`) | shipped |
@@ -35,9 +35,9 @@ The full multi-phase product spec is in [SPEC.md](./SPEC.md). Implementation con
 ## Stack
 
 - **Next.js 14** (App Router) + TypeScript + Tailwind + shadcn/ui
-- **Neon Postgres** with `pgvector`, via `@vercel/postgres` + Drizzle ORM
-- **Vercel Blob** for image storage
-- **Vercel Cron** drains the DB-backed job queue (`/api/cron/jobs`, every minute)
+- **Neon Postgres** with `pgvector`, via `drizzle-orm/node-postgres` (a `pg` pool) + Drizzle ORM
+- **Cloudflare R2** (S3-compatible) for image storage, via a thin `src/lib/blob.ts` shim
+- A persistent **worker process** (`bun run worker`, managed by systemd in production) drains the DB-backed job queue one job at a time; `/api/cron/jobs` remains as a manual one-shot escape hatch
 - **Auth.js v5** -- GitHub OAuth. Any signed-in user can upload; `OWNER_GITHUB_ID` designates the bootstrap site admin (role-based, not an upload allowlist)
 - **Anthropic** (`claude-sonnet-4-6`) for captions/descriptions/tags by default; **OpenAI** (`gpt-4o`) wired as an alternate provider, and `text-embedding-3-small` for caption embeddings. Routing is per-field and DB-driven; keys are per-user BYO with an env-var fallback
 - **`exifr`** for EXIF, **`node-vibrant`** for palette (both pure-JS -- avoids `sharp`)
@@ -65,15 +65,17 @@ Copy `.env.example` to `.env.local` and fill in:
 
 | Var | Required | Notes |
 |---|---|---|
-| `POSTGRES_URL` | yes | Pooled or unpooled Neon connection string. Grab from Neon or the Vercel Postgres integration. |
-| `BLOB_READ_WRITE_TOKEN` | yes | Vercel dashboard -> Storage -> Blob -> create store -> Tokens. |
+| `POSTGRES_URL` | yes | Neon connection string. Point it at Neon's `-pooler` host. |
+| `PGPOOL_MAX` | no | Caps the per-process `pg` pool size. Defaults to 10. Web and worker are separate processes with separate pools, so their sum must stay under the Neon plan's connection limit. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | yes | Cloudflare R2 bucket + S3-compatible API credentials. |
+| `R2_PUBLIC_BASE` | yes | Public base URL for the bucket (e.g. `https://cdn.pix.fish`, no trailing slash). Needed at **build** time too -- `next.config.mjs` derives the image optimizer's host allowlist from it. |
 | `AUTH_SECRET` | yes | `openssl rand -hex 32`. Signs Auth.js sessions **and** is the PBKDF2 root for encrypting per-user provider keys. Rotating it invalidates all stored provider keys. |
 | `AUTH_URL` | yes | `http://localhost:3000` for local dev. |
 | `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` | yes | Create a GitHub OAuth app (Settings -> Developer settings). Homepage `http://localhost:3000`, callback `http://localhost:3000/api/auth/callback/github`. |
 | `OWNER_GITHUB_ID` | yes | Your numeric GitHub user id. Look it up at `https://api.github.com/users/<username>`. Stamped `role='admin'` on first sign-in (taxonomy, prompts, ai_config, global /about). Not an upload allowlist -- any signed-in user can upload. |
 | `ANTHROPIC_API_KEY` | yes | Env-var fallback for captions/descriptions/tags. Users may override with their own key via `/admin/keys`. |
 | `OPENAI_API_KEY` | no | Caption embeddings (`text-embedding-3-small`), which power search, neighbors, breed, and the atlas. Without it, uploads still succeed but embeddings stay null. |
-| `CRON_SECRET` | yes | `openssl rand -hex 32`. Bearer token gating `/api/cron/jobs`. Without it the queue never drains, so uploads never gain captions. See "Draining the queue locally" below. |
+| `CRON_SECRET` | yes | `openssl rand -hex 32`. Bearer token gating `/api/cron/jobs`, the manual drain endpoint. The persistent worker (`bun run worker`) does not need it. |
 | `NEXT_PUBLIC_SITE_URL` | no | Canonical origin for SEO/JSON-LD/og:image. Falls back to `https://pix.fish`. |
 | `GOOGLE_SITE_VERIFICATION`, `BING_SITE_VERIFICATION` | no | Search Console / Bing ownership verification codes. |
 
@@ -112,14 +114,20 @@ Drop an image on `/upload` (or `/admin/upload` for the bulk admin view), optiona
 
 ### Draining the queue locally
 
-Vercel Cron is what calls `/api/cron/jobs` in production. Locally, nothing fires it, so enrichment jobs sit `pending` until you drain them yourself:
+In production the queue is drained by a long-lived worker process, not a schedule. Locally, run it in a second terminal:
+
+```sh
+bun run worker
+```
+
+It claims one job at a time and processes them as they're enqueued; leave it running alongside `bun run dev`. Check `/admin/jobs` to see queue state.
+
+As a secondary, one-shot option (no worker process needed), you can still hit the manual drain endpoint directly:
 
 ```sh
 curl -X POST http://localhost:3000/api/cron/jobs \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
-
-Run it after uploading (or on a loop) to process queued jobs. Check `/admin/jobs` to see queue state.
 
 ### 7. Backfill embeddings (optional)
 
@@ -133,13 +141,9 @@ Idempotent; uses `onConflictDoUpdate` on `(image_id, kind='caption')`. You can a
 
 ## Deployment
 
-1. **Vercel project**: import this repo. Framework preset: Next.js. Build command `bun run build`. Install command `bun install`.
-2. **Neon Postgres**: add via the Vercel integration. It populates `POSTGRES_URL` and related env vars automatically. Run `bun run db:push` and `bun run db:seed` against the production database (or branch).
-3. **Vercel Blob**: Dashboard -> Storage -> Create Blob Store. Link it to the project; `BLOB_READ_WRITE_TOKEN` is injected automatically.
-4. **GitHub OAuth (prod)**: create a second OAuth app with callback `https://<your-domain>/api/auth/callback/github`. Set `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET`, and `AUTH_URL` in Vercel env.
-5. **Secrets**: set `AUTH_SECRET`, `OWNER_GITHUB_ID`, `ANTHROPIC_API_KEY`, optionally `OPENAI_API_KEY`, and `CRON_SECRET` in Vercel env.
-6. **Cron**: `vercel.json` registers `/api/cron/jobs` on a `* * * * *` schedule. Vercel sends the configured `CRON_SECRET` as a Bearer token; the queue does nothing without it.
-7. **Route timeouts**: `/api/images` and `/api/cron/jobs` set `maxDuration = 60`. The cron drains in batches under a 55s wall budget; jobs that exceed their per-type timeout are retried with backoff.
+Self-hosted on a VPS: Cloudflare sits in front, Caddy terminates TLS and reverse-proxies to `next start` on `127.0.0.1:3000`, and two systemd units (`pixfish-web`, `pixfish-worker`) run the app and the job-queue worker as long-lived processes. Three systemd timers replace the old cron endpoints for `/api/cron/universe`, `/api/cron/characters`, and `/api/cron/dispatch`. Neon (Postgres) and Cloudflare R2 (blob storage) are external managed services.
+
+The full operator guide -- unit files, the Caddyfile, provisioning steps, and the deploy script -- lives in [`deploy/README.md`](./deploy/README.md).
 
 ## API surface
 
@@ -179,6 +183,7 @@ Public reads are unauthenticated. Writes require a session (enforced by `middlew
 bun run dev         # next dev
 bun run build       # next build
 bun run start       # next start
+bun run worker      # bun src/worker/index.ts -- long-lived job queue worker
 bun run lint        # next lint
 bun run typecheck   # tsc --noEmit
 bun run db:generate # drizzle-kit generate (emit a new migration)
@@ -192,6 +197,8 @@ bun scripts/backfill-embeddings.ts   # generate caption embeddings for legacy ro
 bun scripts/ensure-pgvector.ts       # idempotent CREATE EXTENSION vector
 bun scripts/prepare-multiuser.ts     # stand up users table before db:push (legacy migration)
 bun scripts/backfill-multiuser.ts    # backfill owner_id to the admin user (legacy migration)
+bun scripts/migrate-blobs-to-r2.ts   # copy blob objects from Vercel Blob into R2 under identical keys; non-destructive, resumable, dry-run by default (--apply to write)
+bun scripts/rewrite-blob-urls.ts     # rewrite images.blob_url / images.derivatives / character_crops.blob_url onto the R2 domain; dry-run by default, writes a rollback dump before mutating (--rollback <file> to undo)
 
 ./dev.sh [-v|-vv|-vvv] {start|stop|restart|status|logs}
 ```
@@ -233,12 +240,13 @@ src/
 scripts/                  # seed + backfill + migration helpers
 drizzle/                  # 0000_init.sql (enables pgvector) .. 0003
 middleware.ts             # "must be signed in" gate for /admin/*, /api/images writes, /api/comments writes
-vercel.json               # registers the /api/cron/jobs cron
+worker/                   # src/worker/index.ts -- long-lived job queue worker process
+deploy/                   # systemd units, Caddyfile, deploy script -- see deploy/README.md
 ```
 
 ## Current limitations
 
-- **Enrichment latency.** Uploads return immediately but captions appear only after the cron drains the queue (worst case ~60s in production; manual drain locally). Check `/admin/jobs` if a row stays caption-less.
+- **Enrichment latency.** Uploads return immediately; captions appear once the worker picks up the enqueued job, typically within a few seconds in production (run `bun run worker` locally to drain them). Check `/admin/jobs` if a row stays caption-less.
 - **Tag filter uses AND semantics only.** OR-toggle is planned.
 - **Image dimensions not stored.** The `width`/`height` columns on `images` exist but are always null -- nothing probes them.
 - **No CLIP / multimodal embeddings.** Only caption-text embeddings are written today. The `embeddings.kind` column reserves `image` and `combined` for later.
@@ -247,7 +255,7 @@ vercel.json               # registers the /api/cron/jobs cron
 
 The full plan lives in [`SPEC.md`](./SPEC.md); the short list of decisions that affect day-to-day work:
 
-1. **Async enrichment.** `POST /api/images` enqueues an `enrich.image` job and returns 202; the queue (drained by `/api/cron/jobs`) does the vision calls. Failures retry with backoff and surface at `/admin/jobs`.
+1. **Async enrichment.** `POST /api/images` enqueues an `enrich.image` job and returns 202; the queue (drained by the persistent worker, `bun run worker`) does the vision calls. Failures retry with backoff and surface at `/admin/jobs`.
 2. **Per-user BYO keys with env fallback.** Provider keys are AES-256-GCM encrypted in `provider_keys` (PBKDF2 from `AUTH_SECRET`); a user with no row falls back to the `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` env vars. A missing key for a field means that field is skipped, not a failed upload.
 3. **Combined JSON per field.** One vision call returns all 3 caption variants (and same for descriptions). The `{{variant_number}}` placeholder is wired but currently unused.
 4. **Manual caption is variant 4.** Stored as `variant=4, locked=true, isSlugSource=true`, not a replacement of an AI variant.

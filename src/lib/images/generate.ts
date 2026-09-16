@@ -1,4 +1,4 @@
-import { put } from '@vercel/blob';
+import { put } from '@/lib/blob';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db } from '@/lib/db/client';
@@ -13,9 +13,9 @@ import {
 // (scripts/generate-derivatives.ts) and the post-upload `derive.image` job
 // (src/lib/jobs/handlers/deriveImage.ts) so both paths produce identical files
 // and naming. Resizes an original to a small WebP ladder, uploads each next to
-// the original in Vercel Blob, and records the URLs on images.derivatives.
+// the original in R2, and records the URLs on images.derivatives.
 //
-// Requires BLOB_READ_WRITE_TOKEN (write) in the environment, same as uploads.
+// Requires the R2_* credentials in the environment, same as uploads.
 
 const WEBP_QUALITY = 80;
 const MAX_WIDTH = DERIVATIVE_WIDTHS[DERIVATIVE_WIDTHS.length - 1];

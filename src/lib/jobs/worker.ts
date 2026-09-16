@@ -54,6 +54,21 @@ const JOB_TIMEOUT_MS: Record<string, number> = {
 };
 const JOB_TIMEOUT_DEFAULT_MS = 45_000;
 
+// Read-only accessor over the table above. The standalone worker (src/worker)
+// needs it to tell a handler the truth about its deadline: with no enclosing
+// function budget to share, `invocationDeadlineAt` is just this job's own
+// timeout. Exported rather than copied, because a second set of these numbers
+// would drift from this one, and the handlers that consult the deadline are
+// exactly the ones with irreversible side effects.
+//
+// NOTE: these budgets are still sized for the old 55s Vercel cron tick. A
+// persistent worker removes that ceiling, but raising them is a deliberate
+// change of its own -- see PUBLISH_JOB_TIMEOUT_MS above for what a
+// mis-measured budget already cost once.
+export function jobTimeoutMs(type: string): number {
+  return JOB_TIMEOUT_MS[type] ?? JOB_TIMEOUT_DEFAULT_MS;
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(

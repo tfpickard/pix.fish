@@ -1,0 +1,54 @@
+{
+	# Every request reaches this box through Cloudflare's edge, so without
+	# this block Caddy sees Cloudflare's own IP as "the client" for every
+	# single visitor. The app hashes the client IP for anonymous rate
+	# limiting and abuse prevention (src/lib/hash.ts reads X-Forwarded-For,
+	# then X-Real-IP) -- if that hash is always Cloudflare's edge IP, every
+	# visitor collapses into one bucket and the limiter stops limiting
+	# anything.
+	servers {
+		# Only trust the real-IP header when the connection actually came
+		# from a Cloudflare edge node -- otherwise anyone who reaches the
+		# origin directly (Cloudflare hidden, not blocked) could forge
+		# CF-Connecting-IP and pick their own rate-limit bucket.
+		#
+		# Source of truth, refresh periodically:
+		# https://www.cloudflare.com/ips/ -- Cloudflare adds/retires ranges
+		# occasionally, and a stale list fails quietly (new edge ranges
+		# just fall back to being treated as the client) rather than
+		# loudly, so there's nothing that will page you when this goes
+		# stale. Re-pull both the IPv4 and IPv6 lists together.
+		# Caddyfile directives don't support backslash line continuation,
+		# so this list is one long line by necessity, not by choice.
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+
+		# Cloudflare's real-client-IP header. Once trusted above, Caddy
+		# both resolves this as the request's client IP internally and
+		# uses it to build the X-Forwarded-For it hands to reverse_proxy's
+		# upstream -- which is the header the app actually reads.
+		client_ip_headers CF-Connecting-IP
+	}
+}
+
+pix.fish, www.pix.fish {
+	# Cloudflare's origin-facing TLS mode should be "Full (strict)" so this
+	# hop (edge -> VPS) is encrypted too, not left plaintext under
+	# "Flexible". Caddy's automatic TLS here is for that hop, not for the
+	# public-facing cert -- Cloudflare terminates that at the edge.
+
+	encode zstd gzip
+
+	header {
+		# Cloudflare already offers HSTS site-wide, but set it at origin
+		# too so the header is correct if this host is ever reached
+		# without Cloudflare in front (maintenance, migration, etc).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Don't advertise the exact reverse proxy in play.
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:3000
+}

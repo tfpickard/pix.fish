@@ -1,0 +1,35 @@
+[Unit]
+Description=pix.fish web server (next start)
+# The app hits Neon (Postgres) and Cloudflare R2 over the network on almost
+# every request; starting before the network is actually up just means the
+# first requests fail instead of the service failing to start.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pixfish
+Group=pixfish
+WorkingDirectory=/srv/pixfish
+
+# bun installed system-wide at /usr/local/bin/bun (see deploy/README.md) --
+# NOT /root/.bun/bin/bun, which the non-root pixfish user can't reach.
+ExecStart=/usr/local/bin/bun run start
+
+EnvironmentFile=/etc/pixfish.env
+
+Restart=always
+RestartSec=5
+
+# --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# next start reads the built .next/ tree but also writes to .next/cache
+# (fetch cache, route cache) at runtime -- ProtectSystem=strict makes
+# everything else under /srv read-only, so this is the one path carved out.
+ReadWritePaths=/srv/pixfish/.next
+
+[Install]
+WantedBy=multi-user.target

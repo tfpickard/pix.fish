@@ -1,0 +1,13 @@
+[Unit]
+Description=Timer for pixfish-cron-characters.service
+
+[Timer]
+# Replaces the Vercel cron entry "47 */6 * * *" (vercel.json): minute 47 of
+# hours 0, 6, 12, 18. Offset 24 minutes from the universe cron on purpose
+# (that's how the original cron table staggered them) so the two don't
+# contend for the same minute on the box.
+OnCalendar=*-*-* 0,6,12,18:47:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
