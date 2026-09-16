@@ -8,13 +8,29 @@ const withSerwist = withSerwistInit({
   disable: process.env.NODE_ENV === 'development'
 });
 
+// Image bytes live on the R2 bucket's public custom domain, so the optimizer's
+// allowlist has to name that host. It is read from the same env var the app
+// builds every blob_url from, rather than hardcoded, so a bucket or domain
+// change is one variable and not a code edit.
+//
+// If R2_PUBLIC_BASE is absent at BUILD time the allowlist ends up empty and
+// next/image refuses remote URLs. That is a loud failure rather than a silent
+// one, and it only reaches three components: the gallery itself renders bare
+// <img> against the derivative ladder and does not go through the optimizer.
+const r2Hostname = (() => {
+  const base = process.env.R2_PUBLIC_BASE;
+  if (!base) return null;
+  try {
+    return new URL(base).hostname;
+  } catch {
+    return null;
+  }
+})();
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: {
-    remotePatterns: [
-      { protocol: 'https', hostname: '*.public.blob.vercel-storage.com' },
-      { protocol: 'https', hostname: '*.blob.vercel-storage.com' }
-    ]
+    remotePatterns: r2Hostname ? [{ protocol: 'https', hostname: r2Hostname }] : []
   },
   async rewrites() {
     // `/random` is a public-friendly alias for the canonical `/api/random`

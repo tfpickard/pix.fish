@@ -1,0 +1,9 @@
+[Unit]
+Description=pix.fish dispatch cron (one-shot HTTP hit, replaces Vercel cron "9,39 14-23 * * *")
+
+[Service]
+Type=oneshot
+User=pixfish
+Group=pixfish
+EnvironmentFile=/etc/pixfish.env
+ExecStart=/usr/bin/curl -fsS -X GET -H "Authorization: Bearer ${CRON_SECRET}" http://127.0.0.1:3000/api/cron/dispatch

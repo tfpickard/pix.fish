@@ -1,0 +1,44 @@
+[Unit]
+Description=pix.fish background job worker (queue drain: enrich, reprocess, umap, webhook, backup)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pixfish
+Group=pixfish
+WorkingDirectory=/srv/pixfish
+
+# Maps to `bun src/worker/index.ts` via package.json's "worker" script.
+ExecStart=/usr/local/bin/bun run worker
+
+EnvironmentFile=/etc/pixfish.env
+
+Restart=always
+RestartSec=5
+
+# UMAP recompute walks caption embeddings for the whole corpus and is the
+# single heaviest thing this process does. Capped well under the box's 4GB
+# so a runaway pass gets killed by its own cgroup instead of the kernel OOM
+# killer picking a target -- which, on a 4GB host running web + worker side
+# by side, could just as easily be pixfish-web.
+MemoryMax=1500M
+
+# The worker holds a lease on its current job (jobs.lockedAt) and finishes
+# it before exiting on SIGTERM rather than aborting mid-write. A hard kill
+# here orphans partially-written storage objects (blob/R2 uploads,
+# umap_projections rows) that nothing else cleans up, so give it real time
+# before systemd escalates to SIGKILL.
+TimeoutStopSec=120
+
+# --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# The worker does its writing over the network (DB, blob/R2, webhook POSTs)
+# and touches nothing under the app tree at runtime, so no ReadWritePaths
+# carve-out is needed here (unlike pixfish-web's .next/cache).
+
+[Install]
+WantedBy=multi-user.target

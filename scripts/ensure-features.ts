@@ -12,7 +12,7 @@
  * Safe to run repeatedly -- every statement is IF NOT EXISTS / ADD COLUMN IF
  * NOT EXISTS. Mirrors scripts/ensure-playground-tables.ts.
  */
-import { sql } from '@vercel/postgres';
+import { sql } from '../src/lib/db/client';
 
 async function main() {
   if (!process.env.POSTGRES_URL) {

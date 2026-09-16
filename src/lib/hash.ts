@@ -22,11 +22,23 @@ export function getRequestIp(req: Request): string {
   );
 }
 
-// Coarse geolocation from Vercel's edge headers. Returns nulls in dev /
-// non-Vercel hosts since the headers are absent there. Vercel URL-encodes
-// city names with non-ascii characters (e.g. "S%C3%A3o%20Paulo"), so we
-// always decode. We deliberately stop at city granularity; that's already
-// ~10-100 mile resolution from the underlying IP→geo DB and satisfies the
+// Coarse geolocation from the CDN edge. Returns nulls in dev, or on any host
+// that does not inject these headers, and every consumer stores the result in a
+// nullable column, so an absent header degrades to "unknown" rather than
+// failing a request.
+//
+// Cloudflare first, Vercel second. The Vercel names are kept as a fallback
+// rather than deleted: they cost one absent-header lookup and they mean this
+// function stays correct if the app is ever run behind Vercel again.
+//
+// The Cloudflare headers are NOT on by default. Only `CF-IPCountry` ships
+// automatically; city and region need the "Add visitor location headers"
+// managed transform enabled for the zone. Without it, country populates and
+// the other two stay null, which is a legitimate state and not a bug to chase.
+//
+// Both edges URL-encode non-ascii city names (e.g. "S%C3%A3o%20Paulo"), so we
+// always decode. We deliberately stop at city granularity; that is already
+// ~10-100 mile resolution from the underlying IP-to-geo DB and satisfies the
 // "no precise lat/lon stored" privacy posture.
 export type RequestGeo = {
   city: string | null;
@@ -47,9 +59,19 @@ export function getRequestGeo(req: Request): RequestGeo {
       return raw.trim() || null;
     }
   };
+  // First header that carries a value wins, so the Cloudflare and Vercel names
+  // can coexist without either host needing to know about the other.
+  const first = (...names: string[]): string | null => {
+    for (const name of names) {
+      const value = get(name);
+      if (value) return value;
+    }
+    return null;
+  };
+
   return {
-    city: get('x-vercel-ip-city'),
-    region: get('x-vercel-ip-country-region'),
-    country: get('x-vercel-ip-country')
+    city: first('cf-ipcity', 'x-vercel-ip-city'),
+    region: first('cf-region', 'x-vercel-ip-country-region'),
+    country: first('cf-ipcountry', 'x-vercel-ip-country')
   };
 }

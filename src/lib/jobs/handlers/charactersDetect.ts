@@ -1,4 +1,4 @@
-import { del, put } from '@vercel/blob';
+import { del, put } from '@/lib/blob';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { getEmbedder, getProvider, loadUserProviderKeys } from '@/lib/ai';

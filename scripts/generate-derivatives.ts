@@ -18,9 +18,9 @@
  *   bun scripts/generate-derivatives.ts --force    # regenerate all rows
  *   bun scripts/generate-derivatives.ts --limit 5  # process at most 5 (trial run)
  *
- * Requires POSTGRES_URL and BLOB_READ_WRITE_TOKEN in the environment.
+ * Requires POSTGRES_URL and the R2_* credentials in the environment.
  */
-import { del, put } from '@vercel/blob';
+import { del, put } from '../src/lib/blob';
 import { asc, isNull } from 'drizzle-orm';
 import { db } from '../src/lib/db/client';
 import { images } from '../src/lib/db/schema';
@@ -33,48 +33,44 @@ const limit = limitArg >= 0 ? Number(process.argv[limitArg + 1]) : Infinity;
 // The per-image work (resize ladder, upload, persist) lives in
 // src/lib/images/generate.ts so this backfill and the post-upload derive.image
 // job share one implementation. This script adds the offline concerns on top:
-// CLI flags, a blob-token preflight, an SQL filter, and progress logging.
+// CLI flags, a storage preflight, an SQL filter, and progress logging.
 
-// Blob-store host id from a public blob URL ("https://<id>.public.blob...").
-function storeIdFromUrl(url: string): string | null {
-  try {
-    return new URL(url).host.split('.')[0] ?? null;
-  } catch {
-    return null;
-  }
-}
+const REQUIRED_R2_ENV = [
+  'R2_ACCOUNT_ID',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'R2_BUCKET',
+  'R2_PUBLIC_BASE'
+] as const;
 
-// Fail fast on a misconfigured blob token. The common footgun is a
-// BLOB_READ_WRITE_TOKEN for a different store than the one hosting the
-// originals: every original reads fine (public URLs need no token) but every
-// put() fails with "This store does not exist", once per image. One test
-// write up front turns that into a single clear error. `sampleOriginalUrl`
-// lets the message name the store the originals actually live in.
-async function preflightBlobWrite(sampleOriginalUrl: string): Promise<void> {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    throw new Error('BLOB_READ_WRITE_TOKEN is not set');
+// Fail fast on storage that cannot be written to. Reads prove nothing here:
+// originals are served from a public domain that needs no credentials at all,
+// so a wrong key, a wrong bucket, or a read-only token all look fine right up
+// until the first put(), and then fail once per image for the whole corpus.
+// One probe write up front turns that into a single clear error.
+async function preflightBlobWrite(): Promise<void> {
+  const missing = REQUIRED_R2_ENV.filter((name) => !process.env[name]);
+  if (missing.length > 0) {
+    throw new Error(`missing required env var(s): ${missing.join(', ')}`);
   }
   const probeKey = 'images/.derivatives-preflight';
   try {
+    // Fixed probe key: S3 PutObject overwrites, so a previous run's probe
+    // object is not a conflict.
     const blob = await put(probeKey, 'ok', {
       access: 'public',
       addRandomSuffix: false,
       contentType: 'text/plain'
-      // Fixed probe key; @vercel/blob 0.27.x overwrites by default, so a prior
-      // run's probe object doesn't conflict.
     });
     await del(blob.url).catch(() => {
       // Best effort: the probe object is tiny; a failed cleanup isn't fatal.
     });
   } catch (err) {
-    const originStore = storeIdFromUrl(sampleOriginalUrl);
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(
-      `blob write preflight failed: ${detail}. ` +
-        `BLOB_READ_WRITE_TOKEN must be for the store hosting the originals` +
-        (originStore ? ` (store id "${originStore}")` : '') +
-        '. Pull it from the linked Vercel project (vercel env pull) or the' +
-        ' Blob store\'s tokens page.'
+      `R2 write preflight failed: ${detail}. Check that R2_BUCKET names an ` +
+        'existing bucket and that the access key pair has object write ' +
+        'permission on it.'
     );
   }
 }
@@ -100,7 +96,7 @@ async function main() {
   }
 
   // Validate the blob token before churning through sharp on every row.
-  await preflightBlobWrite(rows[0].blobUrl);
+  await preflightBlobWrite();
 
   let processed = 0;
   let failed = 0;

@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from 'next';
-import { Analytics } from '@vercel/analytics/next';
 import { fontDisplay, fontMono, fontSans, fontWordmark } from '@/lib/fonts';
 import { NavBar } from '@/components/nav-bar';
 import { Providers } from '@/components/providers';
@@ -114,7 +113,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             survives every route change (root layout doesn't remount). */}
         <PixFish />
         <JsonLd data={buildWebSiteLd()} />
-        <Analytics />
       </body>
     </html>
   );

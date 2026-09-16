@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { Session } from 'next-auth';
 import { and, asc, eq, inArray, ne } from 'drizzle-orm';
-import { del } from '@vercel/blob';
+import { del } from '@/lib/blob';
 import { auth, canEdit, isSiteAdmin } from '@/lib/auth';
 import { db } from '@/lib/db/client';
 import { captions, descriptions, images, tags, type Image } from '@/lib/db/schema';

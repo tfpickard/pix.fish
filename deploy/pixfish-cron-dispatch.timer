@@ -1,0 +1,20 @@
+[Unit]
+Description=Timer for pixfish-cron-dispatch.service
+
+[Timer]
+# Replaces the Vercel cron entry "9,39 14-23 * * *" (vercel.json): minutes 9
+# and 39 of every hour from 14:00 through 23:59 UTC -- i.e. hour range
+# 14..23 (systemd's inclusive range syntax), minute list 9,39. This is only
+# a poll: src/lib/dispatch/schedule.ts seeds a randomized target minute off
+# today's UTC date and each firing just checks whether that moment has
+# passed, so hitting the endpoint twice an hour is a coarse grid, not the
+# actual schedule -- keep this timer's cadence in sync with vercel.json's
+# grid, not with when dispatch.sent events actually appear. Pinned to UTC
+# because that randomization is UTC-seeded (see CLAUDE.md's dispatch
+# section) -- localizing this timer would shift which day's seed applies at
+# the edges of the window.
+OnCalendar=*-*-* 14..23:09,39:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

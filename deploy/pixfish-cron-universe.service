@@ -1,0 +1,13 @@
+[Unit]
+Description=pix.fish universe cron (one-shot HTTP hit, replaces Vercel cron "23 */6 * * *")
+
+[Service]
+Type=oneshot
+User=pixfish
+Group=pixfish
+EnvironmentFile=/etc/pixfish.env
+# ${CRON_SECRET} is expanded by systemd from EnvironmentFile before exec, so
+# it never touches a shell; it is briefly visible in this process's argv
+# for the ~seconds curl runs, which is an acceptable exposure for a
+# same-host bearer token guarding an idempotent internal endpoint.
+ExecStart=/usr/bin/curl -fsS -X GET -H "Authorization: Bearer ${CRON_SECRET}" http://127.0.0.1:3000/api/cron/universe
